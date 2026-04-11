@@ -4,6 +4,20 @@ MCP server for MyBrowser browser automation.
 
 Important: installing this npm package is only half of the setup. You also need the MyBrowser Chrome extension.
 
+## Features
+
+This package exposes a browser MCP with support for:
+
+1. Navigation, tabs, clicks, typing, hover, drag and drop, and keyboard input
+2. Screenshots with interactive markers and ARIA snapshots
+3. Structured extraction, element search, and form filling
+4. Console logs, page eval, storage inspection, network capture, and performance metrics
+5. Uploads, downloads, clipboard access, and waiting for real page conditions
+6. Record and replay flows
+7. Shared state, tab ownership, session coordination, and locks for multi-agent use
+8. Event handlers for dialogs, new tabs, beforeunload prompts, and stuck requests
+9. Saved browser notes and page knowledge
+
 ## Install
 
 ```bash
@@ -27,6 +41,8 @@ That file contains the shared auth token the Chrome extension needs.
 ## Chrome Extension Required
 
 After installing the npm package, download the Chrome extension from the GitHub Releases page.
+
+The npm package is the server. The release zip is the browser side.
 
 Then:
 

@@ -7,6 +7,29 @@ MyBrowser is a two-part browser automation setup for MCP:
 
 `npm` installs only the MCP server. You still need to download and load the Chrome extension.
 
+## Features
+
+MyBrowser gives an MCP client a persistent, controllable Chrome browser with tools for real automation work, not just screenshots.
+
+1. Browser control: open tabs, navigate, go back/forward, click, type, hover, press keys, drag and drop, and select dropdown options
+2. Visual inspection: capture screenshots with numbered interactive markers, ARIA snapshots, and page element discovery
+3. Data extraction: pull structured data from pages and read visible text or accessibility content
+4. Form automation: fill forms by label and run multi-step browser actions in one request
+5. Debugging tools: read console logs, run page JavaScript, inspect storage, inspect network traffic, and collect performance metrics
+6. File and clipboard support: upload files, trigger downloads, and read or write clipboard text
+7. Reliable waiting: wait for URL changes, text, elements, hidden elements, and network idle conditions
+8. Recording and replay: record browser sessions and replay them later
+9. Site memory: learn page objects and store reusable site knowledge for future runs
+10. Collaboration tools: list sessions, claim tabs, hand off tabs, share state, and coordinate through locks
+11. Event automation: automatically react to dialogs, beforeunload prompts, new tabs, and stuck network requests
+12. Annotation workflow: save visual notes from the browser and review them later from MCP
+
+## Why It Exists
+
+Most browser MCPs stop at basic navigation.
+
+MyBrowser is built for longer-running, practical workflows where an agent needs to keep a browser around, inspect state, coordinate across tabs, and recover from real browser behavior.
+
 ## Install
 
 ### 1. Install the MCP server
@@ -58,6 +81,15 @@ You need both:
 
 1. The MCP server from npm
 2. The Chrome extension from GitHub Releases
+
+## What You Install
+
+There are two install surfaces on purpose:
+
+1. npm package: installs the MCP server binary `mybrowser-mcp`
+2. GitHub Release zip: installs the Chrome extension that actually controls the browser
+
+If you only install the npm package, the server starts but there is no browser connected.
 
 ## Repo Layout
 
