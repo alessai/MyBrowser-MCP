@@ -1,10 +1,22 @@
 # @alessai/mybrowser-mcp
 
-Persistent Chrome automation for MCP.
+Persistent Chrome automation for Claude Code and any MCP client.
 
 This package is the server side of MyBrowser. It gives an MCP client access to a real browser with navigation, screenshots, extraction, console and network tooling, uploads, downloads, recording, replay, and multi-session coordination.
 
 Important: installing this npm package is only half of the setup. You also need the MyBrowser Chrome extension.
+
+## Fastest Setup for Claude Code
+
+```bash
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 0.0.0.0 --port 9009
+```
+
+Then install the Chrome extension from:
+
+`https://github.com/alessai/MyBrowser-MCP/releases/latest`
+
+If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybrowser` once to trigger the server and generate it.
 
 ## Highlights
 
@@ -60,6 +72,12 @@ Then:
     }
   }
 }
+```
+
+If you already installed the package globally, the equivalent Claude Code command is:
+
+```bash
+claude mcp add mybrowser -- mybrowser-mcp --host 0.0.0.0 --port 9009
 ```
 
 ## Repository
