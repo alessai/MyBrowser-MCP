@@ -1,0 +1,366 @@
+import { useState, useEffect, useCallback } from 'react';
+import { sendToBackground } from '../../lib/messaging';
+import { getStorageAll, setStorageAll, type StorageSchema } from '../../lib/storage';
+import type { WsStatusResponse } from '../../lib/protocol';
+
+type View = 'main' | 'settings';
+
+interface StatusInfo {
+  state: 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'CONNECTED';
+  serverAddress?: string;
+  latencyMs?: number;
+  tabCount?: number;
+  lastToolCall?: string;
+  lastToolCallTime?: number;
+}
+
+const STATE_LABELS: Record<StatusInfo['state'], string> = {
+  CONNECTED: 'Connected',
+  CONNECTING: 'Connecting',
+  AUTHENTICATING: 'Authenticating',
+  DISCONNECTED: 'Disconnected',
+};
+
+const STATE_COLORS: Record<StatusInfo['state'], string> = {
+  CONNECTED: 'var(--color-green)',
+  CONNECTING: 'var(--color-yellow)',
+  AUTHENTICATING: 'var(--color-yellow)',
+  DISCONNECTED: 'var(--color-red)',
+};
+
+function timeAgo(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 5) return 'just now';
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  return `${Math.floor(diff / 3600)}h ago`;
+}
+
+interface AnnotationInfo {
+  hotkey: string | null;
+  pending: number | null;
+  archived: number | null;
+  error: string | null;
+}
+
+export default function App() {
+  const [view, setView] = useState<View>('main');
+  const [status, setStatus] = useState<StatusInfo>({ state: 'DISCONNECTED' });
+  const [settings, setSettings] = useState<StorageSchema>({
+    serverAddress: '',
+    serverPort: 9009,
+    authToken: '',
+    browserName: '',
+  });
+  const [showToken, setShowToken] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [annotation, setAnnotation] = useState<AnnotationInfo | null>(null);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await sendToBackground<WsStatusResponse>('ws_status');
+      setStatus((prev) => ({
+        ...prev,
+        state: res.state,
+        serverAddress: res.serverAddress,
+        latencyMs: res.latencyMs,
+      }));
+    } catch {
+      setStatus((prev) => ({ ...prev, state: 'DISCONNECTED' }));
+    }
+  }, []);
+
+  const fetchAnnotation = useCallback(async () => {
+    try {
+      const res = await sendToBackground<AnnotationInfo>('get_annotation_info');
+      setAnnotation(res);
+    } catch {
+      setAnnotation(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    getStorageAll().then(setSettings);
+    // Initial fetch on mount.
+    fetchStatus();
+    fetchAnnotation();
+
+    // Passive freshness: poll every 10 s — but only while the popup is
+    // actually visible. A pinned popup or a hidden popup (which Chrome
+    // keeps alive in some configurations) will NOT keep burning WS
+    // round-trips. Was previously 2 s unconditional, which meant 30
+    // RT/min per open popup.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (interval !== null) return;
+      interval = setInterval(() => {
+        fetchStatus();
+        fetchAnnotation();
+      }, 10_000);
+    };
+    const stopPolling = () => {
+      if (interval !== null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // Refresh immediately on visibility change, then resume polling.
+        fetchStatus();
+        fetchAnnotation();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+    if (document.visibilityState === "visible") startPolling();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stopPolling();
+    };
+  }, [fetchStatus, fetchAnnotation]);
+
+  const handleRefreshAnnotation = () => {
+    fetchAnnotation();
+  };
+
+  const openShortcutsPage = () => {
+    chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await setStorageAll(settings);
+      await sendToBackground('ws_reconnect');
+      setView('main');
+    } catch (e) {
+      console.error('Save failed:', e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTestResult('Testing...');
+    try {
+      const res = await sendToBackground<WsStatusResponse>('ws_status');
+      setTestResult(
+        res.state === 'CONNECTED'
+          ? `Connected (${res.latencyMs ?? '?'}ms)`
+          : `State: ${STATE_LABELS[res.state]}`,
+      );
+    } catch (e) {
+      setTestResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  if (view === 'settings') {
+    return (
+      <div className="popup">
+        <header>
+          <button className="back-btn" onClick={() => { setView('main'); setTestResult(null); }}>
+            ← Back
+          </button>
+          <h1>Settings</h1>
+        </header>
+
+        <div className="settings-form">
+          <label>
+            Server Address
+            <input
+              type="text"
+              value={settings.serverAddress}
+              onChange={(e) => setSettings({ ...settings, serverAddress: e.target.value })}
+              placeholder="e.g. 100.64.0.1"
+            />
+          </label>
+
+          <label>
+            Port
+            <input
+              type="number"
+              value={settings.serverPort}
+              onChange={(e) => setSettings({ ...settings, serverPort: Number(e.target.value) })}
+              placeholder="9009"
+            />
+          </label>
+
+          <label>
+            Browser Name
+            <input
+              type="text"
+              value={settings.browserName}
+              onChange={(e) => setSettings({ ...settings, browserName: e.target.value })}
+              placeholder="e.g. Windows-Chrome"
+            />
+          </label>
+
+          <label>
+            Auth Token
+            <div className="token-input">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={settings.authToken}
+                onChange={(e) => setSettings({ ...settings, authToken: e.target.value })}
+                placeholder="Enter token"
+              />
+              <button
+                className="toggle-btn"
+                onClick={() => setShowToken(!showToken)}
+                type="button"
+              >
+                {showToken ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </label>
+
+          <div className="btn-row">
+            <button className="btn btn-secondary" onClick={handleTest}>
+              Test Connection
+            </button>
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+
+          {testResult && (
+            <div className={`test-result ${testResult.startsWith('Error') ? 'error' : ''}`}>
+              {testResult}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="popup">
+      <header>
+        <h1>MyBrowser</h1>
+        <span className="version">v1.0.0</span>
+      </header>
+
+      <div className="status-section">
+        <div className="status-row">
+          <span
+            className="status-dot"
+            style={{ backgroundColor: STATE_COLORS[status.state] }}
+          />
+          <span className="status-label">{STATE_LABELS[status.state]}</span>
+        </div>
+
+        <div className="info-grid">
+          <div className="info-item">
+            <span className="info-label">Server</span>
+            <span className="info-value">
+              {status.serverAddress || settings.serverAddress || '—'}
+              {settings.serverPort ? `:${settings.serverPort}` : ''}
+            </span>
+          </div>
+
+          <div className="info-item">
+            <span className="info-label">Latency</span>
+            <span className="info-value">
+              {status.latencyMs != null ? `${status.latencyMs}ms` : '—'}
+            </span>
+          </div>
+
+          <div className="info-item">
+            <span className="info-label">Tabs</span>
+            <span className="info-value">
+              {status.tabCount != null ? status.tabCount : '—'}
+            </span>
+          </div>
+
+          <div className="info-item">
+            <span className="info-label">Last Tool</span>
+            <span className="info-value">
+              {status.lastToolCall
+                ? `${status.lastToolCall} (${timeAgo(status.lastToolCallTime!)})`
+                : '—'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <section
+        className="annotation-section"
+        aria-label="Annotation notes"
+      >
+        <div className="annotation-section-row">
+          <span className="annotation-section-title">Annotation notes</span>
+          <div className="annotation-section-actions">
+            {/* Dedicated status node wraps ONLY the changing text so
+                screen readers announce just the new value when it changes.
+                aria-atomic makes the announcement whole-badge instead of
+                character-diff. role=status is the semantic equivalent of
+                aria-live=polite + aria-atomic, kept explicit for clarity. */}
+            <span
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className={
+                'annotation-badge' +
+                ((annotation?.pending ?? 0) > 0 ? ' annotation-badge--active' : '')
+              }
+            >
+              {annotation?.error
+                ? '—'
+                : annotation?.pending != null
+                  ? `${annotation.pending} pending`
+                  : '…'}
+            </span>
+            <button
+              type="button"
+              className="annotation-refresh"
+              onClick={handleRefreshAnnotation}
+              title="Refresh now"
+              aria-label="Refresh annotation count"
+            >
+              ↻
+            </button>
+          </div>
+        </div>
+
+        <div className="annotation-meta">
+          Hotkey:{' '}
+          {annotation?.hotkey ? (
+            <code>{annotation.hotkey}</code>
+          ) : (
+            <span className="annotation-hotkey-missing">not set</span>
+          )}
+          {' · '}
+          <button
+            type="button"
+            className="annotation-meta-link"
+            onClick={openShortcutsPage}
+          >
+            change
+          </button>
+        </div>
+
+        {annotation?.error && (
+          <div role="alert" className="annotation-error">
+            Error: {annotation.error}
+          </div>
+        )}
+
+        {annotation?.archived != null && annotation.archived > 0 && (
+          <div className="annotation-meta-archived">
+            {annotation.archived} archived
+          </div>
+        )}
+      </section>
+
+      <footer>
+        <button className="btn btn-primary" onClick={() => setView('settings')}>
+          Settings
+        </button>
+      </footer>
+    </div>
+  );
+}

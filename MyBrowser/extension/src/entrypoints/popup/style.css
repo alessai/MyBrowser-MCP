@@ -1,0 +1,340 @@
+:root {
+  --color-green: #22c55e;
+  --color-yellow: #eab308;
+  --color-red: #ef4444;
+  --color-amber: #f59e0b;
+  --color-blue: #3b82f6;
+
+  --bg: #ffffff;
+  --bg-secondary: #f3f4f6;
+  --text: #111827;
+  --text-secondary: #6b7280;
+  --border: #e5e7eb;
+  --btn-primary-bg: #2563eb;
+  --btn-primary-text: #ffffff;
+  --btn-secondary-bg: #f3f4f6;
+  --btn-secondary-text: #374151;
+  --input-bg: #ffffff;
+  --input-border: #d1d5db;
+}
+
+/* Annotation section — keep styles centralized instead of inline in the TSX. */
+.annotation-section {
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.annotation-section-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.annotation-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.annotation-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.annotation-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  background: var(--bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.annotation-badge--active {
+  background: var(--color-amber);
+  color: var(--badge-active-text, #111827);
+  border-color: var(--color-amber);
+}
+.annotation-refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.annotation-refresh:hover { color: var(--text); }
+.annotation-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+.annotation-meta code {
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.annotation-meta-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-blue);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.annotation-meta-link:hover { opacity: 0.85; }
+.annotation-error {
+  font-size: 11px;
+  color: var(--color-red);
+  margin-top: 4px;
+  word-break: break-word;
+}
+.annotation-meta-archived {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  margin-top: 4px;
+}
+.annotation-hotkey-missing {
+  color: var(--color-red);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2937;
+    --bg-secondary: #374151;
+    --text: #f9fafb;
+    --text-secondary: #9ca3af;
+    --border: #4b5563;
+    --btn-primary-bg: #3b82f6;
+    --btn-primary-text: #ffffff;
+    --btn-secondary-bg: #374151;
+    --btn-secondary-text: #d1d5db;
+    --input-bg: #374151;
+    --input-border: #4b5563;
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 300px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.popup {
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.version {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.back-btn {
+  background: none;
+  border: none;
+  color: var(--btn-primary-bg);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+}
+
+.back-btn:hover {
+  text-decoration: underline;
+}
+
+/* Status section */
+.status-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-label {
+  font-weight: 500;
+}
+
+.info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.info-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.info-value {
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer */
+footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Settings form */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.settings-form input {
+  padding: 8px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.settings-form input:focus {
+  border-color: var(--btn-primary-bg);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.token-input {
+  display: flex;
+  gap: 4px;
+}
+
+.token-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.toggle-btn {
+  padding: 6px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toggle-btn:hover {
+  background: var(--border);
+}
+
+/* Buttons */
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn:hover {
+  opacity: 0.85;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  width: 100%;
+}
+
+.btn-secondary {
+  background: var(--btn-secondary-bg);
+  color: var(--btn-secondary-text);
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-row .btn {
+  flex: 1;
+}
+
+.test-result {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.test-result.error {
+  color: var(--color-red);
+}

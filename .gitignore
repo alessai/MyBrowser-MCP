@@ -1,0 +1,7 @@
+.claude/
+**/node_modules/
+**/dist/
+**/.output/
+*.log
+*.tsbuildinfo
+*.crx
