@@ -1,41 +1,94 @@
 # MyBrowser MCP
 
-MyBrowser is a two-part browser automation setup for MCP:
+Persistent Chrome automation for MCP.
+
+MyBrowser gives your MCP client a real, long-running Chrome browser it can control, inspect, and coordinate. It goes beyond basic navigation with screenshots, extraction, console and network tooling, uploads, downloads, recording, replay, and multi-session tab ownership.
+
+Important: MyBrowser has 2 parts.
 
 1. The MCP server
 2. The Chrome extension
 
-`npm` installs only the MCP server. You still need to download and load the Chrome extension.
+`npm` installs only the server. You still need the Chrome extension from GitHub Releases.
 
-## Features
+## Why MyBrowser
 
-MyBrowser gives an MCP client a persistent, controllable Chrome browser with tools for real automation work, not just screenshots.
+Most browser MCPs stop at simple page navigation.
 
-1. Browser control: open tabs, navigate, go back/forward, click, type, hover, press keys, drag and drop, and select dropdown options
-2. Visual inspection: capture screenshots with numbered interactive markers, ARIA snapshots, and page element discovery
-3. Data extraction: pull structured data from pages and read visible text or accessibility content
-4. Form automation: fill forms by label and run multi-step browser actions in one request
-5. Debugging tools: read console logs, run page JavaScript, inspect storage, inspect network traffic, and collect performance metrics
-6. File and clipboard support: upload files, trigger downloads, and read or write clipboard text
-7. Reliable waiting: wait for URL changes, text, elements, hidden elements, and network idle conditions
-8. Recording and replay: record browser sessions and replay them later
-9. Site memory: learn page objects and store reusable site knowledge for future runs
-10. Collaboration tools: list sessions, claim tabs, hand off tabs, share state, and coordinate through locks
-11. Event automation: automatically react to dialogs, beforeunload prompts, new tabs, and stuck network requests
-12. Annotation workflow: save visual notes from the browser and review them later from MCP
+MyBrowser is built for practical workflows where an agent needs to:
 
-## Why It Exists
+1. Keep a browser connected over time
+2. Inspect real browser state, not just page HTML
+3. Recover from prompts, dialogs, and flaky page behavior
+4. Coordinate access across tabs and sessions
+5. Record, replay, and reuse browser knowledge
 
-Most browser MCPs stop at basic navigation.
+## What It Can Do
 
-MyBrowser is built for longer-running, practical workflows where an agent needs to keep a browser around, inspect state, coordinate across tabs, and recover from real browser behavior.
+### Control the Browser
+
+1. Open tabs and switch between them
+2. Navigate, go back, and go forward
+3. Click, type, hover, drag, drop, and press keys
+4. Fill forms and run multi-step browser actions
+
+### Inspect and Extract
+
+1. Take screenshots with numbered interactive markers
+2. Capture ARIA snapshots for accessibility-aware inspection
+3. Find elements by text, role, label, or selector
+4. Extract structured data from the page
+
+### Debug Real Browser Behavior
+
+1. Read console logs
+2. Run page JavaScript
+3. Inspect localStorage, sessionStorage, and cookies
+4. Capture network traffic and performance metrics
+5. Wait for real page conditions including network idle
+
+### Handle Real Workflows
+
+1. Upload files and trigger downloads
+2. Use the clipboard
+3. Record flows and replay them later
+4. Learn page objects and save site knowledge
+5. Save browser notes and annotations for later review
+
+### Coordinate Multiple Agents
+
+1. List sessions and connected browsers
+2. Claim tabs and hand them off safely
+3. Share state across sessions
+4. Coordinate with locks
+5. Register event handlers for dialogs, new tabs, beforeunload prompts, and stuck network requests
+
+## Quick Demo
+
+Example prompts you can give your MCP client:
+
+1. "Open GitHub, search for BrowserMCP, and click the repository"
+2. "Take a screenshot of this page and label the clickable elements"
+3. "Extract the pricing cards on this page into JSON"
+4. "Fill this signup form but stop before submitting"
+5. "Start network capture, submit the form, and show me the XHR requests"
+6. "Record this login flow so I can replay it later"
+
+## Use Cases
+
+1. QA and browser regression testing
+2. Customer support debugging with a live browser session
+3. Structured data extraction from real web apps
+4. Admin and backoffice automation
+5. Multi-agent browser workflows where tab ownership matters
+6. Browser-assisted research with screenshots, notes, and extraction
 
 ## Install
 
 ### 1. Install the MCP server
 
 ```bash
-npm install -g @mybrowser/mcp
+npm install -g @alessai/mybrowser-mcp
 ```
 
 ### 2. Start the server once
@@ -48,7 +101,9 @@ On first run, MyBrowser creates `~/.mybrowser/config.json` and stores the shared
 
 ### 3. Download the Chrome extension
 
-Download the Chrome extension zip from the latest GitHub Release.
+Download the Chrome extension zip from the latest release:
+
+`https://github.com/alessai/MyBrowser-MCP/releases/latest`
 
 Look for a file named like:
 
@@ -73,23 +128,36 @@ Open the extension popup and enter:
 3. Auth token from `~/.mybrowser/config.json`
 4. Optional browser name
 
-## Important
+## MCP Config Example
 
-MyBrowser will not work with only the npm package installed.
+Example MCP config using the installed binary:
 
-You need both:
+```json
+{
+  "mcpServers": {
+    "mybrowser": {
+      "command": "mybrowser-mcp",
+      "args": ["--host", "0.0.0.0", "--port", "9009"]
+    }
+  }
+}
+```
 
-1. The MCP server from npm
-2. The Chrome extension from GitHub Releases
+## How It Works
 
-## What You Install
+MyBrowser splits browser automation into two pieces:
 
-There are two install surfaces on purpose:
+1. The MCP server exposes tools to your client
+2. The Chrome extension connects to that server and performs real browser actions
 
-1. npm package: installs the MCP server binary `mybrowser-mcp`
-2. GitHub Release zip: installs the Chrome extension that actually controls the browser
+This is why you need both the npm package and the extension zip.
 
-If you only install the npm package, the server starts but there is no browser connected.
+## Security Model
+
+1. The server runs on your machine or your own network
+2. The extension connects only to the server address you configure
+3. The server and extension share an auth token from `~/.mybrowser/config.json`
+4. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
 
 ## Repo Layout
 

@@ -1,27 +1,23 @@
-# @mybrowser/mcp
+# @alessai/mybrowser-mcp
 
-MCP server for MyBrowser browser automation.
+Persistent Chrome automation for MCP.
+
+This package is the server side of MyBrowser. It gives an MCP client access to a real browser with navigation, screenshots, extraction, console and network tooling, uploads, downloads, recording, replay, and multi-session coordination.
 
 Important: installing this npm package is only half of the setup. You also need the MyBrowser Chrome extension.
 
-## Features
+## Highlights
 
-This package exposes a browser MCP with support for:
-
-1. Navigation, tabs, clicks, typing, hover, drag and drop, and keyboard input
-2. Screenshots with interactive markers and ARIA snapshots
-3. Structured extraction, element search, and form filling
-4. Console logs, page eval, storage inspection, network capture, and performance metrics
-5. Uploads, downloads, clipboard access, and waiting for real page conditions
-6. Record and replay flows
-7. Shared state, tab ownership, session coordination, and locks for multi-agent use
-8. Event handlers for dialogs, new tabs, beforeunload prompts, and stuck requests
-9. Saved browser notes and page knowledge
+1. Browser control: tabs, navigation, clicks, typing, forms, hover, drag and drop, and keyboard input
+2. Inspection: screenshots with interactive markers, ARIA snapshots, element search, and structured extraction
+3. Debugging: console logs, page eval, storage inspection, network capture, and performance metrics
+4. Workflow tools: uploads, downloads, clipboard support, waits, recording, replay, and saved site knowledge
+5. Coordination: shared state, tab ownership, session management, locks, and event handlers
 
 ## Install
 
 ```bash
-npm install -g @mybrowser/mcp
+npm install -g @alessai/mybrowser-mcp
 ```
 
 ## Start
@@ -40,9 +36,9 @@ That file contains the shared auth token the Chrome extension needs.
 
 ## Chrome Extension Required
 
-After installing the npm package, download the Chrome extension from the GitHub Releases page.
+After installing the npm package, download the Chrome extension from the GitHub Releases page:
 
-The npm package is the server. The release zip is the browser side.
+`https://github.com/alessai/MyBrowser-MCP/releases/latest`
 
 Then:
 
@@ -52,6 +48,19 @@ Then:
 4. Click **Load unpacked**
 5. Select the unzipped folder
 6. Enter the server address, port, and auth token in the extension popup
+
+## MCP Config Example
+
+```json
+{
+  "mcpServers": {
+    "mybrowser": {
+      "command": "mybrowser-mcp",
+      "args": ["--host", "0.0.0.0", "--port", "9009"]
+    }
+  }
+}
+```
 
 ## Repository
 
