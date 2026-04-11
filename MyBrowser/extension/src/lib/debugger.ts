@@ -99,81 +99,6 @@ async function handleError(err: Error, target: Debuggee): Promise<void> {
   }
 }
 
-// Known extensions that inject chrome-extension:// iframes and block debugger
-const KNOWN_CONFLICTING_EXTENSIONS = [
-  'hdokiejnpimakedhajhdlcegeplioahd', // LastPass
-  'naepdomgkenhinolocfifgehidddafch', // Browserstack
-];
-
-// Track extensions we temporarily disabled so we can re-enable them
-const disabledExtensions = new Set<string>();
-let reEnableTimer: ReturnType<typeof setTimeout> | null = null;
-let disabling = false; // Prevent concurrent disable attempts
-
-/**
- * Find and temporarily disable extensions that conflict with chrome.debugger.
- * Returns the IDs of extensions that were disabled.
- */
-async function disableConflictingExtensions(): Promise<string[]> {
-  try {
-    const allExtensions = await chrome.management.getAll();
-    const disabled: string[] = [];
-
-    for (const ext of allExtensions) {
-      if (!ext.enabled || ext.id === chrome.runtime.id) continue;
-
-      // Check known conflicts
-      const isKnown = KNOWN_CONFLICTING_EXTENSIONS.includes(ext.id);
-
-      // Also check for extensions that have content_scripts (they may inject iframes)
-      // LastPass specifically is the known culprit
-      const isLastPass = ext.name?.toLowerCase().includes('lastpass');
-
-      if (isKnown || isLastPass) {
-        try {
-          await chrome.management.setEnabled(ext.id, false);
-          disabled.push(ext.id);
-          console.log(`[MyBrowser] Temporarily disabled "${ext.name}" (${ext.id}) for debugger access`);
-        } catch (err) {
-          console.warn(`[MyBrowser] Could not disable "${ext.name}":`, err);
-        }
-      }
-    }
-    return disabled;
-  } catch {
-    return []; // management API not available
-  }
-}
-
-/**
- * Re-enable extensions that were temporarily disabled.
- */
-async function reEnableExtensions(): Promise<void> {
-  const toEnable = [...disabledExtensions];
-  disabledExtensions.clear();
-  for (const id of toEnable) {
-    try {
-      await chrome.management.setEnabled(id, true);
-      console.log(`[MyBrowser] Re-enabled extension ${id}`);
-    } catch {
-      // Extension may have been uninstalled
-    }
-  }
-}
-
-/**
- * Schedule re-enabling disabled extensions after a delay.
- * This gives the debugger time to do its work before conflicting
- * extensions are restored.
- */
-function scheduleReEnable(delayMs = 5000): void {
-  if (reEnableTimer) clearTimeout(reEnableTimer);
-  reEnableTimer = setTimeout(async () => {
-    reEnableTimer = null;
-    await reEnableExtensions();
-  }, delayMs);
-}
-
 export async function ensureAttached(tabId: number): Promise<void> {
   // Cancel any pending detach
   const existing = detachTimers.get(tabId);
@@ -182,20 +107,12 @@ export async function ensureAttached(tabId: number): Promise<void> {
     detachTimers.delete(tabId);
   }
 
-  // Cancel any pending re-enable — we still need debugger access
-  if (reEnableTimer) {
-    clearTimeout(reEnableTimer);
-    reEnableTimer = null;
-  }
-
   const target: Debuggee = { tabId };
   try {
     await doAttach(target, '1.3');
     const wasAttached = attachedTabs.has(tabId);
     attachedTabs.add(tabId);
     if (!wasAttached) notifyAttached(tabId);
-    // Schedule re-enable of disabled extensions (if any were disabled previously)
-    if (disabledExtensions.size > 0) scheduleReEnable(10000);
   } catch (e) {
     if (!(e instanceof Error)) throw e;
     const kind = classifyError(e.message);
@@ -211,47 +128,7 @@ export async function ensureAttached(tabId: number): Promise<void> {
         throw e;
       }
     } else if (kind === 'otherExtension') {
-      // Auto-fix: temporarily disable conflicting extensions
       attachedTabs.delete(tabId);
-      console.log('[MyBrowser] Debugger blocked by another extension — auto-disabling conflicts...');
-
-      if (disabling) {
-        // Another call is already handling this — wait and retry
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          await doAttach(target, '1.3');
-          attachedTabs.add(tabId);
-          return;
-        } catch {
-          throw e;
-        }
-      }
-
-      disabling = true;
-      const disabled = await disableConflictingExtensions();
-      disabling = false;
-
-      if (disabled.length > 0) {
-        for (const id of disabled) disabledExtensions.add(id);
-
-        // Wait for Chrome to process the extension disable (iframes get removed)
-        await new Promise((r) => setTimeout(r, 1500));
-
-        // Retry attach after disabling conflicts
-        try {
-          await doAttach(target, '1.3');
-          attachedTabs.add(tabId);
-          // Schedule re-enable after 10s of inactivity
-          scheduleReEnable(10000);
-          return;
-        } catch (retryErr) {
-          // Still failed — re-enable extensions and throw
-          await reEnableExtensions();
-          throw retryErr;
-        }
-      }
-
-      // No conflicting extensions found — throw with diagnostic info
       let diag = '';
       try {
         const tab = await chrome.tabs.get(tabId);
@@ -262,7 +139,7 @@ export async function ensureAttached(tabId: number): Promise<void> {
 
       throw new Error(
         `${e.message} — Another Chrome extension is blocking debugger access. ` +
-        `Could not auto-resolve. Manually disable suspect extensions in chrome://extensions ` +
+        `Close DevTools, disable the conflicting extension in chrome://extensions, ` +
         `and open a new tab.${diag}`,
       );
     } else {
@@ -282,10 +159,6 @@ export function scheduleDetach(tabId: number): void {
       detachTimers.delete(tabId);
       attachedTabs.delete(tabId);
       await doDetach({ tabId });
-      // Re-enable any temporarily disabled extensions now that debugger is detached
-      if (disabledExtensions.size > 0) {
-        scheduleReEnable(2000);
-      }
     }, DETACH_DELAY_MS),
   );
 }
@@ -602,6 +475,31 @@ interface PendingRequest {
 /** Per-tab pending-request tracking, populated by the network capture
  *  listener. Purged on responseReceived / loadingFailed / loadingFinished. */
 const pendingRequestsByTab = new Map<number, Map<string, PendingRequest>>();
+
+export async function waitForNetworkIdle(
+  tabId: number,
+  idleMs = 500,
+  timeoutMs = 10_000,
+  pollIntervalMs = 100,
+): Promise<void> {
+  const startedAt = Date.now();
+  let idleStartedAt: number | null = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const pendingCount = pendingRequestsByTab.get(tabId)?.size ?? 0;
+
+    if (pendingCount === 0) {
+      if (idleStartedAt === null) idleStartedAt = Date.now();
+      if (Date.now() - idleStartedAt >= idleMs) return;
+    } else {
+      idleStartedAt = null;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  throw new Error(`Timeout after ${timeoutMs}ms waiting for network idle`);
+}
 
 function getPendingMap(tabId: number): Map<string, PendingRequest> {
   let m = pendingRequestsByTab.get(tabId);

@@ -21,6 +21,7 @@ import {
   clearNetworkLog,
   isNetworkCaptureActive,
   setNetworkCaptureActive,
+  waitForNetworkIdle,
   type NetworkEntry,
 } from './debugger';
 import {
@@ -55,6 +56,35 @@ const AFTER_ACTION_DELAY_MS = 500;
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function sanitizeDownloadDirectory(directory: string | undefined): string | undefined {
+  if (!directory) return undefined;
+  const parts = directory
+    .split(/[\\/]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0 && part !== '.' && part !== '..');
+  return parts.length > 0 ? parts.join('/') : undefined;
+}
+
+function deriveDownloadFilename(rawUrl: string, fallback = 'download'): string {
+  try {
+    const url = new URL(rawUrl);
+    const name = url.pathname.split('/').filter(Boolean).at(-1);
+    return name ? decodeURIComponent(name) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildDownloadFilename(
+  sourceUrl: string,
+  directory: string | undefined,
+  filename: string | undefined,
+): string | undefined {
+  const safeDirectory = sanitizeDownloadDirectory(directory);
+  if (!safeDirectory) return filename;
+  return `${safeDirectory}/${filename ?? deriveDownloadFilename(sourceUrl)}`;
 }
 
 async function waitForStableDOM(tabId: number): Promise<void> {
@@ -481,26 +511,19 @@ const handlers: Record<string, ToolHandler> = {
 
   async browser_wait_for(args, ctx) {
     const tabId = ctx.getTabId();
-    await ensureContentScript(tabId);
     const condition = args.condition as string;
     const timeout = (args.timeout as number) || 10000;
     const pollInterval = (args.pollInterval as number) || 500;
 
-    // For network_idle, use DOM stability heuristic in background
+    // For network_idle, use tracked pending requests from the debugger.
     if (condition === 'network_idle') {
       const start = Date.now();
-      try {
-        await sendToTab(tabId, 'waitForStableDOM', {
-          minStableMs: 500,
-          maxMutations: 0,
-          maxWaitMs: timeout,
-        });
-        return { met: true, waitedMs: Date.now() - start };
-      } catch {
-        throw new Error(`Timeout after ${timeout}ms waiting for network_idle`);
-      }
+      await enableNetworkDomain(tabId);
+      await waitForNetworkIdle(tabId, Math.max(500, pollInterval), timeout, pollInterval);
+      return { met: true, waitedMs: Date.now() - start };
     }
 
+    await ensureContentScript(tabId);
     return sendToTab(tabId, 'browser_wait_for', {
       condition,
       value: args.value,
@@ -1024,7 +1047,7 @@ const handlers: Record<string, ToolHandler> = {
       await sendToTab(tabId, 'cs_click', { selector });
       throw new Error(
         `File upload via CDP failed: ${cdpError instanceof Error ? cdpError.message : cdpError}. ` +
-        `Note: File upload requires Chrome debugger access. If LastPass is enabled, disable it. ` +
+        `Note: File upload requires Chrome debugger access. Close DevTools or disable the conflicting extension, then retry. ` +
         `The file input was clicked as a fallback — you may need to manually select files.`,
       );
     }
@@ -1035,6 +1058,7 @@ const handlers: Record<string, ToolHandler> = {
   async browser_download(args, ctx) {
     const url = args.url as string | undefined;
     const filename = args.filename as string | undefined;
+    const directory = args.directory as string | undefined;
 
     if (!url) {
       // Download current page
@@ -1042,19 +1066,32 @@ const handlers: Record<string, ToolHandler> = {
       const tab = await chrome.tabs.get(tabId);
       const pageUrl = tab.url || '';
       if (!pageUrl.startsWith('http')) throw new Error('Cannot download non-HTTP page');
+      const resolvedFilename = buildDownloadFilename(pageUrl, directory, filename);
 
       const downloadId = await chrome.downloads.download({
         url: pageUrl,
-        filename: filename || undefined,
+        filename: resolvedFilename,
       });
-      return { downloadId, url: pageUrl, filename };
+      return {
+        downloadId,
+        url: pageUrl,
+        filename: resolvedFilename,
+        directory: sanitizeDownloadDirectory(directory),
+      };
     }
+
+    const resolvedFilename = buildDownloadFilename(url, directory, filename);
 
     const downloadId = await chrome.downloads.download({
       url,
-      filename: filename || undefined,
+      filename: resolvedFilename,
     });
-    return { downloadId, url, filename };
+    return {
+      downloadId,
+      url,
+      filename: resolvedFilename,
+      directory: sanitizeDownloadDirectory(directory),
+    };
   },
 
   // === ULTRA: Clipboard read/write/paste ===

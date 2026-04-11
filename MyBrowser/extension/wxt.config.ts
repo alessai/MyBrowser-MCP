@@ -17,7 +17,6 @@ export default defineConfig({
       'downloads',
       'clipboardRead',
       'clipboardWrite',
-      'management',
     ],
     host_permissions: ['<all_urls>'],
     commands: {

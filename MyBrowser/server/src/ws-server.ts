@@ -56,6 +56,7 @@ export interface WsServerResult {
 const CLIENT_TIMEOUT_MS = 30_000;      // MCP clients: 30s inactivity → disconnect
 const BROWSER_TIMEOUT_MS = 120_000;    // Browser extensions: 120s (8 missed heartbeats)
 const LIVENESS_SWEEP_INTERVAL_MS = 60_000; // Hub pings all connections every 60s
+const SESSION_RECONNECT_GRACE_MS = 15_000;
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
 
 /** Send without throwing if the socket is gone or buffer full. */
@@ -356,6 +357,39 @@ function startServer(options: WsServerOptions): WsServerResult {
   const connectionSessions = new Map<WebSocket, string>();
   // Track browserId per extension WS for cleanup
   const connectionBrowsers = new Map<WebSocket, string>();
+  const pendingSessionCleanup = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function cancelSessionCleanup(sessionId: string): void {
+    const timer = pendingSessionCleanup.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingSessionCleanup.delete(sessionId);
+  }
+
+  function isSessionStillConnected(sessionId: string): boolean {
+    for (const connectedSessionId of connectionSessions.values()) {
+      if (connectedSessionId === sessionId) return true;
+    }
+    return false;
+  }
+
+  function scheduleSessionCleanup(
+    sessionId: string,
+    delayMs = SESSION_RECONNECT_GRACE_MS,
+  ): void {
+    cancelSessionCleanup(sessionId);
+    pendingSessionCleanup.set(
+      sessionId,
+      setTimeout(() => {
+        pendingSessionCleanup.delete(sessionId);
+        if (isSessionStillConnected(sessionId)) return;
+        clientBrowserTarget.delete(sessionId);
+        cleanupSession(sessionId)
+          .then(() => console.error(`[MyBrowser MCP] Client session "${sessionId}" cleaned up`))
+          .catch((err) => console.error("Session cleanup failed:", err));
+      }, delayMs),
+    );
+  }
 
   // Wire up a raw-WS broadcaster the state manager can call during
   // session cleanup to drop extension-side handler mirrors. This
@@ -411,7 +445,7 @@ function startServer(options: WsServerOptions): WsServerResult {
     for (const [ws, sessionId] of connectionSessions) {
       if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
         connectionSessions.delete(ws);
-        clientBrowserTarget.delete(sessionId);
+        scheduleSessionCleanup(sessionId);
       }
     }
     for (const [ws, browserId] of connectionBrowsers) {
@@ -510,13 +544,10 @@ function startServer(options: WsServerOptions): WsServerResult {
         // Track session registration for cleanup
         if (msg.method === "registerSession" && msg.params?.sessionId) {
           const newSessionId = msg.params.sessionId as string;
+          cancelSessionCleanup(newSessionId);
           const prev = connectionSessions.get(ws);
           if (prev && prev !== newSessionId) {
-            // Cleanup is chained but each step is wrapped so a single
-            // failure doesn't block the rest.
-            cleanupSession(prev).catch((err) =>
-              console.error("Failed to clean up previous session:", err),
-            );
+            scheduleSessionCleanup(prev, 0);
           }
           connectionSessions.set(ws, newSessionId);
         }
@@ -775,10 +806,10 @@ function startServer(options: WsServerOptions): WsServerResult {
       const closedSessionId = connectionSessions.get(ws);
       if (closedSessionId) {
         connectionSessions.delete(ws);
-        clientBrowserTarget.delete(closedSessionId);
-        cleanupSession(closedSessionId)
-          .then(() => console.error(`[MyBrowser MCP] Client session "${closedSessionId}" cleaned up`))
-          .catch((err) => console.error("Session cleanup failed:", err));
+        scheduleSessionCleanup(closedSessionId);
+        console.error(
+          `[MyBrowser MCP] Client session "${closedSessionId}" disconnected — waiting ${SESSION_RECONNECT_GRACE_MS / 1000}s for reconnect before cleanup`,
+        );
       }
 
       // Clean up browser extension
@@ -805,6 +836,10 @@ function startServer(options: WsServerOptions): WsServerResult {
   return {
     close: () => {
       clearInterval(livenessSweep);
+      for (const timer of pendingSessionCleanup.values()) {
+        clearTimeout(timer);
+      }
+      pendingSessionCleanup.clear();
       wss.close();
     },
     stateManager,

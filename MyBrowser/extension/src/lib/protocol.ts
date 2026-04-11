@@ -50,8 +50,6 @@ export interface WsStatusRequest {
 
 export interface WsStatusResponse {
   state: 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'CONNECTED';
-  serverAddress?: string;
-  latencyMs?: number;
 }
 
 export interface WsReconnectMessage {

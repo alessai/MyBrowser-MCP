@@ -16,7 +16,7 @@ const ConsoleLogsArgs = TabIdParam;
 export const screenshot: Tool = {
   schema: {
     name: "browser_screenshot",
-    description: "Take a screenshot of the current page. By default, annotates interactive elements with numbered markers. Use the marker numbers with browser_click({mark: N}) to interact. NOTE: If this fails with 'Cannot access chrome-extension://' error, LastPass extension is the known culprit — disable it in chrome://extensions and open a new tab.",
+    description: "Take a screenshot of the current page. By default, annotates interactive elements with numbered markers. Use the marker numbers with browser_click({mark: N}) to interact. If this fails with a chrome-extension access error, close DevTools and retry with conflicting extensions disabled.",
     inputSchema: zodToJsonSchema(ScreenshotArgs),
   },
   handle: async (context, params) => {
@@ -24,24 +24,27 @@ export const screenshot: Tool = {
     const payload = tabId !== undefined ? { tabId, annotate } : { annotate };
 
     if (annotate) {
-      // Generate marks, take screenshot with overlay, get label map
-      const labelMap = await context.sendSocketMessage("generateMarks", payload);
-      const data = await context.sendSocketMessage("browser_screenshot", payload);
-      // Clear marks overlay after screenshot
-      await context.sendSocketMessage("clearMarks", payload).catch(() => {});
-      return {
-        content: [
-          {
-            type: "image" as const,
-            data,
-            mimeType: "image/jpeg",
-          },
-          {
-            type: "text" as const,
-            text: `Interactive elements:\n${labelMap}`,
-          },
-        ],
-      };
+      let labelMap = "";
+      try {
+        // Generate marks, take screenshot with overlay, get label map
+        labelMap = await context.sendSocketMessage("generateMarks", payload);
+        const data = await context.sendSocketMessage("browser_screenshot", payload);
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data,
+              mimeType: "image/png",
+            },
+            {
+              type: "text" as const,
+              text: `Interactive elements:\n${labelMap}`,
+            },
+          ],
+        };
+      } finally {
+        await context.sendSocketMessage("clearMarks", payload).catch(() => {});
+      }
     }
 
     // Plain screenshot without annotations
@@ -51,7 +54,7 @@ export const screenshot: Tool = {
         {
           type: "image" as const,
           data,
-          mimeType: "image/jpeg",
+          mimeType: "image/png",
         },
       ],
     };

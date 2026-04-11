@@ -5,14 +5,7 @@ import type { WsStatusResponse } from '../../lib/protocol';
 
 type View = 'main' | 'settings';
 
-interface StatusInfo {
-  state: 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'CONNECTED';
-  serverAddress?: string;
-  latencyMs?: number;
-  tabCount?: number;
-  lastToolCall?: string;
-  lastToolCallTime?: number;
-}
+type StatusInfo = WsStatusResponse;
 
 const STATE_LABELS: Record<StatusInfo['state'], string> = {
   CONNECTED: 'Connected',
@@ -27,14 +20,6 @@ const STATE_COLORS: Record<StatusInfo['state'], string> = {
   AUTHENTICATING: 'var(--color-yellow)',
   DISCONNECTED: 'var(--color-red)',
 };
-
-function timeAgo(ts: number): string {
-  const diff = Math.floor((Date.now() - ts) / 1000);
-  if (diff < 5) return 'just now';
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  return `${Math.floor(diff / 3600)}h ago`;
-}
 
 interface AnnotationInfo {
   hotkey: string | null;
@@ -60,14 +45,9 @@ export default function App() {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await sendToBackground<WsStatusResponse>('ws_status');
-      setStatus((prev) => ({
-        ...prev,
-        state: res.state,
-        serverAddress: res.serverAddress,
-        latencyMs: res.latencyMs,
-      }));
+      setStatus({ state: res.state });
     } catch {
-      setStatus((prev) => ({ ...prev, state: 'DISCONNECTED' }));
+      setStatus({ state: 'DISCONNECTED' });
     }
   }, []);
 
@@ -148,11 +128,7 @@ export default function App() {
     setTestResult('Testing...');
     try {
       const res = await sendToBackground<WsStatusResponse>('ws_status');
-      setTestResult(
-        res.state === 'CONNECTED'
-          ? `Connected (${res.latencyMs ?? '?'}ms)`
-          : `State: ${STATE_LABELS[res.state]}`,
-      );
+      setTestResult(`State: ${STATE_LABELS[res.state]}`);
     } catch (e) {
       setTestResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -257,31 +233,29 @@ export default function App() {
           <div className="info-item">
             <span className="info-label">Server</span>
             <span className="info-value">
-              {status.serverAddress || settings.serverAddress || '—'}
+              {settings.serverAddress || '—'}
               {settings.serverPort ? `:${settings.serverPort}` : ''}
             </span>
           </div>
 
           <div className="info-item">
-            <span className="info-label">Latency</span>
+            <span className="info-label">Browser</span>
             <span className="info-value">
-              {status.latencyMs != null ? `${status.latencyMs}ms` : '—'}
+              {settings.browserName || '—'}
             </span>
           </div>
 
           <div className="info-item">
-            <span className="info-label">Tabs</span>
+            <span className="info-label">Port</span>
             <span className="info-value">
-              {status.tabCount != null ? status.tabCount : '—'}
+              {settings.serverPort || '—'}
             </span>
           </div>
 
           <div className="info-item">
-            <span className="info-label">Last Tool</span>
+            <span className="info-label">Auth Token</span>
             <span className="info-value">
-              {status.lastToolCall
-                ? `${status.lastToolCall} (${timeAgo(status.lastToolCallTime!)})`
-                : '—'}
+              {settings.authToken ? 'Configured' : 'Missing'}
             </span>
           </div>
         </div>

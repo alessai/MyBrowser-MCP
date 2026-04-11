@@ -230,7 +230,7 @@ export function createEventsTools(
               type: "text",
               text: `Handler stored but not yet pushed to the browser: ${
                 e instanceof Error ? e.message : String(e)
-              }. Will retry on reconnect.`,
+              }. Re-run browser_on after the browser reconnects.`,
             },
           ],
         };

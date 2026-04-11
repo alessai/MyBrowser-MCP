@@ -6,13 +6,13 @@ const DownloadArgs = z.object({
   tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
   url: z.string().optional().describe("URL to download. If omitted, downloads the current page."),
   filename: z.string().optional().describe("Save as filename (e.g. 'photo.jpg'). If omitted, uses the URL filename."),
-  directory: z.string().optional().describe("Download directory path. If omitted, uses Chrome's default download location."),
+  directory: z.string().optional().describe("Subdirectory under the browser's default downloads folder. If omitted, saves to the default location."),
 });
 
 export const download: Tool = {
   schema: {
     name: "browser_download",
-    description: "Download a file from a URL to the local filesystem. Uses Chrome's built-in download manager. Useful for saving images, videos, documents from web pages.",
+    description: "Download a file from a URL using the browser's built-in download manager. Optionally save it into a subdirectory under the default downloads folder.",
     inputSchema: zodToJsonSchema(DownloadArgs),
   },
   handle: async (context, params) => {

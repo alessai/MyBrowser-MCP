@@ -983,8 +983,13 @@ function registerHandlers(): (() => void)[] {
   cleanups.push(
     addMessageHandler('cs_eval', async (payload: unknown) => {
       const { code } = payload as { code: string };
-      // eslint-disable-next-line no-eval
-      return eval(code);
+      const evaluator = Reflect.get(globalThis, 'eval') as
+        | ((source: string) => unknown)
+        | undefined;
+      if (typeof evaluator !== 'function') {
+        throw new Error('Global eval is unavailable in this context');
+      }
+      return evaluator(code);
     }),
   );
 

@@ -25,7 +25,7 @@ export const waitFor: Tool = {
   schema: {
     name: "browser_wait_for",
     description:
-      "Wait for a condition to be met on the page. Polls at intervals until the condition is true or timeout is reached. Conditions: url_contains, url_matches, element_visible, element_not_visible, text_visible, text_not_visible, network_idle.",
+      "Wait for a condition to be met on the page. Polls at intervals until the condition is true or timeout is reached. Conditions: url_contains, url_matches, element_visible, element_not_visible, text_visible, text_not_visible, network_idle (no pending network requests for a quiet window).",
     inputSchema: zodToJsonSchema(WaitForArgs),
   },
   handle: async (context, params) => {
