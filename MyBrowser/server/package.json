@@ -3,10 +3,22 @@
   "version": "1.0.0",
   "description": "MCP server for MyBrowser - remote browser automation over Tailscale",
   "type": "module",
+  "homepage": "https://github.com/alessai/MyBrowser-MCP",
+  "bugs": {
+    "url": "https://github.com/alessai/MyBrowser-MCP/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alessai/MyBrowser-MCP.git"
+  },
   "bin": {
     "mybrowser-mcp": "dist/index.js"
   },
   "files": ["dist"],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts && chmod +x dist/*.js",
     "dev": "tsup src/index.ts --format esm --watch",
