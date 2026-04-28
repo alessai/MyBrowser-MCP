@@ -9,8 +9,8 @@ export interface Config {
   port: number;
 }
 
-const CONFIG_DIR = join(homedir(), ".mybrowser");
-const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+export const CONFIG_DIR = join(homedir(), ".mybrowser");
+export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 export function generateToken(): string {
   return randomBytes(32).toString("hex");

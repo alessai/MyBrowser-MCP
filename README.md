@@ -76,6 +76,7 @@ MyBrowser is built for practical workflows where an agent needs to:
 3. Inspect localStorage, sessionStorage, and cookies
 4. Capture network traffic and performance metrics
 5. Wait for real page conditions including network idle
+6. Collect redacted diagnostics and support bundles when something fails
 
 ### Handle Real Workflows
 
@@ -146,7 +147,7 @@ Download the Chrome extension zip from the latest release:
 Look for a file named like:
 
 ```text
-mybrowser-extension-1.0.0-chrome.zip
+mybrowser-extension-1.1.0-chrome.zip
 ```
 
 #### 4. Load the extension in Chrome
@@ -202,6 +203,26 @@ This is why you need both the npm package and the extension zip.
 2. The extension connects only to the server address you configure
 3. The server and extension share an auth token from `~/.mybrowser/config.json`
 4. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
+
+## Diagnostics and Support
+
+MyBrowser keeps local server logs and exposes support tools for debugging setup or runtime issues.
+
+Server logs are written to:
+
+```text
+~/.mybrowser/logs/mybrowser-mcp.log
+~/.mybrowser/logs/mybrowser-mcp-errors.log
+```
+
+Useful MCP tools:
+
+1. `browser_diagnostics` - returns redacted server, browser, session, extension, and recent failure information
+2. `browser_support_bundle` - writes a redacted JSON support bundle under `~/.mybrowser/support-bundles/`
+3. `browser_get_console_logs` - returns browser page console logs
+4. `browser_network` - captures and inspects network requests
+
+The Chrome extension popup also has a **Copy diagnostics** button for quickly sharing extension-side status.
 
 ## Repo Layout
 

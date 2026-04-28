@@ -41,6 +41,7 @@ export default function App() {
   const [testResult, setTestResult] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [annotation, setAnnotation] = useState<AnnotationInfo | null>(null);
+  const [diagnosticsResult, setDiagnosticsResult] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -134,6 +135,18 @@ export default function App() {
     }
   };
 
+  const handleCopyDiagnostics = async () => {
+    setDiagnosticsResult('Collecting diagnostics...');
+    try {
+      const diagnostics = await sendToBackground<Record<string, unknown>>('get_diagnostics');
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      setDiagnosticsResult('Diagnostics copied');
+      setTimeout(() => setDiagnosticsResult(null), 2500);
+    } catch (e) {
+      setDiagnosticsResult(`Diagnostics failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   if (view === 'settings') {
     return (
       <div className="popup">
@@ -217,7 +230,7 @@ export default function App() {
     <div className="popup">
       <header>
         <h1>MyBrowser</h1>
-        <span className="version">v1.0.0</span>
+        <span className="version">v1.1.0</span>
       </header>
 
       <div className="status-section">
@@ -331,9 +344,19 @@ export default function App() {
       </section>
 
       <footer>
-        <button className="btn btn-primary" onClick={() => setView('settings')}>
-          Settings
-        </button>
+        <div className="footer-actions">
+          <button className="btn btn-secondary" onClick={handleCopyDiagnostics}>
+            Copy diagnostics
+          </button>
+          <button className="btn btn-primary" onClick={() => setView('settings')}>
+            Settings
+          </button>
+        </div>
+        {diagnosticsResult && (
+          <div className={`diagnostics-result ${diagnosticsResult.includes('failed') ? 'error' : ''}`}>
+            {diagnosticsResult}
+          </div>
+        )}
       </footer>
     </div>
   );

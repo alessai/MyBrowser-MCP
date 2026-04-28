@@ -5,6 +5,9 @@ import { program } from "commander";
 import { loadOrCreateConfig } from "./auth.js";
 import { createServerWithTools } from "./server.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { initializePersistentLogging } from "./logger.js";
+
+initializePersistentLogging();
 
 function setupExitWatchdog(server: Server) {
   process.stdin.on("close", async () => {
@@ -22,7 +25,7 @@ function setupExitWatchdog(server: Server) {
 
 program
   .name("mybrowser-mcp")
-  .version("1.0.0")
+  .version("1.1.0")
   .option("--host <host>", "Host to bind WebSocket server to")
   .option("--port <port>", "Port for WebSocket server", parseInt)
   .option("--token <token>", "Shared secret for authentication")
@@ -36,7 +39,7 @@ program
     });
 
     console.error(`[MyBrowser MCP] WebSocket server: ws://${config.host}:${config.port}`);
-    console.error(`[MyBrowser MCP] Auth token: ${config.token}`);
+    console.error(`[MyBrowser MCP] Auth token: [redacted] (see ~/.mybrowser/config.json)`);
     if (opts.session) {
       console.error(`[MyBrowser MCP] Session name: ${opts.session}`);
     }

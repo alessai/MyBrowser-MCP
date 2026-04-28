@@ -45,6 +45,7 @@ import {
   type Recording,
 } from './recorder';
 import { replayRecording, type ReplayOptions } from './replayer';
+import { getExtensionDiagnostics } from './diagnostics';
 
 const STABLE_DOM_TIMEOUT_MS = 2000;
 const STABLE_DOM_MIN_MS = 500;
@@ -444,6 +445,51 @@ const handlers: Record<string, ToolHandler> = {
 
   async browser_get_console_logs() {
     return getConsoleLogs();
+  },
+
+  async browser_diagnostics(_args, ctx) {
+    let activeTab: Record<string, unknown> | null = null;
+    if (ctx.getTabId() > 0) {
+      try {
+        const tab = await chrome.tabs.get(ctx.getTabId());
+        activeTab = {
+          id: tab.id,
+          title: tab.title,
+          url: tab.url,
+          status: tab.status,
+          windowId: tab.windowId,
+        };
+      } catch (error) {
+        activeTab = { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    let tabCount: number | null = null;
+    try {
+      tabCount = (await chrome.tabs.query({})).length;
+    } catch {
+      tabCount = null;
+    }
+
+    const consoleErrors = getConsoleLogs()
+      .filter((entry) => entry.type === 'error' || entry.type === 'exception')
+      .slice(-20);
+
+    return getExtensionDiagnostics({
+      runtime: {
+        currentTabId: ctx.getTabId(),
+        activeTab,
+        tabCount,
+        attachedTabs: getAttachedTabs(),
+      },
+      handlers: listHandlers(),
+      recording: { active: isRecording() },
+      debugger: {
+        networkCaptureActive: isNetworkCaptureActive(),
+        consoleErrors,
+        recentNetworkEntries: getNetworkLog().slice(-20),
+      },
+    });
   },
 
   // === ULTRA: SoM (Set-of-Marks) ===
@@ -1274,7 +1320,7 @@ export async function handleTool(
   const handler = handlers[name];
   if (!handler) throw new Error(`Unknown tool: ${name}`);
 
-  const NO_TAB_TOOLS = ['list_tabs', 'browser_get_console_logs', 'browser_wait', 'browser_record_list', 'browser_record_start', 'browser_record_stop'];
+  const NO_TAB_TOOLS = ['list_tabs', 'browser_get_console_logs', 'browser_diagnostics', 'browser_wait', 'browser_record_list', 'browser_record_start', 'browser_record_stop'];
   if (!NO_TAB_TOOLS.includes(name)) {
     const requestedTab = args.tabId as number | undefined;
     if (requestedTab !== undefined) {

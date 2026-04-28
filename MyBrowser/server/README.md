@@ -23,8 +23,9 @@ If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybr
 1. Browser control: tabs, navigation, clicks, typing, forms, hover, drag and drop, and keyboard input
 2. Inspection: screenshots with interactive markers, ARIA snapshots, element search, and structured extraction
 3. Debugging: console logs, page eval, storage inspection, network capture, and performance metrics
-4. Workflow tools: uploads, downloads, clipboard support, waits, recording, replay, and saved site knowledge
-5. Coordination: shared state, tab ownership, session management, locks, and event handlers
+4. Diagnostics: persistent server logs, redacted diagnostics, support bundles, and extension-side copy diagnostics
+5. Workflow tools: uploads, downloads, clipboard support, waits, recording, replay, and saved site knowledge
+6. Coordination: shared state, tab ownership, session management, locks, and event handlers
 
 ## Install
 
@@ -73,6 +74,22 @@ Then:
   }
 }
 ```
+
+## Diagnostics
+
+Server logs are written to:
+
+```text
+~/.mybrowser/logs/mybrowser-mcp.log
+~/.mybrowser/logs/mybrowser-mcp-errors.log
+```
+
+Useful support tools:
+
+1. `browser_diagnostics` - returns redacted server, browser, session, extension, and recent failure information
+2. `browser_support_bundle` - writes a redacted support bundle under `~/.mybrowser/support-bundles/`
+3. `browser_get_console_logs` - returns browser page console logs
+4. `browser_network` - captures and inspects network requests
 
 If you already installed the package globally, the equivalent Claude Code command is:
 

@@ -1,6 +1,6 @@
 {
   "name": "@alessai/mybrowser-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for MyBrowser - remote browser automation over Tailscale",
   "type": "module",
   "homepage": "https://github.com/alessai/MyBrowser-MCP",

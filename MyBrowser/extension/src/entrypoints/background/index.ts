@@ -28,6 +28,7 @@ import {
   listHandlers,
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
+import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
 import type { ToolRequest, ToolResponse, WsStatusResponse } from '../../lib/protocol';
 
 export default defineBackground(() => {
@@ -185,6 +186,7 @@ export default defineBackground(() => {
     try {
       request = JSON.parse(raw);
     } catch {
+      recordExtensionIssue('ws_message', 'Failed to parse WS message', { raw }, 'warn');
       console.warn('Failed to parse WS message:', raw);
       return;
     }
@@ -242,6 +244,11 @@ export default defineBackground(() => {
         payload: { requestId: request.id, result },
       };
     } catch (e) {
+      recordExtensionIssue('tool_failure', e instanceof Error ? e.message : String(e), {
+        toolName: request.type,
+        payload: request.payload,
+        stack: e instanceof Error ? e.stack : undefined,
+      });
       response = {
         type: 'messageResponse',
         payload: {
@@ -282,6 +289,7 @@ export default defineBackground(() => {
       }
 
       if (msg.type === '_os_connected') {
+        recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
         setBadge('connected');
         if (currentTabId > 0) {
           enableRuntime(currentTabId).catch(() => {});
@@ -290,6 +298,7 @@ export default defineBackground(() => {
       }
 
       if (msg.type === '_os_disconnected') {
+        recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
         setBadge('disconnected');
         return;
       }
@@ -316,6 +325,7 @@ export default defineBackground(() => {
   });
 
   addMessageHandler('_os_connected', async () => {
+    recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
     setBadge('connected');
     if (currentTabId > 0) {
       try { await enableRuntime(currentTabId); } catch {}
@@ -323,6 +333,7 @@ export default defineBackground(() => {
   });
 
   addMessageHandler('_os_disconnected', async () => {
+    recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
     setBadge('disconnected');
   });
 
@@ -410,6 +421,46 @@ export default defineBackground(() => {
     const resp = await askOffscreen({ type: '_os_ws_status' });
     return resp ?? { state: 'DISCONNECTED' } satisfies WsStatusResponse;
   });
+
+  async function buildPopupDiagnostics(): Promise<Record<string, unknown>> {
+    const [storage, offscreenStatus, tabs] = await Promise.all([
+      getStorageAll().catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+      askOffscreen({ type: '_os_ws_status' }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+      chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[]),
+    ]);
+
+    let currentTab: Record<string, unknown> | null = null;
+    if (currentTabId > 0) {
+      try {
+        const tab = await chrome.tabs.get(currentTabId);
+        currentTab = {
+          id: tab.id,
+          title: tab.title,
+          url: tab.url,
+          status: tab.status,
+          windowId: tab.windowId,
+        };
+      } catch (error) {
+        currentTab = { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    return getExtensionDiagnostics({
+      background: {
+        currentTabId,
+        currentTab,
+        tabCount: Array.isArray(tabs) ? tabs.length : 0,
+        offscreenConnected: !!offscreenPort,
+        offscreenStatus,
+        settings: storage,
+      },
+      badge: {
+        note: 'Badge reflects connection state in the browser UI.',
+      },
+    });
+  }
+
+  addMessageHandler('get_diagnostics', async () => buildPopupDiagnostics());
 
   addMessageHandler('ws_reconnect', async () => {
     setBadge('connecting');
@@ -675,7 +726,8 @@ export default defineBackground(() => {
       });
 
       if (!ack.ok) {
-        console.error('[MyBrowser] saveNote failed:', ack.error);
+          console.error('[MyBrowser] saveNote failed:', ack.error);
+          recordExtensionIssue('annotation', ack.error || 'saveNote failed');
         // Leave the overlay intact; content script will restore the UI.
         return { ok: false, error: ack.error };
       }
@@ -683,6 +735,7 @@ export default defineBackground(() => {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('[MyBrowser] annotation_save error:', msg);
+      recordExtensionIssue('annotation', msg, e);
       // Don't tear down the overlay on error — content script will restore it.
       return { ok: false, error: msg };
     }
@@ -718,11 +771,13 @@ export default defineBackground(() => {
       if (!tab?.id) return;
       if (isUnsupportedAnnotationUrl(tab.url)) {
         console.error('[MyBrowser] annotation: unsupported page', tab.url);
+        recordExtensionIssue('annotation', 'Unsupported page for annotation', { url: tab.url }, 'warn');
         return;
       }
       await sendToTab(tab.id, 'open_annotation_overlay');
     } catch (e) {
       console.error('[MyBrowser] open_annotation command failed:', e);
+      recordExtensionIssue('annotation', 'open_annotation command failed', e);
     }
   });
 
@@ -730,7 +785,10 @@ export default defineBackground(() => {
   // Lifecycle — always-on, survive hours of inactivity
   // =====================================================================
 
-  ensureAlive().catch((e) => console.error('Init failed:', e));
+  ensureAlive().catch((e) => {
+    recordExtensionIssue('lifecycle', 'Init failed', e);
+    console.error('Init failed:', e);
+  });
 
   chrome.runtime.onInstalled.addListener(async () => {
     await ensureAlive();

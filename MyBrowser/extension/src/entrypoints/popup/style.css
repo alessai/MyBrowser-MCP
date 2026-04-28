@@ -231,6 +231,22 @@ footer {
   border-top: 1px solid var(--border);
 }
 
+.footer-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.diagnostics-result {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.diagnostics-result.error {
+  color: var(--color-red);
+}
+
 /* Settings form */
 .settings-form {
   display: flex;

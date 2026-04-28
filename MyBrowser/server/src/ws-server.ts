@@ -5,6 +5,7 @@ import { saveRecordingToFile } from "./tools/record.js";
 import { saveNote, listNotes } from "./notes.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import { HubStateManager } from "./hub-client.js";
+import { recordIssue } from "./logger.js";
 import net from "node:net";
 
 // Hard cap on incoming WS frames: notes can carry a base64 PNG, but nothing
@@ -430,6 +431,11 @@ function startServer(options: WsServerOptions): WsServerResult {
     for (const client of wss.clients) {
       if (awaitingPong.has(client)) {
         // Didn't respond to last ping — dead connection
+        recordIssue({
+          level: "warn",
+          area: "connection",
+          message: "Dead WebSocket connection detected with no pong; closing",
+        });
         console.error(`[MyBrowser MCP] Dead connection detected (no pong) — closing`);
         client.terminate();
         awaitingPong.delete(client);
@@ -504,6 +510,12 @@ function startServer(options: WsServerOptions): WsServerResult {
             resetActivityTimer(); // Reset with new timeout
             connectionBrowsers.set(ws, browserId);
             ws.send(JSON.stringify({ type: "auth", status: "ok", browserId }));
+            recordIssue({
+              level: "info",
+              area: "extension_connect",
+              message: `Browser "${msg.browserName || browserId}" connected as ${browserId}`,
+              browserId,
+            });
             console.error(`[MyBrowser MCP] Browser "${msg.browserName || browserId}" connected as ${browserId}`);
           } else {
             isExtension = false;
@@ -598,8 +610,8 @@ function startServer(options: WsServerOptions): WsServerResult {
         // Look up the handler state BEFORE pushing. Silent drop on
         // mismatch so probing for other sessions' queues yields
         // nothing observable to the sender.
-        stateManager
-          .hasMatchingEventHandler(
+          stateManager
+            .hasMatchingEventHandler(
             p.sessionId,
             browserId,
             p.event,
@@ -607,6 +619,13 @@ function startServer(options: WsServerOptions): WsServerResult {
           )
           .then((hasMatch) => {
             if (!hasMatch) {
+              recordIssue({
+                level: "warn",
+                area: "event_handler",
+                message: `Dropped eventEmitted with no matching handler for session=${p.sessionId} browser=${browserId} event=${p.event} queue=${p.queueName}`,
+                sessionId: p.sessionId,
+                browserId,
+              });
               console.error(
                 `[MyBrowser MCP] dropped eventEmitted: no matching handler for session=${p.sessionId} browser=${browserId} event=${p.event} queue=${p.queueName}`,
               );
@@ -643,6 +662,12 @@ function startServer(options: WsServerOptions): WsServerResult {
             archived,
           });
         } catch (e) {
+          recordIssue({
+            level: "error",
+            area: "notes",
+            message: "queryNotesCount failed",
+            details: e,
+          });
           console.error("[MyBrowser MCP] queryNotesCount failed:", e);
           safeSend(ws, {
             type: "queryNotesCountResult",
@@ -676,6 +701,12 @@ function startServer(options: WsServerOptions): WsServerResult {
           );
         } catch (e) {
           const errMsg = e instanceof Error ? e.message : String(e);
+          recordIssue({
+            level: "error",
+            area: "notes",
+            message: `Failed to save note: ${errMsg}`,
+            details: e,
+          });
           console.error("[MyBrowser MCP] Failed to save note:", errMsg);
           if (msg.id) {
             // Don't leak internal error details to the client
@@ -732,6 +763,14 @@ function startServer(options: WsServerOptions): WsServerResult {
 
         const browser = context.getBrowser(resolvedBrowserId);
         if (!browser || browser.ws.readyState !== WebSocket.OPEN) {
+          recordIssue({
+            level: "warn",
+            area: "proxy",
+            message: `Browser "${resolvedBrowserId}" is disconnected while proxying ${msg.type}`,
+            browserId: resolvedBrowserId,
+            toolName: typeof msg.type === "string" ? msg.type : undefined,
+            sessionId: clientSessionId,
+          });
           try {
             ws.send(JSON.stringify({
               type: MESSAGE_RESPONSE_TYPE,
@@ -773,6 +812,14 @@ function startServer(options: WsServerOptions): WsServerResult {
 
         const closeHandler = () => {
           cleanup();
+          recordIssue({
+            level: "warn",
+            area: "proxy",
+            message: `Browser disconnected during proxied request ${msg.type}`,
+            browserId: resolvedBrowserId,
+            toolName: typeof msg.type === "string" ? msg.type : undefined,
+            sessionId: clientSessionId,
+          });
           safeSendToClient(JSON.stringify({
             type: MESSAGE_RESPONSE_TYPE,
             payload: { requestId: msg.id, error: "Browser disconnected during request" },
@@ -786,6 +833,14 @@ function startServer(options: WsServerOptions): WsServerResult {
         // 28s timeout (shorter than client's 30s) so proxy always responds first
         const proxyTimeout = setTimeout(() => {
           cleanup();
+          recordIssue({
+            level: "error",
+            area: "proxy",
+            message: `Browser response timeout for proxied request ${msg.type}`,
+            browserId: resolvedBrowserId,
+            toolName: typeof msg.type === "string" ? msg.type : undefined,
+            sessionId: clientSessionId,
+          });
           safeSendToClient(JSON.stringify({
             type: MESSAGE_RESPONSE_TYPE,
             payload: { requestId: msg.id, error: "Browser response timeout" },
@@ -824,12 +879,23 @@ function startServer(options: WsServerOptions): WsServerResult {
           .catch((err) =>
             console.error("Failed to clear event handlers:", err),
           );
+        recordIssue({
+          level: "warn",
+          area: "extension_disconnect",
+          message: `Browser "${closedBrowserId}" disconnected`,
+          browserId: closedBrowserId,
+        });
         console.error(`[MyBrowser MCP] Browser "${closedBrowserId}" disconnected`);
       }
     });
 
     ws.on("error", () => {
       clearTimeout(activityTimer);
+      recordIssue({
+        level: "error",
+        area: "connection",
+        message: "WebSocket error on hub connection",
+      });
     });
   });
 

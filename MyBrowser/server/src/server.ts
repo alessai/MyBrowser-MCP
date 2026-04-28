@@ -7,6 +7,7 @@ import { Context } from "./context.js";
 import { createWebSocketServer } from "./ws-server.js";
 import { makeTabKey, type IStateManager } from "./state-manager.js";
 import type { Tool } from "./tools/types.js";
+import { recordIssue } from "./logger.js";
 
 // Navigation tools
 import { navigate, goBack, goForward, wait } from "./tools/navigation.js";
@@ -71,6 +72,9 @@ import { createEventsTools } from "./tools/events.js";
 
 // F3: named mutex (browser_lock / browser_unlock / ...)
 import { createLockTools } from "./tools/locks.js";
+
+// Diagnostics and support bundle tools
+import { createDiagnosticsTools } from "./tools/diagnostics.js";
 
 export interface ServerOptions {
   host: string;
@@ -151,6 +155,19 @@ export async function createServerWithTools(options: ServerOptions) {
   const { notesList, notesGet, notesArchive, notesUnarchive, notesDelete } = createNotesTools(stateManager);
   const { browserOn, browserOff, browserEventsList, browserWaitForEvent } = createEventsTools(stateManager, () => sessionId, getActiveBrowser);
   const { browserLock, browserUnlock, browserLocksList } = createLockTools(stateManager, () => sessionId);
+  const { browserDiagnostics, browserSupportBundle } = createDiagnosticsTools({
+    stateManager,
+    context,
+    getActiveBrowser,
+    serverInfo: {
+      version: "1.1.0",
+      host,
+      port,
+      sessionId,
+      sessionName: options.sessionName,
+      isHub: wss.isHub,
+    },
+  });
 
   const tools: Tool[] = [
     // Navigation (with auto-snapshot)
@@ -187,10 +204,12 @@ export async function createServerWithTools(options: ServerOptions) {
     browserOn, browserOff, browserEventsList, browserWaitForEvent,
     // Named mutexes for multi-agent coordination
     browserLock, browserUnlock, browserLocksList,
+    // Diagnostics and support
+    browserDiagnostics, browserSupportBundle,
   ];
 
   const server = new Server(
-    { name: "MyBrowser MCP", version: "1.0.0" },
+    { name: "MyBrowser MCP", version: "1.1.0" },
     { capabilities: { tools: {} } }
   );
 
@@ -202,6 +221,13 @@ export async function createServerWithTools(options: ServerOptions) {
     const toolName = request.params.name;
     const tool = tools.find((t) => t.schema.name === toolName);
     if (!tool) {
+      recordIssue({
+        level: "warn",
+        area: "tool_not_found",
+        message: `Tool "${toolName}" not found`,
+        toolName,
+        sessionId,
+      });
       return {
         content: [{ type: "text", text: `Tool "${toolName}" not found` }],
         isError: true,
@@ -213,10 +239,17 @@ export async function createServerWithTools(options: ServerOptions) {
     // Ownership check for mutating tools
     if (MUTATING_TOOLS.has(toolName) && await stateManager.shouldEnforceOwnership()) {
       const tabId = extractTabId(request.params.arguments);
-      if (tabId === undefined) {
-        return {
-          content: [{
-            type: "text",
+        if (tabId === undefined) {
+          recordIssue({
+            level: "warn",
+            area: "ownership",
+            message: `${toolName} rejected because tabId is required while ownership is enforced`,
+            toolName,
+            sessionId,
+          });
+          return {
+            content: [{
+              type: "text",
             text: `tabId is required when tab ownership is enforced (multiple sessions active). Use list_tabs to find tab IDs.`,
           }],
           isError: true,
@@ -229,6 +262,14 @@ export async function createServerWithTools(options: ServerOptions) {
         if (!await stateManager.isTabAvailable(tabKey, sessionId)) {
           const owner = await stateManager.getTabOwner(tabKey);
           const ownerName = owner ? (await stateManager.getSessionName(owner) ?? owner) : "unknown";
+          recordIssue({
+            level: "warn",
+            area: "ownership",
+            message: `${toolName} rejected because tab ${tabId} on browser ${browserId} is owned by ${ownerName}`,
+            toolName,
+            sessionId,
+            browserId,
+          });
           return {
             content: [{
               type: "text",
@@ -245,6 +286,17 @@ export async function createServerWithTools(options: ServerOptions) {
     try {
       return await tool.handle(context, request.params.arguments);
     } catch (error) {
+      recordIssue({
+        level: "error",
+        area: "tool_failure",
+        message: error instanceof Error ? error.message : String(error),
+        toolName,
+        sessionId,
+        details: {
+          arguments: request.params.arguments,
+          stack: error instanceof Error ? error.stack : undefined,
+        },
+      });
       return {
         content: [{ type: "text", text: String(error) }],
         isError: true,
