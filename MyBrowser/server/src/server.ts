@@ -160,7 +160,7 @@ export async function createServerWithTools(options: ServerOptions) {
     context,
     getActiveBrowser,
     serverInfo: {
-      version: "1.1.0",
+      version: "1.1.1",
       host,
       port,
       sessionId,
@@ -209,7 +209,7 @@ export async function createServerWithTools(options: ServerOptions) {
   ];
 
   const server = new Server(
-    { name: "MyBrowser MCP", version: "1.1.0" },
+    { name: "MyBrowser MCP", version: "1.1.1" },
     { capabilities: { tools: {} } }
   );
 

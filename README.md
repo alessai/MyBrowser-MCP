@@ -147,7 +147,7 @@ Download the Chrome extension zip from the latest release:
 Look for a file named like:
 
 ```text
-mybrowser-extension-1.1.0-chrome.zip
+mybrowser-extension-1.1.1-chrome.zip
 ```
 
 #### 4. Load the extension in Chrome

@@ -230,7 +230,7 @@ export default function App() {
     <div className="popup">
       <header>
         <h1>MyBrowser</h1>
-        <span className="version">v1.1.0</span>
+        <span className="version">v1.1.1</span>
       </header>
 
       <div className="status-section">

@@ -54,10 +54,12 @@ export interface WsServerResult {
   onReconnect?: (cb: () => Promise<void>) => void;
 }
 
-const CLIENT_TIMEOUT_MS = 30_000;      // MCP clients: 30s inactivity → disconnect
+const CLIENT_TIMEOUT_MS = 45_000;      // MCP clients: 45s inactivity → disconnect
 const BROWSER_TIMEOUT_MS = 120_000;    // Browser extensions: 120s (8 missed heartbeats)
-const LIVENESS_SWEEP_INTERVAL_MS = 60_000; // Hub pings all connections every 60s
+const LIVENESS_SWEEP_INTERVAL_MS = 30_000; // Hub pings all connections every 30s
 const SESSION_RECONNECT_GRACE_MS = 15_000;
+const CLIENT_HEARTBEAT_INTERVAL_MS = 15_000;
+const CLIENT_HEARTBEAT_TIMEOUT_MS = 10_000;
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
 
 /** Send without throwing if the socket is gone or buffer full. */
@@ -480,6 +482,7 @@ function startServer(options: WsServerOptions): WsServerResult {
     // Clear pong tracking on any pong received
     ws.on("pong", () => {
       awaitingPong.delete(ws);
+      resetActivityTimer();
     });
 
     resetActivityTimer();
@@ -923,9 +926,69 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
   const url = `ws://${bindHost}:${port}`;
   let ws: WebSocket | null = null;
   let closed = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatSocket: WebSocket | null = null;
 
   const stateManager = new HubStateManager(() => ws);
   let reconnectCb: (() => Promise<void>) | null = null;
+
+  const clearHeartbeatTimeout = () => {
+    if (heartbeatTimeout) {
+      clearTimeout(heartbeatTimeout);
+      heartbeatTimeout = null;
+    }
+  };
+
+  const stopHeartbeat = (socket?: WebSocket) => {
+    if (socket && heartbeatSocket && heartbeatSocket !== socket) return;
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    clearHeartbeatTimeout();
+    heartbeatSocket = null;
+  };
+
+  const startHeartbeat = (socket: WebSocket) => {
+    stopHeartbeat();
+    heartbeatSocket = socket;
+    heartbeatTimer = setInterval(() => {
+      if (closed || heartbeatSocket !== socket) return;
+      if (socket.readyState !== WebSocket.OPEN) return;
+      if (heartbeatTimeout) {
+        recordIssue({
+          level: "warn",
+          area: "connection",
+          message: "Hub heartbeat response was missed; terminating stale client socket",
+        });
+        console.error("[MyBrowser MCP] Hub heartbeat missed — reconnecting");
+        socket.terminate();
+        return;
+      }
+      try {
+        socket.send(JSON.stringify({ type: "ping" }));
+        heartbeatTimeout = setTimeout(() => {
+          if (closed || heartbeatSocket !== socket) return;
+          recordIssue({
+            level: "warn",
+            area: "connection",
+            message: `Hub heartbeat timed out after ${CLIENT_HEARTBEAT_TIMEOUT_MS}ms`,
+          });
+          console.error("[MyBrowser MCP] Hub heartbeat timeout — reconnecting");
+          socket.terminate();
+        }, CLIENT_HEARTBEAT_TIMEOUT_MS);
+      } catch (e) {
+        recordIssue({
+          level: "warn",
+          area: "connection",
+          message: "Failed to send hub heartbeat; terminating client socket",
+          details: e,
+        });
+        socket.terminate();
+      }
+    }, CLIENT_HEARTBEAT_INTERVAL_MS);
+  };
 
   // Wait for initial connection + auth before returning
   await new Promise<void>((resolve, reject) => {
@@ -948,8 +1011,14 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
       if (msg.type === "auth" && msg.status === "ok") {
         console.error(`[MyBrowser MCP] Connected to hub as client`);
         context.setClientMode(ws as any);
+        startHeartbeat(ws as WebSocket);
         clearTimeout(timeout);
         resolve();
+        return;
+      }
+
+      if (msg.type === "pong") {
+        clearHeartbeatTimeout();
         return;
       }
 
@@ -961,6 +1030,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     });
 
     ws.on("close", () => {
+      stopHeartbeat(ws as WebSocket);
       context.clearClientWs();
       clearTimeout(timeout);
       reject(new Error("Hub connection closed before auth"));
@@ -974,6 +1044,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
 
   // Set up reconnection for subsequent disconnects
   ws!.on("close", () => {
+    stopHeartbeat(ws as WebSocket);
     context.clearClientWs();
     if (!closed) {
       console.error(`[MyBrowser MCP] Hub connection lost — reconnecting in 3s`);
@@ -998,13 +1069,20 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
       if (msg.type === "auth" && msg.status === "ok") {
         console.error(`[MyBrowser MCP] Reconnected to hub as client`);
         context.setClientMode(ws as any);
+        startHeartbeat(ws as WebSocket);
         // Re-register session after reconnect
         if (reconnectCb) reconnectCb().catch((e) => console.error("Reconnect callback failed:", e));
+        return;
+      }
+
+      if (msg.type === "pong") {
+        clearHeartbeatTimeout();
         return;
       }
     });
 
     ws.on("close", () => {
+      stopHeartbeat(ws as WebSocket);
       context.clearClientWs();
       if (!closed) {
         console.error(`[MyBrowser MCP] Hub connection lost — reconnecting in 3s`);
@@ -1020,6 +1098,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
   return {
     close: () => {
       closed = true;
+      stopHeartbeat();
       if (ws) {
         try { ws.close(); } catch { /* ignore */ }
       }
