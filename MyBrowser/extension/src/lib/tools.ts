@@ -443,8 +443,13 @@ const handlers: Record<string, ToolHandler> = {
     return stripDataUrlPrefix(dataUrl);
   },
 
-  async browser_get_console_logs() {
-    return getConsoleLogs();
+  async browser_get_console_logs(args, ctx) {
+    const tabId = typeof args.tabId === 'number'
+      ? args.tabId
+      : ctx.getTabId() > 0
+        ? ctx.getTabId()
+        : undefined;
+    return getConsoleLogs(tabId);
   },
 
   async browser_diagnostics(_args, ctx) {
@@ -471,7 +476,8 @@ const handlers: Record<string, ToolHandler> = {
       tabCount = null;
     }
 
-    const consoleErrors = getConsoleLogs()
+    const diagnosticsTabId = ctx.getTabId() > 0 ? ctx.getTabId() : undefined;
+    const consoleErrors = getConsoleLogs(diagnosticsTabId)
       .filter((entry) => entry.type === 'error' || entry.type === 'exception')
       .slice(-20);
 
@@ -608,7 +614,7 @@ const handlers: Record<string, ToolHandler> = {
 
     // Handle console_no_errors in background (logs are captured at background level)
     if (hasConsoleCheck) {
-      const logs = getConsoleLogs();
+      const logs = getConsoleLogs(tabId);
       const errorLogs = logs.filter((l) => l.type === 'error' || l.type === 'exception');
       const consolePassed = errorLogs.length === 0;
       result.results.push({

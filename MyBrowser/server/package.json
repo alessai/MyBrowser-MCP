@@ -1,6 +1,6 @@
 {
   "name": "@alessai/mybrowser-mcp",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "MCP server for MyBrowser - remote browser automation over Tailscale",
   "type": "module",
   "homepage": "https://github.com/alessai/MyBrowser-MCP",
@@ -14,7 +14,9 @@
   "bin": {
     "mybrowser-mcp": "dist/index.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -25,11 +27,11 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^13.1.0",
-    "ws": "^8.18.1",
+    "ws": "^8.20.0",
     "zod": "^3.24.2",
-    "zod-to-json-schema": "^3.24.3"
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/ws": "^8.18.0",

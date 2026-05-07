@@ -212,9 +212,11 @@ export class Context {
   ): Promise<any> {
     const { timeoutMs } = options;
     const id = generateId();
-    // Include targetBrowserId only when set so existing clients /
-    // servers that don't understand the field still parse cleanly.
-    const message: Record<string, unknown> = { id, type, payload };
+    // Include the timeout in the envelope so a hub-mode proxy can honor
+    // long-running tool calls instead of applying its default short timeout.
+    // Include targetBrowserId only when set so existing clients / servers
+    // that don't understand the field still parse cleanly.
+    const message: Record<string, unknown> = { id, type, payload, timeoutMs };
     if (targetBrowserId !== undefined) {
       message.targetBrowserId = targetBrowserId;
     }

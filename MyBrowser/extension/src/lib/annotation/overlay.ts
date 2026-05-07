@@ -38,7 +38,7 @@ export interface OverlayResult {
   instanceId: string;
 }
 
-export type DrawingTool = "pen" | "arrow" | "rect" | "text";
+export type DrawingTool = "counter" | "pen" | "arrow" | "rect" | "text";
 
 export interface PointXY {
   x: number;
@@ -76,7 +76,14 @@ export interface TextStroke {
   text: string;
 }
 
-export type Stroke = PenStroke | ArrowStroke | RectStroke | TextStroke;
+export interface CounterStroke {
+  tool: "counter";
+  color: string;
+  position: PointXY;
+  number: number;
+}
+
+export type Stroke = PenStroke | ArrowStroke | RectStroke | TextStroke | CounterStroke;
 
 interface OverlayState {
   strokes: Stroke[];
@@ -91,6 +98,12 @@ const Z_INDEX = 2147483647;
 const DEFAULT_COLOR = "#ef4444";
 const STROKE_WIDTH = 3;
 const TEXT_FONT_SIZE = 18;
+const COUNTER_FONT_SIZE = 14;
+const COUNTER_BADGE_RADIUS = 14;
+const TOOLBAR_MAX_WIDTH = 680;
+const BOTTOM_BAR_MAX_WIDTH = 680;
+const CHROME_MARGIN_DESKTOP = 16;
+const CHROME_MARGIN_NARROW = 8;
 
 const COLORS = [
   "#ef4444", // red
@@ -100,6 +113,33 @@ const COLORS = [
   "#a855f7", // purple
   "#111827", // near-black
 ];
+
+function chromeFrameWidth(maxWidth: number, viewportWidth: number): number {
+  const margin = viewportWidth < 700 ? CHROME_MARGIN_NARROW : CHROME_MARGIN_DESKTOP;
+  return Math.max(280, Math.min(maxWidth, viewportWidth - margin * 2));
+}
+
+function topToolbarFrameHeight(viewportWidth: number): number {
+  const frameWidth = chromeFrameWidth(TOOLBAR_MAX_WIDTH, viewportWidth);
+  if (frameWidth < 344) return 152;
+  if (frameWidth < 640) return 118;
+  return 54;
+}
+
+function bottomBarFrameHeight(viewportWidth: number): number {
+  const frameWidth = chromeFrameWidth(BOTTOM_BAR_MAX_WIDTH, viewportWidth);
+  return frameWidth < 520 ? 112 : 58;
+}
+
+function nextCounterNumber(strokes: Stroke[]): number {
+  let max = 0;
+  for (const stroke of strokes) {
+    if (stroke.tool === "counter" && Number.isFinite(stroke.number)) {
+      max = Math.max(max, stroke.number);
+    }
+  }
+  return max + 1;
+}
 
 let activePromise: {
   resolve: (result: OverlayResult | null) => void;
@@ -178,7 +218,7 @@ function mountOverlay(): void {
     strokes: [],
     pending: null,
     color: DEFAULT_COLOR,
-    tool: "pen",
+    tool: "counter",
     note: "",
   };
 
@@ -248,8 +288,8 @@ function mountOverlay(): void {
     position: "fixed",
     top: "16px",
     right: "16px",
-    width: "560px",
-    height: "54px",
+    width: `${chromeFrameWidth(TOOLBAR_MAX_WIDTH, vw)}px`,
+    height: `${topToolbarFrameHeight(vw)}px`,
     border: "none",
     background: "transparent",
     zIndex: String(Z_INDEX + 1),
@@ -264,13 +304,37 @@ function mountOverlay(): void {
     left: "50%",
     bottom: "24px",
     transform: "translateX(-50%)",
-    width: "640px",
-    height: "58px",
+    width: `${chromeFrameWidth(BOTTOM_BAR_MAX_WIDTH, vw)}px`,
+    height: `${bottomBarFrameHeight(vw)}px`,
     border: "none",
     background: "transparent",
     zIndex: String(Z_INDEX + 1),
     pointerEvents: "auto",
   } as CSSStyleDeclaration);
+
+  function layoutChromeFrames(): void {
+    const narrow = vw < 700;
+    const margin = narrow ? CHROME_MARGIN_NARROW : CHROME_MARGIN_DESKTOP;
+    const topWidth = chromeFrameWidth(TOOLBAR_MAX_WIDTH, vw);
+    const bottomWidth = chromeFrameWidth(BOTTOM_BAR_MAX_WIDTH, vw);
+
+    Object.assign(topIframe.style, {
+      top: `${narrow ? margin : CHROME_MARGIN_DESKTOP}px`,
+      right: narrow ? "" : `${CHROME_MARGIN_DESKTOP}px`,
+      left: narrow ? "50%" : "",
+      transform: narrow ? "translateX(-50%)" : "",
+      width: `${topWidth}px`,
+      height: `${topToolbarFrameHeight(vw)}px`,
+    } as CSSStyleDeclaration);
+
+    Object.assign(bottomIframe.style, {
+      bottom: `${narrow ? margin : 24}px`,
+      width: `${bottomWidth}px`,
+      height: `${bottomBarFrameHeight(vw)}px`,
+    } as CSSStyleDeclaration);
+  }
+
+  layoutChromeFrames();
 
   root.appendChild(canvas);
   root.appendChild(topIframe);
@@ -415,6 +479,18 @@ function mountOverlay(): void {
       return;
     }
 
+    if (state.tool === "counter") {
+      state.strokes.push({
+        tool: "counter",
+        color: state.color,
+        position: pt,
+        number: nextCounterNumber(state.strokes),
+      });
+      scheduleDraftSave();
+      redraw();
+      return;
+    }
+
     canvas.setPointerCapture(e.pointerId);
 
     if (state.tool === "pen") {
@@ -498,6 +574,7 @@ function mountOverlay(): void {
     canvas.height = vh * dpr;
     canvas.style.width = `${vw}px`;
     canvas.style.height = `${vh}px`;
+    layoutChromeFrames();
     if (ctx) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.scale(dpr, dpr);
@@ -568,7 +645,7 @@ function mountOverlay(): void {
 
       case "mybrowser_annotation_tool": {
         const tool = data.payload as DrawingTool;
-        if (tool === "pen" || tool === "arrow" || tool === "rect" || tool === "text") {
+        if (tool === "counter" || tool === "pen" || tool === "arrow" || tool === "rect" || tool === "text") {
           // Abandon any in-progress stroke from the old tool so the new
           // tool doesn't inherit a half-drawn shape.
           if (state.pending) {
@@ -662,6 +739,7 @@ function mountOverlay(): void {
       e.stopPropagation();
       dismissTextInput(true);
       state.strokes.pop();
+      scheduleDraftSave();
       redraw();
       return;
     }
@@ -894,6 +972,10 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
     ctx.strokeRect(x, y, w, h);
     return;
   }
+  if (stroke.tool === "counter") {
+    drawCounterBadge(ctx, stroke);
+    return;
+  }
   if (stroke.tool === "text") {
     ctx.font = `600 ${stroke.fontSize}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
     ctx.fillStyle = stroke.color;
@@ -911,6 +993,63 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
     ctx.fillText(stroke.text, stroke.position.x, stroke.position.y);
     return;
   }
+}
+
+function counterBadgeRadius(number: number): number {
+  const digits = String(Math.max(0, Math.floor(number))).length;
+  return Math.max(COUNTER_BADGE_RADIUS, digits * COUNTER_FONT_SIZE * 0.38 + 9);
+}
+
+function drawCounterBadge(
+  ctx: CanvasRenderingContext2D,
+  stroke: CounterStroke,
+): void {
+  const label = String(stroke.number);
+  const radius = counterBadgeRadius(stroke.number);
+  const { x, y } = stroke.position;
+
+  ctx.save();
+  ctx.font = `800 ${COUNTER_FONT_SIZE}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,0.35)";
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 2;
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = stroke.color;
+  ctx.fill();
+
+  ctx.shadowColor = "transparent";
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255,255,255,0.92)";
+  ctx.stroke();
+
+  ctx.fillStyle = readableTextColor(stroke.color);
+  ctx.fillText(label, x, y + 0.5);
+  ctx.restore();
+}
+
+function readableTextColor(hexColor: string): string {
+  const rgb = parseHexColor(hexColor);
+  if (!rgb) return "#ffffff";
+  const [r, g, b] = rgb.map((channel) => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  const luminance = 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+  return luminance > 0.48 ? "#111827" : "#ffffff";
+}
+
+function parseHexColor(hexColor: string): [number, number, number] | null {
+  const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hexColor);
+  if (!match) return null;
+  return [
+    Number.parseInt(match[1]!, 16),
+    Number.parseInt(match[2]!, 16),
+    Number.parseInt(match[3]!, 16),
+  ];
 }
 
 function drawArrow(
@@ -1049,6 +1188,12 @@ function computeBoundingBox(
       if (s.position.y < minY) minY = s.position.y;
       if (s.position.x + tw > maxX) maxX = s.position.x + tw;
       if (s.position.y + th > maxY) maxY = s.position.y + th;
+    } else if (s.tool === "counter") {
+      const r = counterBadgeRadius(s.number) + 2;
+      if (s.position.x - r < minX) minX = s.position.x - r;
+      if (s.position.y - r < minY) minY = s.position.y - r;
+      if (s.position.x + r > maxX) maxX = s.position.x + r;
+      if (s.position.y + r > maxY) maxY = s.position.y + r;
     }
   }
   if (!isFinite(minX)) return null;
@@ -1068,20 +1213,25 @@ function buildTopToolbarHtml(
   // The capability token is baked into the iframe at mount; the iframe
   // includes it on every outbound message and verifies it on inbound.
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    html, body { margin: 0; padding: 0; background: transparent; }
+    html, body { margin: 0; padding: 0; background: transparent; width: 100%; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: #fff;
     }
     .bar {
+      box-sizing: border-box;
+      width: 100%;
       display: flex; align-items: center; gap: 8px;
+      flex-wrap: nowrap;
       padding: 8px 12px;
       background: rgba(24, 24, 27, 0.94);
       border-radius: 10px;
       box-shadow: 0 4px 16px rgba(0,0,0,0.4);
       user-select: none;
     }
-    .group { display: flex; gap: 4px; align-items: center; }
+    .group { display: flex; gap: 4px; align-items: center; flex-wrap: nowrap; }
+    #tools { flex: 0 1 auto; }
+    #colors { flex: 0 0 auto; }
     .sep { width: 1px; height: 22px; background: rgba(255,255,255,0.15); margin: 0 4px; }
     button.tool, button.action {
       background: rgba(255,255,255,0.04);
@@ -1093,6 +1243,8 @@ function buildTopToolbarHtml(
       font-weight: 500;
       cursor: pointer;
       font-family: inherit;
+      min-height: 32px;
+      white-space: nowrap;
     }
     button.tool:hover, button.action:hover { background: rgba(255,255,255,0.10); }
     button.tool.active {
@@ -1107,9 +1259,33 @@ function buildTopToolbarHtml(
       padding: 0;
     }
     .swatch.active { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
+    @media (max-width: 639px) {
+      .bar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 8px;
+        border-radius: 12px;
+      }
+      .group { gap: 6px; flex-wrap: wrap; }
+      #tools { flex: 1 1 100%; }
+      #colors { flex: 1 1 auto; }
+      .sep { display: none; }
+      button.tool, button.action {
+        min-height: 34px;
+        padding: 6px 9px;
+        border-radius: 8px;
+      }
+      .swatch { width: 24px; height: 24px; }
+    }
+    @media (max-width: 359px) {
+      button.tool, button.action { font-size: 11px; padding: 6px 8px; }
+      .bar { gap: 5px; }
+    }
   </style></head><body>
     <div class="bar">
       <div class="group" id="tools">
+        <button class="tool" data-tool="counter" title="Place numbered markers">Counter</button>
         <button class="tool" data-tool="pen">Pen</button>
         <button class="tool" data-tool="arrow">Arrow</button>
         <button class="tool" data-tool="rect">Rect</button>
@@ -1195,21 +1371,23 @@ function buildTopToolbarHtml(
 
 function buildBottomBarHtml(token: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    html, body { margin: 0; padding: 0; background: transparent; }
+    html, body { margin: 0; padding: 0; background: transparent; width: 100%; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: #fff;
     }
     .bar {
+      box-sizing: border-box;
+      width: 100%;
       display: flex; align-items: center; gap: 8px;
       padding: 10px 14px;
       background: rgba(24, 24, 27, 0.96);
       border-radius: 12px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-      min-width: 600px;
     }
     input {
       flex: 1;
+      min-width: 0;
       padding: 8px 10px;
       background: rgba(255,255,255,0.06);
       color: #fff;
@@ -1219,6 +1397,7 @@ function buildBottomBarHtml(token: string): string {
       font-family: inherit;
       outline: none;
     }
+    .actions { display: flex; gap: 8px; flex: 0 0 auto; }
     input::placeholder { color: rgba(255,255,255,0.45); }
     input:focus { border-color: rgba(59,130,246,0.6); }
     button {
@@ -1230,15 +1409,41 @@ function buildBottomBarHtml(token: string): string {
       cursor: pointer;
       color: #fff;
       font-family: inherit;
+      min-height: 34px;
     }
     button.cancel { background: #dc2626; }
     button.save   { background: #16a34a; }
     button:hover  { filter: brightness(1.1); }
+    @media (max-width: 519px) {
+      .bar {
+        align-items: stretch;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px;
+      }
+      input {
+        flex: 1 1 100%;
+        min-height: 38px;
+        font-size: 13px;
+      }
+      .actions {
+        flex: 1 1 100%;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      button {
+        width: 100%;
+        min-height: 38px;
+      }
+    }
   </style></head><body>
     <div class="bar">
-      <input id="note" type="text" placeholder="What's wrong? (Cmd+Enter to save, Esc to cancel)" autofocus />
-      <button class="cancel" id="cancel">Cancel</button>
-      <button class="save" id="save">Save</button>
+      <input id="note" type="text" placeholder="Use markers: 1 - fix spacing, 2 - change color..." autofocus />
+      <div class="actions">
+        <button class="cancel" id="cancel">Cancel</button>
+        <button class="save" id="save">Save</button>
+      </div>
     </div>
     <script>
       (function(){

@@ -25,7 +25,7 @@ function setupExitWatchdog(server: Server) {
 
 program
   .name("mybrowser-mcp")
-  .version("1.1.1")
+  .version("1.1.2")
   .option("--host <host>", "Host to bind WebSocket server to")
   .option("--port <port>", "Port for WebSocket server", parseInt)
   .option("--token <token>", "Shared secret for authentication")

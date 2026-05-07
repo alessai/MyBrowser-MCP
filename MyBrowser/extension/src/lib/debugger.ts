@@ -203,14 +203,30 @@ export interface ConsoleEntry {
 }
 
 const MAX_CONSOLE_ENTRIES = 100;
-let consoleLogs: ConsoleEntry[] = [];
+const consoleLogsByTab = new Map<number, ConsoleEntry[]>();
 
-export function getConsoleLogs(): ConsoleEntry[] {
-  return consoleLogs;
+export function getConsoleLogs(tabId?: number): ConsoleEntry[] {
+  if (tabId !== undefined) {
+    return [...(consoleLogsByTab.get(tabId) ?? [])];
+  }
+  return Array.from(consoleLogsByTab.values())
+    .flat()
+    .sort((a, b) => a.timestamp - b.timestamp);
 }
 
-export function clearConsoleLogs(): void {
-  consoleLogs = [];
+export function clearConsoleLogs(tabId?: number): void {
+  if (tabId !== undefined) {
+    consoleLogsByTab.delete(tabId);
+    return;
+  }
+  consoleLogsByTab.clear();
+}
+
+function pushConsoleLog(tabId: number, entry: ConsoleEntry): void {
+  const list = consoleLogsByTab.get(tabId) ?? [];
+  list.push(entry);
+  while (list.length > MAX_CONSOLE_ENTRIES) list.shift();
+  consoleLogsByTab.set(tabId, list);
 }
 
 function formatRemoteObject(obj: { value?: unknown; preview?: unknown; description?: string }): string {
@@ -221,7 +237,7 @@ function formatRemoteObject(obj: { value?: unknown; preview?: unknown; descripti
   return obj.description || JSON.stringify(obj);
 }
 
-export function startConsoleCapture(getActiveTabId: () => number | null): () => void {
+export function startConsoleCapture(_getActiveTabId: () => number | null): () => void {
   // chrome.debugger.onEvent callback signature has the third param as
   // optional `Object | undefined` in the upstream types. Accept that
   // shape and narrow to Record<string, unknown> locally.
@@ -230,8 +246,7 @@ export function startConsoleCapture(getActiveTabId: () => number | null): () => 
     method: string,
     params?: Object,
   ): void => {
-    const activeTabId = getActiveTabId();
-    if (source.tabId !== activeTabId) return;
+    if (source.tabId === undefined) return;
     if (!params) return;
 
     if (method === 'Runtime.consoleAPICalled') {
@@ -241,21 +256,17 @@ export function startConsoleCapture(getActiveTabId: () => number | null): () => 
         args: Array<{ value?: unknown; preview?: unknown; description?: string }>;
       };
       const message = args.map(formatRemoteObject).join(' ');
-      consoleLogs.push({ type, timestamp, message });
+      pushConsoleLog(source.tabId, { type, timestamp, message });
     } else if (method === 'Runtime.exceptionThrown') {
       const { timestamp, exceptionDetails } = params as {
         timestamp: number;
         exceptionDetails: { exception?: { description?: string } };
       };
-      consoleLogs.push({
+      pushConsoleLog(source.tabId, {
         type: 'exception',
         timestamp,
         message: exceptionDetails.exception?.description || JSON.stringify(exceptionDetails),
       });
-    }
-
-    if (consoleLogs.length > MAX_CONSOLE_ENTRIES) {
-      consoleLogs.shift();
     }
   };
 
@@ -383,6 +394,7 @@ export function startNetworkCapture(getActiveTabId: () => number | null): () => 
 export function initDebuggerCleanup(): void {
   chrome.tabs.onRemoved.addListener((tabId) => {
     attachedTabs.delete(tabId);
+    consoleLogsByTab.delete(tabId);
     pendingRequestsByTab.delete(tabId);
     const timer = detachTimers.get(tabId);
     if (timer) {

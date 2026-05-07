@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -28,8 +28,21 @@ let initialized = false;
 let originalConsole: Pick<Console, "error" | "warn" | "info" | "log"> | null = null;
 
 function ensureLogDirectories(): void {
-  mkdirSync(LOG_DIR, { recursive: true });
-  mkdirSync(SUPPORT_BUNDLE_DIR, { recursive: true });
+  mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+  mkdirSync(SUPPORT_BUNDLE_DIR, { recursive: true, mode: 0o700 });
+  safeChmod(MYBROWSER_DIR, 0o700);
+  safeChmod(LOG_DIR, 0o700);
+  safeChmod(SUPPORT_BUNDLE_DIR, 0o700);
+  if (existsSync(LOG_FILE)) safeChmod(LOG_FILE, 0o600);
+  if (existsSync(ERROR_LOG_FILE)) safeChmod(ERROR_LOG_FILE, 0o600);
+}
+
+function safeChmod(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // Logging must never crash the MCP server.
+  }
 }
 
 function safeStringify(value: unknown): string {
@@ -60,9 +73,11 @@ function appendLog(level: LogLevel, message: string): void {
   try {
     ensureLogDirectories();
     const entry = JSON.stringify({ timestamp: new Date().toISOString(), level, message }) + "\n";
-    appendFileSync(LOG_FILE, entry, "utf8");
+    appendFileSync(LOG_FILE, entry, { encoding: "utf8", mode: 0o600 });
+    safeChmod(LOG_FILE, 0o600);
     if (level === "error") {
-      appendFileSync(ERROR_LOG_FILE, entry, "utf8");
+      appendFileSync(ERROR_LOG_FILE, entry, { encoding: "utf8", mode: 0o600 });
+      safeChmod(ERROR_LOG_FILE, 0o600);
     }
   } catch {
     // Logging must never crash the MCP server.
@@ -165,6 +180,10 @@ export function writeSupportBundle(data: unknown): string {
   ensureLogDirectories();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = join(SUPPORT_BUNDLE_DIR, `mybrowser-diagnostics-${stamp}.json`);
-  writeFileSync(path, JSON.stringify(sanitizeForDiagnostics(data), null, 2) + "\n", "utf8");
+  writeFileSync(path, JSON.stringify(sanitizeForDiagnostics(data), null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  safeChmod(path, 0o600);
   return path;
 }

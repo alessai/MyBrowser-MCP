@@ -472,7 +472,7 @@ export default defineBackground(() => {
     const { tabId } = payload as { tabId: number };
     setTabId(tabId);
     try { await enableRuntime(tabId); } catch {}
-    clearConsoleLogs();
+    clearConsoleLogs(tabId);
   });
 
   addMessageHandler('ping', async () => 'pong');

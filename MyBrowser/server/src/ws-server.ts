@@ -60,6 +60,8 @@ const LIVENESS_SWEEP_INTERVAL_MS = 30_000; // Hub pings all connections every 30
 const SESSION_RECONNECT_GRACE_MS = 15_000;
 const CLIENT_HEARTBEAT_INTERVAL_MS = 15_000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 10_000;
+const DEFAULT_PROXY_TIMEOUT_MS = 29_000;
+const MAX_PROXY_TIMEOUT_MS = 10 * 60_000;
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
 
 /** Send without throwing if the socket is gone or buffer full. */
@@ -833,7 +835,24 @@ function startServer(options: WsServerOptions): WsServerResult {
         const clientCloseHandler = () => { cleanup(); };
         ws.once("close", clientCloseHandler);
 
-        // 28s timeout (shorter than client's 30s) so proxy always responds first
+        const requestedTimeoutMs =
+          typeof msg.timeoutMs === "number" && Number.isFinite(msg.timeoutMs)
+            ? msg.timeoutMs
+            : undefined;
+        const proxyTimeoutMs = Math.min(
+          Math.max(
+            requestedTimeoutMs !== undefined
+              ? requestedTimeoutMs - 1_000
+              : DEFAULT_PROXY_TIMEOUT_MS,
+            1_000,
+          ),
+          MAX_PROXY_TIMEOUT_MS,
+        );
+
+        // Timeout slightly before the client-side request timeout so the
+        // hub can return a clear proxy error instead of letting the client
+        // hit its generic WebSocket response timeout. Long-running tools
+        // pass their larger timeout through the message envelope.
         const proxyTimeout = setTimeout(() => {
           cleanup();
           recordIssue({
@@ -848,7 +867,7 @@ function startServer(options: WsServerOptions): WsServerResult {
             type: MESSAGE_RESPONSE_TYPE,
             payload: { requestId: msg.id, error: "Browser response timeout" },
           }));
-        }, 28_000);
+        }, proxyTimeoutMs);
 
         browserWs.on("message", responseHandler);
         browserWs.once("close", closeHandler);

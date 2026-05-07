@@ -9,6 +9,7 @@ import {
   openSync,
   fsyncSync,
   closeSync,
+  chmodSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -65,8 +66,12 @@ const ARCHIVED_DIR = join(NOTES_DIR, "archived");
 let orphanSweepDone = false;
 
 export function ensureNotesDirectories(): void {
-  mkdirSync(PENDING_DIR, { recursive: true });
-  mkdirSync(ARCHIVED_DIR, { recursive: true });
+  mkdirSync(PENDING_DIR, { recursive: true, mode: 0o700 });
+  mkdirSync(ARCHIVED_DIR, { recursive: true, mode: 0o700 });
+  safeChmod(MYBROWSER_DIR, 0o700);
+  safeChmod(NOTES_DIR, 0o700);
+  safeChmod(PENDING_DIR, 0o700);
+  safeChmod(ARCHIVED_DIR, 0o700);
   // Sweep any crash-leftover orphans once per process lifetime. Runs
   // lazily at first fs touch so it doesn't block server startup.
   if (!orphanSweepDone) {
@@ -194,20 +199,32 @@ function fsyncPath(path: string): void {
   }
 }
 
+function safeChmod(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    /* best-effort hardening only */
+  }
+}
+
 function atomicWriteJson(path: string, data: unknown): void {
   const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+  safeChmod(tmp, 0o600);
   fsyncPath(tmp);
   renameSync(tmp, path);
+  safeChmod(path, 0o600);
   // Also fsync the parent dir so the rename is durable.
   fsyncPath(dirname(path));
 }
 
 function atomicWriteBytes(path: string, bytes: Buffer): void {
   const tmp = path + ".tmp";
-  writeFileSync(tmp, bytes);
+  writeFileSync(tmp, bytes, { mode: 0o600 });
+  safeChmod(tmp, 0o600);
   fsyncPath(tmp);
   renameSync(tmp, path);
+  safeChmod(path, 0o600);
   fsyncPath(dirname(path));
 }
 

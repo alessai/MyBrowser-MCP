@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, renameSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Tool } from "./types.js";
@@ -8,7 +8,17 @@ import type { Tool } from "./types.js";
 const RECORDINGS_DIR = join(homedir(), ".mybrowser", "recordings");
 
 function ensureRecordingsDir(): void {
-  mkdirSync(RECORDINGS_DIR, { recursive: true });
+  mkdirSync(RECORDINGS_DIR, { recursive: true, mode: 0o700 });
+  safeChmod(join(homedir(), ".mybrowser"), 0o700);
+  safeChmod(RECORDINGS_DIR, 0o700);
+}
+
+function safeChmod(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // Best-effort hardening only.
+  }
 }
 
 // --- MCP Tools ---
@@ -127,8 +137,12 @@ export function saveRecordingToFile(recording: { name: string; [key: string]: un
   const filePath = join(RECORDINGS_DIR, `${safeName(recording.name)}.json`);
   // Atomic write: write to tmp, then rename
   const tmpPath = filePath + ".tmp";
-  writeFileSync(tmpPath, JSON.stringify(recording, null, 2) + "\n");
+  writeFileSync(tmpPath, JSON.stringify(recording, null, 2) + "\n", {
+    mode: 0o600,
+  });
+  safeChmod(tmpPath, 0o600);
   renameSync(tmpPath, filePath);
+  safeChmod(filePath, 0o600);
 }
 
 export function loadRecordingFromFile(name: string): unknown | null {

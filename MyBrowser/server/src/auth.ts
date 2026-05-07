@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -14,6 +14,14 @@ export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 export function generateToken(): string {
   return randomBytes(32).toString("hex");
+}
+
+function safeChmod(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // Best-effort hardening. Some filesystems/platforms don't support chmod.
+  }
 }
 
 export function loadOrCreateConfig(overrides?: Partial<Config>): Config {
@@ -33,8 +41,12 @@ export function loadOrCreateConfig(overrides?: Partial<Config>): Config {
   if (overrides?.port !== undefined) config.port = overrides.port;
   if (overrides?.token !== undefined) config.token = overrides.token;
 
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + "\n");
+  mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  safeChmod(CONFIG_DIR, 0o700);
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + "\n", {
+    mode: 0o600,
+  });
+  safeChmod(CONFIG_FILE, 0o600);
 
   return config;
 }
