@@ -21,6 +21,9 @@ import { snapshot } from "./tools/snapshot.js";
 // Media tools
 import { screenshot, getConsoleLogs } from "./tools/media.js";
 
+// Viewport / device emulation tools
+import { setViewport, resetViewport, viewportInfo } from "./tools/viewport.js";
+
 // Tab tools
 import { listTabs, selectTab, newTab, closeTab } from "./tools/tabs.js";
 
@@ -97,6 +100,7 @@ const MUTATING_TOOLS = new Set([
   "browser_fill_form", "browser_action",
   "browser_record_start", "browser_record_stop", "browser_replay",
   "browser_eval", "browser_storage", "browser_upload", "browser_clipboard",
+  "browser_set_viewport", "browser_reset_viewport",
 ]);
 
 function generateSessionId(): string {
@@ -160,7 +164,7 @@ export async function createServerWithTools(options: ServerOptions) {
     context,
     getActiveBrowser,
     serverInfo: {
-      version: "1.1.2",
+      version: "1.1.3",
       host,
       port,
       sessionId,
@@ -178,6 +182,8 @@ export async function createServerWithTools(options: ServerOptions) {
     snapshot,
     // Media
     screenshot, getConsoleLogs,
+    // Viewport / device emulation
+    setViewport, resetViewport, viewportInfo,
     // Tab management
     listTabs, selectTab, newTab, closeTab,
     // ULTRA
@@ -209,7 +215,7 @@ export async function createServerWithTools(options: ServerOptions) {
   ];
 
   const server = new Server(
-    { name: "MyBrowser MCP", version: "1.1.2" },
+    { name: "MyBrowser MCP", version: "1.1.3" },
     { capabilities: { tools: {} } }
   );
 

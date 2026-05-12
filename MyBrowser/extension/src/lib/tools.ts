@@ -53,6 +53,39 @@ const SCREENSHOT_MAX_WIDTH = 1024;
 const SCREENSHOT_MAX_HEIGHT = 768;
 const AFTER_ACTION_DELAY_MS = 500;
 
+type ViewportPresetName = 'iphone' | 'ipad' | 'desktop';
+type ViewportOrientation = 'portrait' | 'landscape';
+
+interface ViewportPreset {
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  mobile: boolean;
+}
+
+interface AppliedViewport extends ViewportPreset {
+  preset: ViewportPresetName;
+  orientation: ViewportOrientation;
+  appliedAt: number;
+}
+
+const VIEWPORT_PRESETS: Record<ViewportPresetName, ViewportPreset> = {
+  // Current primary iPhone class: iPhone 16 Pro / iPhone 17 / iPhone 17 Pro CSS viewport.
+  iphone: { width: 402, height: 874, deviceScaleFactor: 3, mobile: true },
+  // Current primary iPad / iPad Air class CSS viewport.
+  ipad: { width: 820, height: 1180, deviceScaleFactor: 2, mobile: true },
+  // Most-used desktop resolution class from StatCounter worldwide desktop stats.
+  desktop: { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false },
+};
+
+const appliedViewports = new Map<number, AppliedViewport>();
+
+try {
+  chrome.tabs.onRemoved.addListener((tabId) => appliedViewports.delete(tabId));
+} catch {
+  // Service worker may not expose chrome.tabs during tests.
+}
+
 // --- Shared helpers ---
 
 function delay(ms: number): Promise<void> {
@@ -86,6 +119,138 @@ function buildDownloadFilename(
   const safeDirectory = sanitizeDownloadDirectory(directory);
   if (!safeDirectory) return filename;
   return `${safeDirectory}/${filename ?? deriveDownloadFilename(sourceUrl)}`;
+}
+
+function isViewportPresetName(value: unknown): value is ViewportPresetName {
+  return value === 'iphone' || value === 'ipad' || value === 'desktop';
+}
+
+function isViewportOrientation(value: unknown): value is ViewportOrientation {
+  return value === 'portrait' || value === 'landscape';
+}
+
+function orientationForPreset(
+  presetName: ViewportPresetName,
+  requested: unknown,
+): ViewportOrientation {
+  if (isViewportOrientation(requested)) return requested;
+  return presetName === 'desktop' ? 'landscape' : 'portrait';
+}
+
+function orientViewport(
+  preset: ViewportPreset,
+  orientation: ViewportOrientation,
+): ViewportPreset {
+  const wantsLandscape = orientation === 'landscape';
+  const isLandscape = preset.width >= preset.height;
+  if (wantsLandscape === isLandscape) return { ...preset };
+  return { ...preset, width: preset.height, height: preset.width };
+}
+
+function currentViewportPreset(args: Record<string, unknown>): {
+  presetName: ViewportPresetName;
+  orientation: ViewportOrientation;
+  viewport: ViewportPreset;
+} {
+  if (!isViewportPresetName(args.preset)) {
+    throw new Error('preset must be one of: iphone, ipad, desktop');
+  }
+  const presetName = args.preset;
+  const orientation = orientationForPreset(presetName, args.orientation);
+  const viewport = orientViewport(VIEWPORT_PRESETS[presetName], orientation);
+  return { presetName, orientation, viewport };
+}
+
+async function applyViewportPreset(tabId: number, args: Record<string, unknown>): Promise<AppliedViewport & { tabId: number }> {
+  const { presetName, orientation, viewport } = currentViewportPreset(args);
+  await ensureAttached(tabId);
+  await sendCommand(tabId, 'Emulation.setDeviceMetricsOverride', {
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor: viewport.deviceScaleFactor,
+    mobile: viewport.mobile,
+    screenWidth: viewport.width,
+    screenHeight: viewport.height,
+    scale: 1,
+    screenOrientation: {
+      type: orientation === 'portrait' ? 'portraitPrimary' : 'landscapePrimary',
+      angle: orientation === 'portrait' ? 0 : 90,
+    },
+  });
+  await sendCommand(tabId, 'Emulation.setTouchEmulationEnabled', {
+    enabled: viewport.mobile,
+    maxTouchPoints: viewport.mobile ? 5 : 0,
+  });
+
+  const applied: AppliedViewport = {
+    preset: presetName,
+    orientation,
+    ...viewport,
+    appliedAt: Date.now(),
+  };
+  appliedViewports.set(tabId, applied);
+  await delay(150);
+  return { tabId, ...applied };
+}
+
+async function resetViewport(tabId: number): Promise<{ ok: true; tabId: number }> {
+  await ensureAttached(tabId);
+  await sendCommand(tabId, 'Emulation.clearDeviceMetricsOverride');
+  await sendCommand(tabId, 'Emulation.setTouchEmulationEnabled', {
+    enabled: false,
+    maxTouchPoints: 0,
+  });
+  appliedViewports.delete(tabId);
+  await delay(150);
+  return { ok: true, tabId };
+}
+
+async function getViewportInfo(tabId: number): Promise<Record<string, unknown>> {
+  await ensureAttached(tabId);
+  const tab = await chrome.tabs.get(tabId);
+  const windowInfo = tab.windowId !== undefined
+    ? await chrome.windows.get(tab.windowId)
+    : undefined;
+  const metrics = await sendCommand<{
+    cssLayoutViewport?: { clientWidth: number; clientHeight: number; pageX: number; pageY: number };
+    cssVisualViewport?: { clientWidth: number; clientHeight: number; scale: number; pageX: number; pageY: number };
+    cssContentSize?: { width: number; height: number };
+  }>(tabId, 'Page.getLayoutMetrics');
+  const runtime = await sendCommand<{
+    result?: { value?: Record<string, unknown> };
+  }>(tabId, 'Runtime.evaluate', {
+    expression: `({
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      maxTouchPoints: navigator.maxTouchPoints,
+      userAgent: navigator.userAgent
+    })`,
+    returnByValue: true,
+  });
+
+  return {
+    tabId,
+    url: tab.url,
+    title: tab.title,
+    appliedPreset: appliedViewports.get(tabId) ?? null,
+    page: runtime?.result?.value ?? null,
+    cdp: {
+      layoutViewport: metrics?.cssLayoutViewport ?? null,
+      visualViewport: metrics?.cssVisualViewport ?? null,
+      contentSize: metrics?.cssContentSize ?? null,
+    },
+    browserWindow: windowInfo
+      ? {
+          id: windowInfo.id,
+          width: windowInfo.width,
+          height: windowInfo.height,
+          state: windowInfo.state,
+        }
+      : null,
+  };
 }
 
 async function waitForStableDOM(tabId: number): Promise<void> {
@@ -450,6 +615,21 @@ const handlers: Record<string, ToolHandler> = {
         ? ctx.getTabId()
         : undefined;
     return getConsoleLogs(tabId);
+  },
+
+  async browser_set_viewport(args, ctx) {
+    const tabId = ctx.getTabId();
+    return applyViewportPreset(tabId, args);
+  },
+
+  async browser_reset_viewport(_args, ctx) {
+    const tabId = ctx.getTabId();
+    return resetViewport(tabId);
+  },
+
+  async browser_viewport_info(_args, ctx) {
+    const tabId = ctx.getTabId();
+    return getViewportInfo(tabId);
   },
 
   async browser_diagnostics(_args, ctx) {

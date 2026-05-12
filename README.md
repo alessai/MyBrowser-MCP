@@ -36,6 +36,7 @@ If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybr
 | Persistent browser connection | Yes | Limited |
 | Screenshots with interactive markers | Yes | Sometimes |
 | Console, network, storage, performance tools | Yes | Rare |
+| Responsive viewport presets | Yes | Rare |
 | Uploads, downloads, clipboard support | Yes | Limited |
 | Multi-session tab ownership and locks | Yes | No |
 | Event handlers for dialogs and stuck requests | Yes | Rare |
@@ -76,7 +77,8 @@ MyBrowser is built for practical workflows where an agent needs to:
 3. Inspect localStorage, sessionStorage, and cookies
 4. Capture network traffic and performance metrics
 5. Wait for real page conditions including network idle
-6. Collect redacted diagnostics and support bundles when something fails
+6. Switch between current iPhone, iPad, and desktop viewport presets for responsive QA
+7. Collect redacted diagnostics and support bundles when something fails
 
 ### Handle Real Workflows
 
@@ -147,7 +149,7 @@ Download the Chrome extension zip from the latest release:
 Look for a file named like:
 
 ```text
-mybrowser-extension-1.1.2-chrome.zip
+mybrowser-extension-1.1.3-chrome.zip
 ```
 
 #### 4. Load the extension in Chrome
@@ -221,6 +223,7 @@ Useful MCP tools:
 2. `browser_support_bundle` - writes a redacted JSON support bundle under `~/.mybrowser/support-bundles/`
 3. `browser_get_console_logs` - returns browser page console logs
 4. `browser_network` - captures and inspects network requests
+5. `browser_set_viewport` / `browser_reset_viewport` - applies or clears iPhone, iPad, and desktop viewport emulation
 
 The Chrome extension popup also has a **Copy diagnostics** button for quickly sharing extension-side status.
 
