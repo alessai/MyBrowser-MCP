@@ -140,22 +140,23 @@ export async function createServerWithTools(options: ServerOptions) {
 
   // Helper to get the active browser for this session (for composite tab keys)
   const getActiveBrowser = async (): Promise<string> => {
-    // Check if this session has explicitly selected a browser
-    const sessionBrowser = await stateManager.getSessionBrowser(sessionId);
-    if (sessionBrowser) return sessionBrowser;
-    // Hub mode: use context's active browser (set by this session's select_browser)
-    if (!context.isClientMode && context.activeBrowserId) return context.activeBrowserId;
-    // Auto-select if exactly one browser is connected
-    const browsers = await stateManager.listBrowsers();
-    if (browsers.length === 1) return browsers[0]!.id;
-    if (browsers.length === 0) throw new Error("No browser connected");
-    throw new Error("Multiple browsers connected. Use list_browsers and select_browser to choose one.");
+    const resolution = await stateManager.resolveBrowserTarget(sessionId);
+    if (!resolution.ok) throw new Error(resolution.message);
+    return resolution.browserId;
   };
+
+  context.setTargetBrowserResolver(getActiveBrowser);
 
   // Create tool sets
   const { claimTab, releaseTab, sessions } = createSessionTools(stateManager, () => sessionId, getActiveBrowser);
   const { handoff, sharedGet, sharedSet, sharedDelete, sharedList } = createCollaborateTools(stateManager, () => sessionId, getActiveBrowser);
-  const { listBrowsers, selectBrowser } = createBrowserTools(stateManager, () => sessionId);
+  const {
+    listBrowsers,
+    selectBrowser,
+    setDefaultBrowser,
+    getDefaultBrowser,
+    clearDefaultBrowser,
+  } = createBrowserTools(stateManager, () => sessionId);
   const { notesList, notesGet, notesArchive, notesUnarchive, notesDelete } = createNotesTools(stateManager);
   const { browserOn, browserOff, browserEventsList, browserWaitForEvent } = createEventsTools(stateManager, () => sessionId, getActiveBrowser);
   const { browserLock, browserUnlock, browserLocksList } = createLockTools(stateManager, () => sessionId);
@@ -164,7 +165,7 @@ export async function createServerWithTools(options: ServerOptions) {
     context,
     getActiveBrowser,
     serverInfo: {
-      version: "1.1.3",
+      version: "1.1.4",
       host,
       port,
       sessionId,
@@ -193,7 +194,7 @@ export async function createServerWithTools(options: ServerOptions) {
     // Site knowledge
     learn, siteInfo,
     // Multi-browser
-    listBrowsers, selectBrowser,
+    listBrowsers, selectBrowser, setDefaultBrowser, getDefaultBrowser, clearDefaultBrowser,
     // Multi-session coordination
     claimTab, releaseTab, sessions, handoff,
     // Shared state
@@ -215,7 +216,7 @@ export async function createServerWithTools(options: ServerOptions) {
   ];
 
   const server = new Server(
-    { name: "MyBrowser MCP", version: "1.1.3" },
+    { name: "MyBrowser MCP", version: "1.1.4" },
     { capabilities: { tools: {} } }
   );
 

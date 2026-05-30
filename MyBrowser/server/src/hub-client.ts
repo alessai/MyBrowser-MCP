@@ -23,6 +23,8 @@ import type {
   Lock,
   AcquireLockResult,
   ReleaseLockResult,
+  DefaultBrowserInfo,
+  BrowserTargetResolution,
 } from "./state-manager.js";
 
 const RPC_TIMEOUT_MS = 10_000;
@@ -187,6 +189,22 @@ export class HubStateManager implements IStateManager {
 
   async getSessionBrowser(sessionId: string): Promise<string | undefined> {
     return (await this.sendRpc("getSessionBrowser", { sessionId })) as string | undefined;
+  }
+
+  async setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo> {
+    return (await this.sendRpc("setDefaultBrowser", { browserId })) as DefaultBrowserInfo;
+  }
+
+  async getDefaultBrowser(): Promise<DefaultBrowserInfo> {
+    return (await this.sendRpc("getDefaultBrowser")) as DefaultBrowserInfo;
+  }
+
+  async clearDefaultBrowser(): Promise<void> {
+    await this.sendRpc("clearDefaultBrowser");
+  }
+
+  async resolveBrowserTarget(sessionId?: string): Promise<BrowserTargetResolution> {
+    return (await this.sendRpc("resolveBrowserTarget", { sessionId })) as BrowserTargetResolution;
   }
 
   // -- Browser listing --

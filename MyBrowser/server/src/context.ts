@@ -46,6 +46,7 @@ export class Context {
   // Client mode: single WS to the hub (tools go through hub proxy)
   private _hubWs: WebSocket | undefined;
   private _isClientMode = false;
+  private _resolveTargetBrowserId: (() => Promise<string | undefined>) | undefined;
 
   // ---- Client mode (WS to hub, not direct browsers) ----
 
@@ -62,6 +63,10 @@ export class Context {
     return this._isClientMode;
   }
 
+  setTargetBrowserResolver(fn: () => Promise<string | undefined>): void {
+    this._resolveTargetBrowserId = fn;
+  }
+
   // ---- Browser registry (hub mode) ----
 
   addBrowser(ws: WebSocket, name?: string): string {
@@ -72,7 +77,8 @@ export class Context {
       ws,
       connectedAt: Date.now(),
     });
-    // First browser becomes the default
+    // Legacy fallback only. Normal routing uses the async resolver wired
+    // from server.ts: session selection → persisted default → single browser.
     if (!this._activeBrowserId) {
       this._activeBrowserId = id;
     }
@@ -132,20 +138,28 @@ export class Context {
    * - Hub mode: returns the active browser's WS
    * - Client mode: returns the hub WS (hub handles routing)
    */
-  private getTargetWs(): WebSocket {
+  private async getTarget(): Promise<{
+    ws: WebSocket;
+    targetBrowserId?: string;
+  }> {
+    const resolvedBrowserId = this._resolveTargetBrowserId
+      ? await this._resolveTargetBrowserId()
+      : undefined;
+
     if (this._isClientMode) {
       if (!this._hubWs) throw new Error(noBrowserMessage);
-      return this._hubWs;
+      return { ws: this._hubWs, targetBrowserId: resolvedBrowserId };
     }
 
-    if (!this._activeBrowserId) throw new Error(noBrowserMessage);
-    const browser = this.browsers.get(this._activeBrowserId);
-    if (!browser) throw new Error(`Active browser "${this._activeBrowserId}" disconnected. Use list_browsers and select_browser.`);
+    const targetBrowserId = resolvedBrowserId ?? this._activeBrowserId;
+    if (!targetBrowserId) throw new Error(noBrowserMessage);
+    const browser = this.browsers.get(targetBrowserId);
+    if (!browser) throw new Error(`Active browser "${targetBrowserId}" disconnected. Use list_browsers and select_browser.`);
     if (browser.ws.readyState !== browser.ws.OPEN) {
-      this.removeBrowser(this._activeBrowserId);
-      throw new Error(`Active browser "${this._activeBrowserId}" connection lost. Use list_browsers and select_browser.`);
+      this.removeBrowser(targetBrowserId);
+      throw new Error(`Active browser "${targetBrowserId}" connection lost. Use list_browsers and select_browser.`);
     }
-    return browser.ws;
+    return { ws: browser.ws };
   }
 
   async sendSocketMessage(
@@ -153,7 +167,14 @@ export class Context {
     payload: unknown,
     options: { timeoutMs: number } = { timeoutMs: 30_000 }
   ): Promise<any> {
-    return this.sendSocketMessageCore(this.getTargetWs(), undefined, type, payload, options);
+    const target = await this.getTarget();
+    return this.sendSocketMessageCore(
+      target.ws,
+      target.targetBrowserId,
+      type,
+      payload,
+      options,
+    );
   }
 
   /**

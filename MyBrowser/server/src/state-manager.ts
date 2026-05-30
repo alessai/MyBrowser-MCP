@@ -17,6 +17,7 @@ import {
   type Note,
   type SaveNoteInput,
 } from "./notes.js";
+import { loadPreferences, savePreferences } from "./preferences.js";
 
 export type { NoteMetadata, NoteStatus, Note, SaveNoteInput } from "./notes.js";
 
@@ -98,6 +99,35 @@ export interface BrowserInfo {
   connectedAt: number;
 }
 
+export interface DefaultBrowserInfo {
+  defaultBrowserName?: string;
+  status: "unset" | "connected" | "not_connected" | "duplicate";
+  resolvedBrowserId?: string;
+  resolvedBrowserName?: string;
+  message?: string;
+}
+
+export type BrowserTargetSource = "session" | "default" | "single";
+
+export type BrowserTargetResolution =
+  | {
+      ok: true;
+      browserId: string;
+      browserName: string;
+      source: BrowserTargetSource;
+    }
+  | {
+      ok: false;
+      reason:
+        | "no_browsers"
+        | "multiple_browsers"
+        | "session_browser_disconnected"
+        | "default_browser_duplicate";
+      message: string;
+      defaultBrowserName?: string;
+      connectedBrowsers: BrowserInfo[];
+    };
+
 // ---- Composite tab key helpers ----
 
 export function makeTabKey(browserId: string, tabId: number): string {
@@ -135,6 +165,10 @@ export interface IStateManager {
   // Per-session browser targeting
   selectBrowser(sessionId: string, browserId: string): Promise<void>;
   getSessionBrowser(sessionId: string): Promise<string | undefined>;
+  setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo>;
+  getDefaultBrowser(): Promise<DefaultBrowserInfo>;
+  clearDefaultBrowser(): Promise<void>;
+  resolveBrowserTarget(sessionId?: string): Promise<BrowserTargetResolution>;
 
   // Browser registry (hub delegates to context)
   listBrowsers(): Promise<BrowserInfo[]>;
@@ -225,6 +259,7 @@ export class LocalStateManager implements IStateManager {
   }>();
 
   private store = new Map<string, unknown>();
+  private preferences = loadPreferences();
 
   // F1: event handler registry + event queue + pending waiters
   private eventHandlers = new Map<string, EventHandler>();
@@ -386,6 +421,152 @@ export class LocalStateManager implements IStateManager {
 
   async getSessionBrowser(sessionId: string): Promise<string | undefined> {
     return this.sessions.get(sessionId)?.activeBrowserId;
+  }
+
+  async setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo> {
+    const browsers = this._listBrowsersFn();
+    const browser = browsers.find((b) => b.id === browserId);
+    if (!browser) {
+      throw new Error(
+        `Browser "${browserId}" not found. Use list_browsers to see available browsers.`,
+      );
+    }
+
+    const sameName = browsers.filter((b) => b.name === browser.name);
+    if (sameName.length > 1) {
+      throw new Error(
+        `Cannot set default browser to "${browser.name}" because ${sameName.length} connected browsers share that name (${sameName.map((b) => b.id).join(", ")}). Rename one browser so browser names are unique.`,
+      );
+    }
+
+    this.preferences.defaultBrowserName = browser.name;
+    savePreferences(this.preferences);
+    return this.defaultBrowserInfo(browsers);
+  }
+
+  async getDefaultBrowser(): Promise<DefaultBrowserInfo> {
+    return this.defaultBrowserInfo();
+  }
+
+  async clearDefaultBrowser(): Promise<void> {
+    delete this.preferences.defaultBrowserName;
+    savePreferences(this.preferences);
+  }
+
+  async resolveBrowserTarget(sessionId?: string): Promise<BrowserTargetResolution> {
+    const browsers = this._listBrowsersFn();
+    let staleSelectedBrowserId: string | undefined;
+
+    if (sessionId) {
+      const session = this.sessions.get(sessionId);
+      const selectedBrowserId = session?.activeBrowserId;
+      if (selectedBrowserId) {
+        const selected = browsers.find((b) => b.id === selectedBrowserId);
+        if (selected) {
+          return {
+            ok: true,
+            browserId: selected.id,
+            browserName: selected.name,
+            source: "session",
+          };
+        }
+        staleSelectedBrowserId = selectedBrowserId;
+        // Browser IDs are ephemeral across reconnects. If the pinned ID is
+        // gone, clear it and continue to the stable-name default fallback.
+        if (session) delete session.activeBrowserId;
+      }
+    }
+
+    const defaultBrowserName = this.preferences.defaultBrowserName;
+    if (defaultBrowserName) {
+      const matches = browsers.filter((b) => b.name === defaultBrowserName);
+      if (matches.length === 1) {
+        const browser = matches[0]!;
+        return {
+          ok: true,
+          browserId: browser.id,
+          browserName: browser.name,
+          source: "default",
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          reason: "default_browser_duplicate",
+          message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}Default browser name "${defaultBrowserName}" matches multiple connected browsers (${matches.map((b) => b.id).join(", ")}). Rename one browser so names are unique, then reconnect or choose with select_browser.`,
+          defaultBrowserName,
+          connectedBrowsers: browsers,
+        };
+      }
+    }
+
+    if (browsers.length === 1) {
+      const browser = browsers[0]!;
+      return {
+        ok: true,
+        browserId: browser.id,
+        browserName: browser.name,
+        source: "single",
+      };
+    }
+
+    if (browsers.length === 0) {
+      return {
+        ok: false,
+        reason: "no_browsers",
+        message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}No browser connected. Connect a browser by installing the MyBrowser extension and entering the server address and auth token in the extension settings.`,
+        defaultBrowserName,
+        connectedBrowsers: browsers,
+      };
+    }
+
+    return {
+      ok: false,
+      reason: staleSelectedBrowserId
+        ? "session_browser_disconnected"
+        : "multiple_browsers",
+      message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}${defaultBrowserName
+        ? `Default browser "${defaultBrowserName}" is not connected, and multiple browsers are connected. Use select_browser to choose one for this session or set_default_browser to change the default.`
+        : "Multiple browsers connected. Use list_browsers and select_browser to choose one, or set_default_browser to save a shared default."}`,
+      defaultBrowserName,
+      connectedBrowsers: browsers,
+    };
+  }
+
+  private defaultBrowserInfo(
+    browsers: BrowserInfo[] = this._listBrowsersFn(),
+  ): DefaultBrowserInfo {
+    const defaultBrowserName = this.preferences.defaultBrowserName;
+    if (!defaultBrowserName) {
+      return {
+        status: "unset",
+        message: "No default browser is set.",
+      };
+    }
+
+    const matches = browsers.filter((b) => b.name === defaultBrowserName);
+    if (matches.length === 1) {
+      const browser = matches[0]!;
+      return {
+        defaultBrowserName,
+        status: "connected",
+        resolvedBrowserId: browser.id,
+        resolvedBrowserName: browser.name,
+        message: `Default browser "${defaultBrowserName}" is connected as ${browser.id}.`,
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        defaultBrowserName,
+        status: "duplicate",
+        message: `Default browser name "${defaultBrowserName}" matches multiple connected browsers (${matches.map((b) => b.id).join(", ")}). Rename one browser so names are unique.`,
+      };
+    }
+    return {
+      defaultBrowserName,
+      status: "not_connected",
+      message: `Default browser "${defaultBrowserName}" is not currently connected.`,
+    };
   }
 
   // -- Browser listing (delegated to context) --

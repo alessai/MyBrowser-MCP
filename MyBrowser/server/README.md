@@ -25,7 +25,7 @@ If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybr
 3. Debugging: console logs, page eval, storage inspection, network capture, performance metrics, and responsive viewport presets
 4. Diagnostics: persistent server logs, redacted diagnostics, support bundles, and extension-side copy diagnostics
 5. Workflow tools: uploads, downloads, clipboard support, waits, recording, replay, and saved site knowledge
-6. Coordination: shared state, tab ownership, session management, locks, and event handlers
+6. Coordination: shared state, persistent default browser selection, tab ownership, session management, locks, and event handlers
 
 ## Install
 
@@ -60,7 +60,7 @@ Then:
 3. Enable **Developer mode**
 4. Click **Load unpacked**
 5. Select the unzipped folder
-6. Enter the server address, port, and auth token in the extension popup
+6. Enter the server address, port, auth token, and an optional stable browser name in the extension popup
 
 ## MCP Config Example
 
@@ -91,6 +91,7 @@ Useful support tools:
 3. `browser_get_console_logs` - returns browser page console logs
 4. `browser_network` - captures and inspects network requests
 5. `browser_set_viewport` / `browser_reset_viewport` - applies or clears iPhone, iPad, and desktop viewport emulation
+6. `list_browsers`, `select_browser`, `set_default_browser`, `get_default_browser`, `clear_default_browser` - manage multi-browser routing
 
 If you already installed the package globally, the equivalent Claude Code command is:
 

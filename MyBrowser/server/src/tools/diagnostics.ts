@@ -3,6 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Context } from "../context.js";
 import type { IStateManager } from "../state-manager.js";
 import { CONFIG_FILE } from "../auth.js";
+import { PREFERENCES_FILE } from "../preferences.js";
 import {
   ERROR_LOG_FILE,
   LOG_DIR,
@@ -54,15 +55,22 @@ async function collectDiagnostics(
   ]);
 
   let selectedBrowser: unknown = null;
+  const defaultBrowserPreference = await stateManager
+    .getDefaultBrowser()
+    .catch((error) => ({ error: String(error) }));
   try {
     const browserId = await getActiveBrowser();
     selectedBrowser = {
       browserId,
       sessionSelectedBrowser: await stateManager.getSessionBrowser(serverInfo.sessionId),
       contextActiveBrowserId: context.activeBrowserId,
+      defaultBrowserPreference,
     };
   } catch (error) {
-    selectedBrowser = { error: error instanceof Error ? error.message : String(error) };
+    selectedBrowser = {
+      error: error instanceof Error ? error.message : String(error),
+      defaultBrowserPreference,
+    };
   }
 
   let extensionDiagnostics: unknown = null;
@@ -95,6 +103,7 @@ async function collectDiagnostics(
     },
     paths: {
       configFile: CONFIG_FILE,
+      preferencesFile: PREFERENCES_FILE,
       logDir: LOG_DIR,
       logFile: LOG_FILE,
       errorLogFile: ERROR_LOG_FILE,

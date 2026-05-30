@@ -183,6 +183,17 @@ async function dispatchHubRpc(
       return { ok: true };
     case "getSessionBrowser":
       return await stateManager.getSessionBrowser(requireString(params, "sessionId"));
+    case "setDefaultBrowser":
+      return await stateManager.setDefaultBrowser(requireString(params, "browserId"));
+    case "getDefaultBrowser":
+      return await stateManager.getDefaultBrowser();
+    case "clearDefaultBrowser":
+      await stateManager.clearDefaultBrowser();
+      return { ok: true };
+    case "resolveBrowserTarget":
+      return await stateManager.resolveBrowserTarget(
+        typeof params.sessionId === "string" ? params.sessionId : undefined,
+      );
     case "listBrowsers":
       return await stateManager.listBrowsers();
 
@@ -388,7 +399,6 @@ function startServer(options: WsServerOptions): WsServerResult {
       setTimeout(() => {
         pendingSessionCleanup.delete(sessionId);
         if (isSessionStillConnected(sessionId)) return;
-        clientBrowserTarget.delete(sessionId);
         cleanupSession(sessionId)
           .then(() => console.error(`[MyBrowser MCP] Client session "${sessionId}" cleaned up`))
           .catch((err) => console.error("Session cleanup failed:", err));
@@ -416,9 +426,6 @@ function startServer(options: WsServerOptions): WsServerResult {
       }
     }
   });
-  // Track target browser per MCP client session for routing
-  const clientBrowserTarget = new Map<string, string>();
-
   const wss = new WebSocketServer({
     host,
     port,
@@ -489,7 +496,7 @@ function startServer(options: WsServerOptions): WsServerResult {
 
     resetActivityTimer();
 
-    ws.on("message", (data: Buffer | string) => {
+    ws.on("message", async (data: Buffer | string) => {
       resetActivityTimer();
 
       let msg: any;
@@ -541,11 +548,6 @@ function startServer(options: WsServerOptions): WsServerResult {
 
       // ---- Hub RPC (from MCP client processes) ----
       if (msg.type === "hub_rpc" && msg.id && msg.method) {
-        // Handle selectBrowser specially to update client routing
-        if (msg.method === "selectBrowser" && msg.params?.sessionId && msg.params?.browserId) {
-          clientBrowserTarget.set(msg.params.sessionId as string, msg.params.browserId as string);
-        }
-
         dispatchHubRpc(stateManager, msg.method, msg.params ?? {})
           .then((result) => {
             ws.send(JSON.stringify({ type: "hub_rpc_result", id: msg.id, result }));
@@ -731,39 +733,31 @@ function startServer(options: WsServerOptions): WsServerResult {
       if (!isExtension && msg.id && msg.type) {
         // If the client specified an explicit target via
         // `targetBrowserId` (used by F1 handler push to the correct
-        // browser), honor it; otherwise fall back to the session's
-        // selected browser.
+        // browser), honor it; otherwise resolve using the same priority
+        // as direct hub-mode tools: session selection → persisted
+        // default browser name → exactly-one-browser auto target.
         const clientSessionId = connectionSessions.get(ws);
         const explicitTarget =
           typeof msg.targetBrowserId === "string"
             ? msg.targetBrowserId
             : undefined;
-        let resolvedBrowserId: string | undefined =
-          explicitTarget ??
-          (clientSessionId
-            ? clientBrowserTarget.get(clientSessionId)
-            : undefined);
+        let resolvedBrowserId: string | undefined = explicitTarget;
 
         if (!resolvedBrowserId) {
-          // Auto-assign if exactly one browser exists
-          const browsers = context.listBrowsers();
-          if (browsers.length === 1) {
-            resolvedBrowserId = browsers[0]!.id;
-            if (clientSessionId) clientBrowserTarget.set(clientSessionId, resolvedBrowserId);
-          } else {
+          const resolution = await stateManager.resolveBrowserTarget(clientSessionId);
+          if (!resolution.ok) {
             try {
               ws.send(JSON.stringify({
                 type: MESSAGE_RESPONSE_TYPE,
                 payload: {
                   requestId: msg.id,
-                  error: browsers.length === 0
-                    ? "No browser connected"
-                    : "No browser selected for this session. Use select_browser to choose one.",
+                  error: resolution.message,
                 },
               }));
             } catch { /* client gone */ }
             return;
           }
+          resolvedBrowserId = resolution.browserId;
         }
 
         const browser = context.getBrowser(resolvedBrowserId);

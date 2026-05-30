@@ -38,6 +38,7 @@ If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybr
 | Console, network, storage, performance tools | Yes | Rare |
 | Responsive viewport presets | Yes | Rare |
 | Uploads, downloads, clipboard support | Yes | Limited |
+| Persistent default browser for multi-browser setups | Yes | Rare |
 | Multi-session tab ownership and locks | Yes | No |
 | Event handlers for dialogs and stuck requests | Yes | Rare |
 | Recording, replay, and saved site knowledge | Yes | Rare |
@@ -91,10 +92,11 @@ MyBrowser is built for practical workflows where an agent needs to:
 ### Coordinate Multiple Agents
 
 1. List sessions and connected browsers
-2. Claim tabs and hand them off safely
-3. Share state across sessions
-4. Coordinate with locks
-5. Register event handlers for dialogs, new tabs, beforeunload prompts, and stuck network requests
+2. Set a persistent default browser by browser name for multi-browser setups
+3. Claim tabs and hand them off safely
+4. Share state across sessions
+5. Coordinate with locks
+6. Register event handlers for dialogs, new tabs, beforeunload prompts, and stuck network requests
 
 ## Quick Demo
 
@@ -149,7 +151,7 @@ Download the Chrome extension zip from the latest release:
 Look for a file named like:
 
 ```text
-mybrowser-extension-1.1.3-chrome.zip
+mybrowser-extension-1.1.4-chrome.zip
 ```
 
 #### 4. Load the extension in Chrome
@@ -167,7 +169,7 @@ Open the extension popup and enter:
 1. Server address
 2. Port
 3. Auth token from `~/.mybrowser/config.json`
-4. Optional browser name
+4. Optional browser name; use stable, unique names if you want to save a default browser
 
 ## MCP Config Example
 
@@ -224,6 +226,7 @@ Useful MCP tools:
 3. `browser_get_console_logs` - returns browser page console logs
 4. `browser_network` - captures and inspects network requests
 5. `browser_set_viewport` / `browser_reset_viewport` - applies or clears iPhone, iPad, and desktop viewport emulation
+6. `list_browsers`, `select_browser`, `set_default_browser`, `get_default_browser`, `clear_default_browser` - manage multi-browser routing
 
 The Chrome extension popup also has a **Copy diagnostics** button for quickly sharing extension-side status.
 
