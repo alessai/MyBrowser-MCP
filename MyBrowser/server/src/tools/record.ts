@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import {
   normalizeRecordingName,
   RECORDING_RESERVATION_LEASE_MS,
@@ -46,8 +47,8 @@ function ensurePrivateDirectory(
   if (!stats.isDirectory()) {
     throw new Error(`Private recording path is not a directory: ${path}`);
   }
-  if ((stats.mode & 0o077) !== 0) {
-    throw new Error(`Private recording directory has group/other permissions: ${path}`);
+  if ((stats.mode & 0o777) !== 0o700) {
+    throw new Error(`Private recording directory must have exact mode 0700: ${path}`);
   }
 }
 
@@ -107,6 +108,7 @@ export function createRecordingTools(
   getSessionId: () => string,
 ): { recordStart: Tool; recordStop: Tool; recordList: Tool } {
   let activeRecordingName: string | undefined;
+  let failedStartCleanupPending = false;
   let pendingStop: {
     recording: SanitizedRecording;
     serverPersisted: boolean;
@@ -118,13 +120,19 @@ export function createRecordingTools(
 
     const released = await stateManager.releaseRecordingReservation(getSessionId(), name);
     if (released) {
-      if (activeRecordingName === name) activeRecordingName = undefined;
+      if (activeRecordingName === name) {
+        activeRecordingName = undefined;
+        failedStartCleanupPending = false;
+      }
       return;
     }
 
     const stillLive = await stateManager.hasRecordingReservation(getSessionId(), name);
     if (stillLive) throw new Error("Recording reservation release failed");
-    if (activeRecordingName === name) activeRecordingName = undefined;
+    if (activeRecordingName === name) {
+      activeRecordingName = undefined;
+      failedStartCleanupPending = false;
+    }
   };
 
   const finishPendingStop = () => {
@@ -159,6 +167,10 @@ export function createRecordingTools(
     },
     handle: async (context, params) => {
       const { name, tabId } = RecordStartArgs.parse(params);
+      if (failedStartCleanupPending) await releaseActiveRecording();
+      if (activeRecordingName) {
+        throw new Error("A recording reservation is already active for this session");
+      }
       const sessionId = getSessionId();
       const reserved = await stateManager.reserveRecording(
         sessionId,
@@ -168,12 +180,14 @@ export function createRecordingTools(
       if (!reserved.ok) {
         throw new Error(`RECORDING_NAME_CONFLICT: recording name is reserved by session ${reserved.owner}`);
       }
+      activeRecordingName = reserved.reservation.name;
+      failedStartCleanupPending = true;
 
       try {
         await context.sendSocketMessage("browser_record_start", { name, tabId });
-        activeRecordingName = reserved.reservation.name;
+        failedStartCleanupPending = false;
       } catch (error) {
-        await stateManager.releaseRecordingReservation(sessionId, reserved.reservation.name);
+        await releaseActiveRecording();
         throw error;
       }
       return {
@@ -191,6 +205,7 @@ export function createRecordingTools(
     },
     handle: async (context, params) => {
       RecordStopArgs.parse(params);
+      if (failedStartCleanupPending) await releaseActiveRecording();
       const sessionId = getSessionId();
       let rawResult: unknown;
       try {
@@ -282,17 +297,30 @@ export function saveRecordingToFile(
   recording: unknown,
   recordingsDir = RECORDINGS_DIR,
   directoryOps: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
-): void {
+): "created" | "existing-identical" {
   const sanitized = sanitizeRecording(recording);
   ensureRecordingsDir(recordingsDir, directoryOps);
   const filePath = join(recordingsDir, `${normalizeRecordingName(sanitized.name)}.json`);
-  const fd = openSync(filePath, "wx", 0o600);
+  let fd: number;
+  try {
+    fd = openSync(filePath, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    try {
+      const existing = sanitizeRecording(JSON.parse(readFileSync(filePath, "utf-8")));
+      if (isDeepStrictEqual(existing, sanitized)) return "existing-identical";
+    } catch {
+      // Preserve the exclusive-create error for corrupt or invalid existing data.
+    }
+    throw error;
+  }
   try {
     writeFileSync(fd, JSON.stringify(sanitized, null, 2) + "\n");
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
+  return "created";
 }
 
 export function loadRecordingFromFile(name: string): unknown | null {

@@ -447,17 +447,36 @@ export class LocalStateManager implements IStateManager {
 
   private scheduleRecordingExpiry(reservation: RecordingReservation): void {
     const timer = setTimeout(() => {
-      const current = this.recordingReservations.get(reservation.name);
-      if (current !== reservation || current.expiresAt !== reservation.expiresAt) return;
-
-      this.recordingReservations.delete(reservation.name);
-      this.recordingReservationTimers.delete(reservation.name);
-      this._broadcastToBrowsersFn("recording_reservation_expired", {
-        sessionId: reservation.sessionId,
-        name: reservation.name,
-      });
+      this.expireRecordingReservation(reservation, Date.now());
     }, Math.max(0, reservation.expiresAt - Date.now()));
     this.recordingReservationTimers.set(reservation.name, timer);
+  }
+
+  private expireRecordingReservation(
+    reservation: RecordingReservation,
+    now: number,
+  ): boolean {
+    const current = this.recordingReservations.get(reservation.name);
+    if (
+      current !== reservation
+      || current.expiresAt !== reservation.expiresAt
+      || current.expiresAt > now
+    ) {
+      return false;
+    }
+
+    this.clearRecordingReservation(reservation.name);
+    this._broadcastToBrowsersFn("recording_reservation_expired", {
+      sessionId: reservation.sessionId,
+      name: reservation.name,
+    });
+    return true;
+  }
+
+  private getLiveRecordingReservation(normalizedName: string): RecordingReservation | undefined {
+    const reservation = this.recordingReservations.get(normalizedName);
+    if (reservation && this.expireRecordingReservation(reservation, Date.now())) return undefined;
+    return reservation;
   }
 
   private clearRecordingReservation(normalizedName: string): void {
@@ -479,7 +498,7 @@ export class LocalStateManager implements IStateManager {
       throw new Error("Invalid recording reservation lease");
     }
     const normalizedName = normalizeRecordingName(name);
-    const existing = this.recordingReservations.get(normalizedName);
+    const existing = this.getLiveRecordingReservation(normalizedName);
     if (existing) return { ok: false, owner: existing.sessionId };
 
     const reservation = {
@@ -501,7 +520,7 @@ export class LocalStateManager implements IStateManager {
       throw new Error("Invalid recording reservation lease");
     }
     const normalizedName = normalizeRecordingName(name);
-    const existing = this.recordingReservations.get(normalizedName);
+    const existing = this.getLiveRecordingReservation(normalizedName);
     if (!existing || existing.sessionId !== sessionId) return false;
 
     const oldTimer = this.recordingReservationTimers.get(normalizedName);
@@ -520,7 +539,7 @@ export class LocalStateManager implements IStateManager {
 
   async releaseRecordingReservation(sessionId: string, name: string): Promise<boolean> {
     const normalizedName = normalizeRecordingName(name);
-    const existing = this.recordingReservations.get(normalizedName);
+    const existing = this.getLiveRecordingReservation(normalizedName);
     if (!existing || existing.sessionId !== sessionId) return false;
 
     this.clearRecordingReservation(normalizedName);
@@ -528,7 +547,7 @@ export class LocalStateManager implements IStateManager {
   }
 
   async hasRecordingReservation(sessionId: string, name: string): Promise<boolean> {
-    const reservation = this.recordingReservations.get(normalizeRecordingName(name));
+    const reservation = this.getLiveRecordingReservation(normalizeRecordingName(name));
     return reservation?.sessionId === sessionId;
   }
 

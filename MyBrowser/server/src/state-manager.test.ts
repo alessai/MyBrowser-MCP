@@ -88,6 +88,68 @@ describe("LocalStateManager recording reservations", () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("has expires a stale reservation when its timer callback is delayed", async () => {
+    const state = new LocalStateManager();
+    const broadcast = vi.fn();
+    state.setBroadcastToBrowsersFn(broadcast);
+    await state.reserveRecording("session-a", "demo", LEASE_MS);
+    vi.setSystemTime(Date.now() + LEASE_MS);
+    expect(broadcast).not.toHaveBeenCalled();
+
+    await expect(state.hasRecordingReservation("session-a", "demo")).resolves.toBe(false);
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    await vi.runAllTimersAsync();
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("release expires a stale reservation instead of releasing it", async () => {
+    const state = new LocalStateManager();
+    const broadcast = vi.fn();
+    state.setBroadcastToBrowsersFn(broadcast);
+    await state.reserveRecording("session-a", "demo", LEASE_MS);
+    vi.setSystemTime(Date.now() + LEASE_MS);
+
+    await expect(state.releaseRecordingReservation("session-a", "demo")).resolves.toBe(false);
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    await vi.runAllTimersAsync();
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("renew expires a stale reservation instead of extending it", async () => {
+    const state = new LocalStateManager();
+    const broadcast = vi.fn();
+    state.setBroadcastToBrowsersFn(broadcast);
+    await state.reserveRecording("session-a", "demo", LEASE_MS);
+    vi.setSystemTime(Date.now() + LEASE_MS);
+
+    await expect(state.renewRecordingReservation("session-a", "demo", LEASE_MS))
+      .resolves.toBe(false);
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    await vi.runAllTimersAsync();
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("reserve expires a stale owner before granting the same name", async () => {
+    const state = new LocalStateManager();
+    const broadcast = vi.fn();
+    state.setBroadcastToBrowsersFn(broadcast);
+    await state.reserveRecording("session-a", "demo", LEASE_MS);
+    vi.setSystemTime(Date.now() + LEASE_MS);
+
+    await expect(state.reserveRecording("session-b", "demo", LEASE_MS)).resolves.toMatchObject({
+      ok: true,
+      reservation: { name: "demo", sessionId: "session-b" },
+    });
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    await state.releaseRecordingReservation("session-b", "demo");
+    await vi.runAllTimersAsync();
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("removeSession releases every owned reservation and clears its timers", async () => {
     const state = new LocalStateManager();
     const broadcast = vi.fn();

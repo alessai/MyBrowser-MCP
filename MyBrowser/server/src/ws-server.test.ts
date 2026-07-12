@@ -186,6 +186,38 @@ async function callHubRpc(
   return response;
 }
 
+async function setupReservedRecording(recordingsDir: string): Promise<{
+  server: WsServerResult;
+  extension: WebSocket;
+}> {
+  const server = await startHub(recordingsDir);
+  const extension = await connect(server);
+  await authenticate(extension, "extension");
+  const client = await connect(server);
+  await authenticate(client, "client");
+  await callHubRpc(client, "register-a", "registerSession", { sessionId: "session-a" });
+  await callHubRpc(client, "reserve-a", "reserveRecording", {
+    name: validRecording.name,
+    leaseMs: 1_800_000,
+  });
+  return { server, extension };
+}
+
+async function persistRecordingMessage(
+  extension: WebSocket,
+  id: string,
+  payload: unknown = validRecording,
+): Promise<Record<string, unknown>> {
+  const response = waitForMessage(extension);
+  extension.send(JSON.stringify({
+    type: "persistRecording",
+    id,
+    sessionId: "session-a",
+    payload,
+  }));
+  return response;
+}
+
 afterEach(() => {
   for (const socket of sockets.splice(0)) {
     if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
@@ -249,6 +281,69 @@ describe("recording tools and persistence", () => {
     await expect(recordStart.handle(context, { name: "Checkout Flow", tabId: 7 }))
       .rejects.toThrow("extension failed");
     expect(state.releaseRecordingReservation).toHaveBeenCalledWith("session-a", "Checkout_Flow");
+  });
+
+  it("retains a failed-start reservation after false live release and cleans it before another start", async () => {
+    const state = createRecordingState();
+    state.releaseRecordingReservation
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    state.hasRecordingReservation.mockResolvedValue(true);
+    const sendSocketMessage = vi.fn()
+      .mockRejectedValueOnce(new Error("extension start failed"))
+      .mockResolvedValueOnce({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Checkout Flow", tabId: 7 },
+    )).rejects.toThrow("release failed");
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Another Recording", tabId: 8 },
+    )).rejects.toThrow("release failed");
+    expect(state.reserveRecording).toHaveBeenCalledTimes(1);
+    await recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Another Recording", tabId: 8 },
+    );
+
+    expect(state.releaseRecordingReservation).toHaveBeenCalledTimes(3);
+    expect(state.reserveRecording).toHaveBeenCalledTimes(2);
+    expect(state.releaseRecordingReservation.mock.invocationCallOrder[2]).toBeLessThan(
+      state.reserveRecording.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it("retains a failed-start reservation after release rejection and cleans it before stop", async () => {
+    const state = createRecordingState();
+    state.releaseRecordingReservation
+      .mockRejectedValueOnce(new Error("release RPC failed"))
+      .mockResolvedValueOnce(true);
+    const startSend = vi.fn().mockRejectedValue(new Error("extension start failed"));
+    const stopSend = vi.fn().mockRejectedValue(new Error("No recording in progress"));
+    const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+
+    await expect(recordStart.handle(
+      { sendSocketMessage: startSend } as unknown as Context,
+      { name: "Checkout Flow", tabId: 7 },
+    )).rejects.toThrow("release RPC failed");
+    await expect(recordStop.handle(
+      { sendSocketMessage: stopSend } as unknown as Context,
+      {},
+    )).rejects.toThrow("No recording in progress");
+
+    expect(state.releaseRecordingReservation).toHaveBeenCalledTimes(2);
+    expect(state.releaseRecordingReservation.mock.invocationCallOrder[1]).toBeLessThan(
+      stopSend.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("stops without a tab and releases a partial recording after sanitizing it", async () => {
@@ -517,6 +612,26 @@ describe("recording tools and persistence", () => {
     )).toThrow("injected chmod failure");
     expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
   });
+
+  it("fails closed when owner directory bits are not exactly 0700", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-wrong-owner-mode-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const wrongModeStat = ((path: Parameters<typeof statSync>[0]) => {
+      const stats = statSync(path);
+      Object.defineProperty(stats, "mode", {
+        value: (stats.mode & ~0o777) | 0o600,
+      });
+      return stats;
+    }) as typeof statSync;
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      { mkdirSync, chmodSync, statSync: wrongModeStat },
+    )).toThrow("exact mode 0700");
+    expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
+  });
 });
 
 describe("acknowledged recording reservation messages", () => {
@@ -581,6 +696,93 @@ describe("acknowledged recording reservation messages", () => {
       .toMatchObject({ name: "Checkout_Flow", steps: validRecording.steps });
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(false);
+  });
+
+  it("does not acknowledge false live release and retries only an identical artifact", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-release-live-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const { server, extension } = await setupReservedRecording(recordingsDir);
+    const releaseOriginal = server.stateManager.releaseRecordingReservation.bind(server.stateManager);
+    const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
+      .mockResolvedValueOnce(false)
+      .mockImplementation(releaseOriginal);
+
+    await expect(persistRecordingMessage(extension, "persist-live-false")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-live-false",
+      ok: false,
+      error: "persistence failed",
+    });
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const original = readFileSync(filePath, "utf8");
+    await expect(persistRecordingMessage(extension, "persist-different", {
+      ...validRecording,
+      url: "https://different.test/",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-different",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(readFileSync(filePath, "utf8")).toBe(original);
+    expect(release).toHaveBeenCalledTimes(1);
+
+    await expect(persistRecordingMessage(extension, "persist-identical-retry")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-identical-retry",
+      ok: true,
+    });
+    expect(readFileSync(filePath, "utf8")).toBe(original);
+    expect(release).toHaveBeenCalledTimes(2);
+    await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(false);
+  });
+
+  it("acknowledges false release only after confirming the reservation expired", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-release-expired-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const { server, extension } = await setupReservedRecording(recordingsDir);
+    const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
+      .mockResolvedValue(false);
+    const has = vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await expect(persistRecordingMessage(extension, "persist-expired")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-expired",
+      ok: true,
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(has).toHaveBeenCalledTimes(2);
+
+    release.mockRestore();
+    has.mockRestore();
+    await server.stateManager.releaseRecordingReservation("session-a", validRecording.name);
+  });
+
+  it("returns a redacted failure when reservation release rejects after persistence", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-release-reject-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const { server, extension } = await setupReservedRecording(recordingsDir);
+    const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
+      .mockRejectedValue(new Error("state unavailable"));
+
+    await expect(persistRecordingMessage(extension, "persist-release-reject")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-release-reject",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(true);
+
+    release.mockRestore();
+    await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(true);
+    await server.stateManager.releaseRecordingReservation("session-a", validRecording.name);
   });
 
   it("returns a redacted correlated error for the wrong live owner without writing", async () => {

@@ -610,7 +610,17 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             }
 
             saveRecordingToFile(recording, options.recordingsDir);
-            await stateManager.releaseRecordingReservation(sessionId, recording.name);
+            const released = await stateManager.releaseRecordingReservation(
+              sessionId,
+              recording.name,
+            );
+            if (!released) {
+              const stillLive = await stateManager.hasRecordingReservation(
+                sessionId,
+                recording.name,
+              );
+              if (stillLive) throw new Error("Recording reservation release failed");
+            }
             safeSend(ws, {
               type: "persistRecordingResult",
               id: msg.id,
