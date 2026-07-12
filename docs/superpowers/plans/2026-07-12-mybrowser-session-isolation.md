@@ -422,7 +422,7 @@ git commit -m "fix: fail in-flight tools on worker restart"
 
 **Interfaces:**
 - Produces: `SessionStateStore`, `RequestScheduler`, `RequestToolContext`, and `TOOL_METADATA`.
-- `RequestScheduler.runTab(tabId, meta, work)` and `runSession(sessionId, meta, work)` receive `{ requestId, sessionId, expiresAt }`; `cancelTab(tabId, code)` and `cancelSession(sessionId, code)` reject matching queued entries with stable protocol error codes.
+- `RequestScheduler.runTab(tabId, meta, work)`, `runSession(sessionId, meta, work)`, and `runGlobal(meta, work)` receive `{ requestId, sessionId, expiresAt }`; `cancelTab(tabId, code)` and `cancelSession(sessionId, code)` reject matching queued entries with stable protocol error codes.
 - `SessionStateStore` exposes `getLastTab(sessionId)`, `setLastTab(sessionId, tabId)`, `clearTab(tabId)`, and `clearSession(sessionId)`.
 
 - [ ] **Step 1: Write deterministic state and scheduler tests**
@@ -480,9 +480,9 @@ The background dispatch flow becomes:
 ```ts
 validate envelope
 hydrate session state
-resolve initial tab when metadata.scope === "tab"
+resolve an initial tab when metadata.tab === "required"; resolve one when available for "optional"
 create RequestToolContext
-run through scheduler.runTab or scheduler.runSession
+dispatch by metadata.queue through runTab, runSession, runGlobal, or directly for "none"
 call handleTool
 send correlated response
 ```
