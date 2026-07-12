@@ -11,6 +11,14 @@ import { RequestScheduler } from '../../lib/request-scheduler';
 import { SessionStateStore } from '../../lib/session-state';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
+import { RECORDING_RENEWAL_ALARM, runRecordedAction } from '../../lib/recorder';
+import {
+  acceptRecordingServerMessage,
+  configureRecordingTransport,
+  disconnectRecordingTransport,
+  getRecordingManager,
+  getTerminatedRecordingSession,
+} from '../../lib/recording-runtime';
 import {
   enableRuntime,
   enablePageDomain,
@@ -137,6 +145,11 @@ export default defineBackground(() => {
     }
   }
 
+  configureRecordingTransport((message) => sendToOffscreen({
+    type: '_os_ws_send',
+    payload: JSON.stringify(message),
+  }));
+
   /** Send a message to offscreen and await a reply (port only) */
   function requestFromOffscreen(message: Record<string, unknown>): Promise<unknown> {
     return new Promise((resolve) => {
@@ -210,6 +223,12 @@ export default defineBackground(() => {
       archived?: number;
       error?: string;
     };
+    if (acceptRecordingServerMessage(parsed)) return;
+    const terminatedSessionId = getTerminatedRecordingSession(parsed);
+    if (terminatedSessionId) {
+      await getRecordingManager().abortSession(terminatedSessionId);
+      return;
+    }
     if (anyMsg.type === 'saveNoteResult' && anyMsg.id) {
       const cb = pendingNoteSaves.get(anyMsg.id);
       if (cb) {
@@ -287,7 +306,20 @@ export default defineBackground(() => {
       };
       const work = async (): Promise<unknown> => {
         if (expiresAt <= Date.now()) throw new Error('REQUEST_EXPIRED');
-        return handleTool(request.type, request.payload, context);
+        const run = () => handleTool(request.type, request.payload, context);
+        if (!metadata.recordable) return run();
+        return runRecordedAction({
+          manager: getRecordingManager(),
+          sessionId: request.sessionId,
+          toolName: request.type as ToolName,
+          args: request.payload,
+          tabId,
+          run,
+          currentUrl: async () => {
+            const tab = await chrome.tabs.get(tabId);
+            return tab.url || '';
+          },
+        });
       };
 
       let result: unknown;
@@ -312,16 +344,20 @@ export default defineBackground(() => {
         payload: { requestId: request.id, result },
       };
     } catch (e) {
-      recordExtensionIssue('tool_failure', e instanceof Error ? e.message : String(e), {
+      const activeRecording = getRecordingManager().isRecording(request.sessionId);
+      const errorMessage = activeRecording
+        ? 'RECORDED_TOOL_ACTION_FAILED'
+        : e instanceof Error ? e.message : String(e);
+      recordExtensionIssue('tool_failure', errorMessage, {
         toolName: request.type,
-        payload: request.payload,
-        stack: e instanceof Error ? e.stack : undefined,
+        payload: activeRecording ? '[redacted while recording]' : request.payload,
+        stack: activeRecording ? undefined : e instanceof Error ? e.stack : undefined,
       });
       response = {
         type: 'messageResponse',
         payload: {
           requestId: request.id,
-          error: e instanceof Error ? e.message : String(e),
+          error: errorMessage,
         },
       };
     }
@@ -363,6 +399,7 @@ export default defineBackground(() => {
       }
 
       if (msg.type === '_os_disconnected') {
+        disconnectRecordingTransport();
         recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
         setBadge('disconnected');
         return;
@@ -378,6 +415,7 @@ export default defineBackground(() => {
 
     p.onDisconnect.addListener(() => {
       if (offscreenPort === p) offscreenPort = null;
+      disconnectRecordingTransport();
     });
   });
 
@@ -395,6 +433,7 @@ export default defineBackground(() => {
   });
 
   addMessageHandler('_os_disconnected', async () => {
+    disconnectRecordingTransport();
     recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
     setBadge('disconnected');
   });
@@ -857,6 +896,8 @@ export default defineBackground(() => {
   chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === 'keepalive') {
       await ensureAlive();
+    } else if (alarm.name === RECORDING_RENEWAL_ALARM) {
+      await getRecordingManager().renewPersistedSessions();
     }
   });
 

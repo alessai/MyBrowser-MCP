@@ -31,38 +31,15 @@ export interface ReplayResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a substitution map from recording variables and overrides.
- * Original recording captured certain values (e.g. typed text).
- * If the recording has variables: {username: "admin"} and the replay
- * overrides with {username: "newuser"}, we substitute "admin" -> "newuser"
- * in all string args.
- */
-function buildSubstitutionMap(
-  recording: Recording,
-  overrides?: Record<string, string>,
-): Map<string, string> {
-  const map = new Map<string, string>();
-  if (!recording.variables || !overrides) return map;
-
-  for (const [key, originalValue] of Object.entries(recording.variables)) {
-    const newValue = overrides[key];
-    if (newValue !== undefined && newValue !== originalValue) {
-      map.set(originalValue, newValue);
-    }
-  }
-  return map;
-}
-
-/**
  * Apply variable substitutions to step args.
- * Replaces exact string matches and {{variable}} patterns.
+ * Replaces only explicit {{variable}} patterns. Recordings never retain
+ * original values or a reverse-value map.
  */
 function substituteArgs(
   args: Record<string, unknown>,
-  substitutions: Map<string, string>,
   variables?: Record<string, string>,
 ): Record<string, unknown> {
-  if (substitutions.size === 0 && !variables) return { ...args };
+  if (!variables) return { ...args };
 
   const result: Record<string, unknown> = {};
 
@@ -77,15 +54,6 @@ function substituteArgs(
         });
       }
 
-      // Replace exact value matches
-      for (const [original, replacement] of substitutions) {
-        if (substituted === original) {
-          substituted = replacement;
-        } else if (substituted.includes(original)) {
-          substituted = substituted.split(original).join(replacement);
-        }
-      }
-
       result[key] = substituted;
     } else if (Array.isArray(value)) {
       result[key] = value.map((item) => {
@@ -94,20 +62,15 @@ function substituteArgs(
           if (variables) {
             s = s.replace(/\{\{(\w+)\}\}/g, (_m, varName: string) => variables[varName] ?? _m);
           }
-          for (const [original, replacement] of substitutions) {
-            if (s === original) { s = replacement; }
-            else if (s.includes(original)) { s = s.split(original).join(replacement); }
-          }
           return s;
         } else if (typeof item === 'object' && item !== null) {
-          return substituteArgs(item as Record<string, unknown>, substitutions, variables);
+          return substituteArgs(item as Record<string, unknown>, variables);
         }
         return item;
       });
     } else if (typeof value === 'object' && value !== null) {
       result[key] = substituteArgs(
         value as Record<string, unknown>,
-        substitutions,
         variables,
       );
     } else {
@@ -151,7 +114,6 @@ export async function replayRecording(
     };
   }
 
-  const substitutions = buildSubstitutionMap(recording, variables);
   const results: StepResult[] = [];
 
   // Determine step range (1-based input, convert to 0-based)
@@ -173,7 +135,7 @@ export async function replayRecording(
 
   for (let i = startIdx; i < endIdx; i++) {
     const step = steps[i]!;
-    const args = substituteArgs({ ...step.args }, substitutions, variables);
+    const args = substituteArgs({ ...step.args }, variables);
     const startTime = Date.now();
 
     let stepResult: StepResult;

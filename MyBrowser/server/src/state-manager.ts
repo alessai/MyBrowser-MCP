@@ -360,6 +360,7 @@ export class LocalStateManager implements IStateManager {
       }
     }
     this.sessions.delete(sessionId);
+    this._broadcastToBrowsersFn("session_closed", { sessionId });
   }
 
   async touchSession(sessionId: string): Promise<void> {

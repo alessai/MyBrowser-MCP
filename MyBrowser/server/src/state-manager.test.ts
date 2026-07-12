@@ -161,11 +161,12 @@ describe("LocalStateManager recording reservations", () => {
 
     await state.removeSession("session-a");
 
+    expect(broadcast).toHaveBeenCalledWith("session_closed", { sessionId: "session-a" });
     await expect(state.hasRecordingReservation("session-a", "first")).resolves.toBe(false);
     await expect(state.hasRecordingReservation("session-a", "second")).resolves.toBe(false);
     await expect(state.hasRecordingReservation("session-b", "other")).resolves.toBe(true);
     await vi.runAllTimersAsync();
-    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledTimes(2);
     expect(broadcast).toHaveBeenCalledWith("recording_reservation_expired", {
       sessionId: "session-b",
       name: "other",

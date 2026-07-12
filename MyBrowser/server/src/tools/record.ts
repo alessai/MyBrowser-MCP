@@ -94,28 +94,147 @@ const RecordStopArgs = z.object({}).strict();
 
 const RecordListArgs = z.object({}).strict();
 
+const MAX_RECORDING_STEPS = 1_000;
+const MAX_RECORDING_BYTES = 2 * 1024 * 1024;
+
+const RequiredVariableSchema = z.object({
+  name: z.string().regex(/^(input|form|select|navigation|clipboard)_\d+$/),
+  source: z.enum(["text", "form", "select", "navigation", "clipboard"]),
+  hint: z.string().regex(/^(text|form|select|navigation|clipboard)_input_\d+$/),
+}).strict().superRefine((variable, context) => {
+  const match = /^(input|form|select|navigation|clipboard)_(\d+)$/.exec(variable.name);
+  if (!match) return;
+  const expectedSource = match[1] === "input" ? "text" : match[1];
+  if (variable.source !== expectedSource || variable.hint !== `${expectedSource}_input_${match[2]}`) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid generic variable metadata" });
+  }
+});
+
 const RecordedStepSchema = z.object({
   action: z.string().min(1),
   args: z.record(z.unknown()),
   timestamp: z.number().finite(),
   durationMs: z.number().finite().nonnegative(),
   url: z.string(),
-  result: z.unknown().optional(),
-});
+}).strict();
 
 export const RecordingSchema = z.object({
   name: z.string().min(1),
   startedAt: z.number().finite(),
   stoppedAt: z.number().finite(),
   url: z.string(),
-  steps: z.array(RecordedStepSchema),
-  variables: z.record(z.string()).optional(),
+  steps: z.array(RecordedStepSchema).max(MAX_RECORDING_STEPS),
+  requiredVariables: z.array(RequiredVariableSchema),
 });
 
 export type SanitizedRecording = z.infer<typeof RecordingSchema>;
 
+type VariableSource = "text" | "form" | "select" | "navigation" | "clipboard";
+
+const RECORDABLE_ACTIONS = new Set([
+  "browser_navigate",
+  "browser_go_back",
+  "browser_go_forward",
+  "browser_wait",
+  "browser_click",
+  "browser_type",
+  "browser_hover",
+  "browser_press_key",
+  "browser_drag",
+  "browser_select_option",
+  "browser_set_viewport",
+  "browser_reset_viewport",
+  "browser_fill_form",
+  "browser_wait_for",
+  "browser_clipboard",
+]);
+
+function isSanitizedPageUrl(value: string): boolean {
+  if (value.length > 8_192) return false;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.search || url.hash) return false;
+    if (url.origin !== "null") return `${url.origin}${url.pathname}` === value;
+    return ["about:", "chrome:", "edge:"].includes(url.protocol)
+      && `${url.protocol}${url.pathname}` === value;
+  } catch {
+    return value === "";
+  }
+}
+
+function validatePlaceholder(
+  value: unknown,
+  source: VariableSource,
+  variables: ReadonlyMap<string, VariableSource>,
+  used: Set<string>,
+): boolean {
+  if (typeof value !== "string") return false;
+  const match = /^\{\{((input|form|select|navigation|clipboard)_\d+)\}\}$/.exec(value);
+  if (!match) return false;
+  const actualSource = match[2] === "input" ? "text" : match[2];
+  if (actualSource !== source || variables.get(match[1]!) !== source) return false;
+  if (used.has(match[1]!)) return false;
+  used.add(match[1]!);
+  return true;
+}
+
+function hasSanitizedActionData(recording: SanitizedRecording): boolean {
+  if (!isSanitizedPageUrl(recording.url)) return false;
+  if (!recording.requiredVariables.every((variable, index) => {
+    const match = /_(\d+)$/.exec(variable.name);
+    return match !== null && Number(match[1]) === index + 1;
+  })) return false;
+  const variables = new Map<string, VariableSource>(
+    recording.requiredVariables.map((variable) => [variable.name, variable.source]),
+  );
+  if (variables.size !== recording.requiredVariables.length) return false;
+  const used = new Set<string>();
+
+  for (const step of recording.steps) {
+    if (!RECORDABLE_ACTIONS.has(step.action) || !isSanitizedPageUrl(step.url)) return false;
+    const args = step.args;
+    if (step.action === "browser_type" && !validatePlaceholder(args.text, "text", variables, used)) {
+      return false;
+    }
+    if (step.action === "browser_fill_form") {
+      if (typeof args.fields !== "object" || args.fields === null || Array.isArray(args.fields)) return false;
+      if (!Object.values(args.fields).every((value) => validatePlaceholder(value, "form", variables, used))) {
+        return false;
+      }
+    }
+    if (step.action === "browser_select_option") {
+      if (!Array.isArray(args.values)
+        || !args.values.every((value) => validatePlaceholder(value, "select", variables, used))) {
+        return false;
+      }
+    }
+    if (step.action === "browser_navigate") {
+      const url = args.url;
+      if (typeof url !== "string") return false;
+      if (!isSanitizedPageUrl(url)
+        && !validatePlaceholder(url, "navigation", variables, used)) return false;
+    }
+    if (step.action === "browser_clipboard" && args.text !== undefined
+      && !validatePlaceholder(args.text, "clipboard", variables, used)) return false;
+    if (step.action === "browser_wait_for" && args.value !== undefined
+      && !validatePlaceholder(args.value, "text", variables, used)) return false;
+  }
+
+  return used.size === variables.size
+    && [...variables.keys()].every((name) => used.has(name));
+}
+
 export function sanitizeRecording(recording: unknown): SanitizedRecording {
+  if (typeof recording === "object" && recording !== null && "variables" in recording) {
+    throw new Error("Legacy recording variables are not accepted");
+  }
+  if (Buffer.byteLength(JSON.stringify(recording), "utf8") > MAX_RECORDING_BYTES) {
+    throw new Error("Recording exceeds the byte limit");
+  }
   const parsed = RecordingSchema.parse(recording);
+  if (!hasSanitizedActionData(parsed)) {
+    throw new Error("Recording contains unsanitized action data");
+  }
   return { ...parsed, name: normalizeRecordingName(parsed.name) };
 }
 

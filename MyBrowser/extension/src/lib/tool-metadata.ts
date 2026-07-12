@@ -1,40 +1,46 @@
-export interface ToolMetadata {
+interface ToolMetadataBase {
   tab: 'required' | 'optional' | 'none';
   queue: 'tab' | 'session' | 'global' | 'none';
   mutatesTab: boolean;
-  recordable: boolean;
 }
 
+export type RecordingStringKind = 'safe' | 'text' | 'form' | 'select' | 'navigation' | 'clipboard';
+
+export type ToolMetadata = ToolMetadataBase & (
+  | { recordable: true; recordingStrings: Readonly<Record<string, RecordingStringKind>> }
+  | { recordable: false; recordingStrings?: never }
+);
+
 export const TOOL_METADATA = {
-  browser_navigate: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_go_back: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_go_forward: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_wait: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: true },
+  browser_navigate: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { url: 'navigation' } },
+  browser_go_back: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: {} },
+  browser_go_forward: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: {} },
+  browser_wait: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: true, recordingStrings: {} },
   browser_snapshot: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
-  browser_click: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_type: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_hover: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_press_key: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_drag: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_select_option: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
+  browser_click: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe' } },
+  browser_type: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', text: 'text' } },
+  browser_hover: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe' } },
+  browser_press_key: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { key: 'safe' } },
+  browser_drag: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { startElement: 'safe', startRef: 'safe', startSelector: 'safe', endElement: 'safe', endRef: 'safe', endSelector: 'safe' } },
+  browser_select_option: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', 'values.*': 'select' } },
   browser_screenshot: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_get_console_logs: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: false },
-  browser_set_viewport: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  browser_reset_viewport: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
+  browser_set_viewport: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { preset: 'safe', orientation: 'safe' } },
+  browser_reset_viewport: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: {} },
   browser_viewport_info: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_diagnostics: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: false },
   generateMarks: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   clearMarks: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_extract: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
-  browser_fill_form: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
+  browser_fill_form: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { 'fields.*': 'form', submitText: 'safe' } },
   browser_find: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_action: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
-  browser_wait_for: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: true },
+  browser_wait_for: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: true, recordingStrings: { condition: 'safe', value: 'text', selector: 'safe' } },
   browser_assert: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   list_tabs: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
-  select_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
-  new_tab: { tab: 'none', queue: 'global', mutatesTab: true, recordable: true },
-  close_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true },
+  select_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
+  new_tab: { tab: 'none', queue: 'global', mutatesTab: true, recordable: false },
+  close_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   browser_record_start: { tab: 'required', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_stop: { tab: 'none', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_list: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
@@ -48,7 +54,7 @@ export const TOOL_METADATA = {
   browser_performance: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_upload: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   browser_download: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: false },
-  browser_clipboard: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
+  browser_clipboard: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { action: 'safe', text: 'clipboard' } },
   getUrl: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   getTitle: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_register_handler: { tab: 'optional', queue: 'global', mutatesTab: false, recordable: false },

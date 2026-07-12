@@ -51,14 +51,13 @@ const validRecording = {
   stoppedAt: 200,
   url: "https://example.test/",
   steps: [{
-    action: "browser_click",
-    args: { ref: "e1" },
+    action: "browser_type",
+    args: { element: "Account input", text: "{{input_1}}" },
     timestamp: 110,
     durationMs: 5,
     url: "https://example.test/",
-    result: { ok: true },
   }],
-  variables: { account: "demo" },
+  requiredVariables: [{ name: "input_1", source: "text", hint: "text_input_1" }],
 };
 
 function getRecordingApi() {
@@ -748,6 +747,91 @@ describe("recording tools and persistence", () => {
     expect(() => statSync(recordingsDir)).toThrow();
   });
 
+  it("rejects legacy reverse values and descriptive required-variable metadata", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-metadata-"));
+    tempDirs.push(base);
+    const secret = "SECRET_SERVER_SCHEMA_ALPHA_1904";
+    let legacyError = "";
+    try {
+      getRecordingApi().saveRecordingToFile({
+        ...validRecording,
+        variables: { account: secret },
+      });
+    } catch (error) {
+      legacyError = error instanceof Error ? error.message : String(error);
+    }
+    expect(legacyError).not.toBe("");
+    expect(legacyError).not.toContain(secret);
+
+    expect(() => getRecordingApi().saveRecordingToFile({
+      ...validRecording,
+      requiredVariables: [{
+        name: "input_1",
+        source: "text",
+        hint: "Password field",
+        label: "Private account",
+      }],
+    }, join(base, "descriptive"))).toThrow();
+    expect(() => getRecordingApi().saveRecordingToFile({
+      ...validRecording,
+      steps: [{
+        ...validRecording.steps[0],
+        args: { text: "{{input_2}}" },
+      }],
+      requiredVariables: [{ name: "input_2", source: "text", hint: "text_input_2" }],
+    }, join(base, "counter"))).toThrow();
+  });
+
+  it("rejects original sensitive action values without echoing canaries", () => {
+    const unsafeSteps = [
+      { action: "browser_type", args: { text: "SECRET_SERVER_TYPE_4109" } },
+      { action: "browser_fill_form", args: { fields: { Account: "SECRET_SERVER_FORM_5628" } } },
+      { action: "browser_select_option", args: { values: ["SECRET_SERVER_SELECT_7813"] } },
+      { action: "browser_navigate", args: { url: "https://user:SECRET_SERVER_URL_9337@example.test/path?token=private#hash" } },
+      { action: "browser_clipboard", args: { action: "write", text: "SECRET_SERVER_CLIPBOARD_2465" } },
+    ];
+
+    for (const [index, unsafe] of unsafeSteps.entries()) {
+      const base = mkdtempSync(join(tmpdir(), `mybrowser-recording-sensitive-${index}-`));
+      tempDirs.push(base);
+      const recordingsDir = join(base, "recordings");
+      let message = "";
+      try {
+        getRecordingApi().saveRecordingToFile({
+          ...validRecording,
+          steps: [{
+            ...validRecording.steps[0],
+            ...unsafe,
+          }],
+          requiredVariables: [],
+        }, recordingsDir);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).not.toBe("");
+      expect(message).not.toContain("SECRET_SERVER_");
+      expect(() => statSync(recordingsDir)).toThrow();
+    }
+  });
+
+  it("rejects recordings beyond the step and byte caps before filesystem effects", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-caps-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    expect(() => getRecordingApi().saveRecordingToFile({
+      ...validRecording,
+      steps: Array.from({ length: 1_001 }, () => validRecording.steps[0]),
+    }, recordingsDir)).toThrow();
+    expect(() => getRecordingApi().saveRecordingToFile({
+      ...validRecording,
+      steps: [{
+        ...validRecording.steps[0],
+        args: { element: "x".repeat(2 * 1024 * 1024), text: "{{input_1}}" },
+      }],
+    }, recordingsDir)).toThrow();
+    expect(() => statSync(recordingsDir)).toThrow();
+  });
+
   it("writes exclusively with hardened modes and never overwrites", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-exclusive-"));
     tempDirs.push(base);
@@ -1001,9 +1085,8 @@ describe("recording tools and persistence", () => {
     getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
     const filePath = join(recordingsDir, "Checkout_Flow.json");
     writeFileSync(filePath, JSON.stringify({
-      variables: validRecording.variables,
+      requiredVariables: validRecording.requiredVariables,
       steps: validRecording.steps.map((step) => ({
-        result: step.result,
         url: step.url,
         durationMs: step.durationMs,
         timestamp: step.timestamp,

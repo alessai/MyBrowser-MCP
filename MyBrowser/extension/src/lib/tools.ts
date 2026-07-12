@@ -31,20 +31,14 @@ import {
 } from './events';
 import { runActionSequence, type ActionStep } from './action-sequencer';
 import {
-  isRecording,
-  startRecording,
-  stopRecording,
-  shouldRecord,
-  pushStep,
-  setReplaying,
   saveRecordingToStorage,
   loadRecordingFromStorage,
   listRecordingsFromStorage,
   type Recording,
 } from './recorder';
+import { getRecordingManager } from './recording-runtime';
 import { replayRecording, type ReplayOptions } from './replayer';
 import { getExtensionDiagnostics } from './diagnostics';
-import { TOOL_METADATA, type ToolName } from './tool-metadata';
 
 const STABLE_DOM_TIMEOUT_MS = 2000;
 const STABLE_DOM_MIN_MS = 500;
@@ -384,20 +378,10 @@ async function captureScreenshot(tabId: number): Promise<string> {
   return `data:image/png;base64,${result!.data}`;
 }
 
-// --- Helper: send a message to the server via WS (fire-and-forget) ---
-
-async function sendToServer(type: string, payload: unknown): Promise<void> {
-  try {
-    const msg = JSON.stringify({ type, payload });
-    await chrome.runtime.sendMessage({ type: '_os_ws_send', payload: msg });
-  } catch {
-    // Server unreachable — recording still saved locally
-  }
-}
-
 // --- Tool context ---
 
 export interface ToolContext {
+  readonly sessionId: string;
   input: InputDevice;
   services: RequestToolServices;
   getTabId: () => number;
@@ -670,7 +654,7 @@ const handlers: Record<string, ToolHandler> = {
         attachedTabs: getAttachedTabs(),
       },
       handlers: listHandlers(),
-      recording: { active: isRecording() },
+      recording: { active: getRecordingManager().isRecording(ctx.sessionId) },
       debugger: {
         networkCaptureActive: ctx.services.networkCapture.active,
         consoleErrors,
@@ -853,22 +837,12 @@ const handlers: Record<string, ToolHandler> = {
       const tab = await chrome.tabs.get(tabId);
       startUrl = tab.url || '';
     } catch { /* no tab yet */ }
-    startRecording(name, startUrl);
+    await getRecordingManager().start(ctx.sessionId, name, tabId, startUrl);
     return { status: 'recording', name };
   },
 
   async browser_record_stop(_args, ctx) {
-    const recording = stopRecording();
-    // Save to chrome.storage.local
-    await saveRecordingToStorage(recording);
-    // Also send to server for filesystem persistence
-    await sendToServer('saveRecording', recording);
-    return {
-      name: recording.name,
-      steps: recording.steps.length,
-      durationMs: (recording.stoppedAt ?? Date.now()) - recording.startedAt,
-      recording,
-    };
+    return getRecordingManager().stop(ctx.sessionId);
   },
 
   async browser_record_list() {
@@ -911,11 +885,11 @@ const handlers: Record<string, ToolHandler> = {
       stopAtStep: args.stopAtStep as number | undefined,
     };
 
-    setReplaying(true);
+    getRecordingManager().setReplaying(ctx.sessionId, true);
     try {
       return await replayRecording(options, ctx);
     } finally {
-      setReplaying(false);
+      getRecordingManager().setReplaying(ctx.sessionId, false);
     }
   },
 
@@ -1346,14 +1320,14 @@ const handlers: Record<string, ToolHandler> = {
           awaitPromise: true,
           returnByValue: true,
         });
-        return { success: true, action: 'write', text };
+        return { success: true, action: 'write' };
       } catch {
         // Fallback: use content script
         await ensureContentScript(tabId);
         await sendToTab(tabId, 'cs_eval', {
           code: `navigator.clipboard.writeText(${JSON.stringify(text)}).then(() => 'ok').catch(e => e.message)`,
         });
-        return { success: true, action: 'write', text };
+        return { success: true, action: 'write' };
       }
     }
 
@@ -1512,39 +1486,5 @@ export async function handleTool(
   const handler = handlers[name];
   if (!handler) throw new Error(`Unknown tool: ${name}`);
 
-  // Capture timing + URL for recording
-  const metadata = TOOL_METADATA[name as ToolName];
-  const recordThis = shouldRecord(metadata.recordable);
-  const startTime = recordThis ? Date.now() : 0;
-
-  const result = await handler(args, ctx);
-
-  // Push step to active recording if applicable
-  if (recordThis) {
-    // Deep clone args to prevent mutation
-    const recordedArgs: Record<string, unknown> = JSON.parse(JSON.stringify(args));
-    // Resolve refs to stable CSS selectors for replay portability
-    if (recordedArgs.ref && ctx.getTabId() > 0) {
-      try {
-        const selector = await resolveTarget(ctx.getTabId(), recordedArgs);
-        recordedArgs.selector = selector;
-        delete recordedArgs.ref;
-        delete recordedArgs.mark;
-      } catch { /* keep original args */ }
-    }
-    let url = '';
-    try {
-      const tab = await chrome.tabs.get(ctx.getTabId());
-      url = tab.url || '';
-    } catch { /* tab may be gone after close_tab */ }
-    pushStep({
-      action: name,
-      args: recordedArgs,
-      timestamp: startTime,
-      durationMs: Date.now() - startTime,
-      url,
-    });
-  }
-
-  return result;
+  return handler(args, ctx);
 }

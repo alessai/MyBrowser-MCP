@@ -8,12 +8,14 @@ describe("TOOL_METADATA", () => {
     expect(Object.keys(TOOL_METADATA).sort()).toEqual(getRegisteredToolNames().sort());
 
     for (const metadata of Object.values(TOOL_METADATA)) {
-      expect(Object.keys(metadata).sort()).toEqual([
+      const expectedKeys = [
         "mutatesTab",
         "queue",
         "recordable",
         "tab",
-      ]);
+      ];
+      if (metadata.recordable) expectedKeys.push("recordingStrings");
+      expect(Object.keys(metadata).sort()).toEqual(expectedKeys.sort());
     }
   });
 
@@ -33,31 +35,47 @@ describe("TOOL_METADATA", () => {
     expect(TOOL_METADATA.browser_replay.queue).toBe("tab");
   });
 
-  it("preserves current recorder eligibility", () => {
+  it("defines exhaustive string metadata for every recordable tool", () => {
     const recordable = Object.entries(TOOL_METADATA)
       .filter(([, metadata]) => metadata.recordable)
-      .map(([name]) => name)
+      .map(([name, metadata]) => [name, "recordingStrings" in metadata ? metadata.recordingStrings : undefined])
       .sort();
 
     expect(recordable).toEqual([
-      "browser_click",
-      "browser_drag",
-      "browser_fill_form",
-      "browser_go_back",
-      "browser_go_forward",
-      "browser_hover",
-      "browser_navigate",
-      "browser_press_key",
-      "browser_reset_viewport",
-      "browser_select_option",
-      "browser_set_viewport",
-      "browser_type",
-      "browser_wait",
-      "browser_wait_for",
-      "close_tab",
-      "new_tab",
-      "select_tab",
+      ["browser_click", {
+        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        ref: "safe", role: "safe", selector: "safe",
+      }],
+      ["browser_clipboard", { action: "safe", text: "clipboard" }],
+      ["browser_drag", {
+        endElement: "safe", endRef: "safe", endSelector: "safe",
+        startElement: "safe", startRef: "safe", startSelector: "safe",
+      }],
+      ["browser_fill_form", { "fields.*": "form", submitText: "safe" }],
+      ["browser_go_back", {}],
+      ["browser_go_forward", {}],
+      ["browser_hover", {
+        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        ref: "safe", role: "safe", selector: "safe",
+      }],
+      ["browser_navigate", { url: "navigation" }],
+      ["browser_press_key", { key: "safe" }],
+      ["browser_reset_viewport", {}],
+      ["browser_select_option", {
+        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        ref: "safe", role: "safe", selector: "safe", "values.*": "select",
+      }],
+      ["browser_set_viewport", { orientation: "safe", preset: "safe" }],
+      ["browser_type", {
+        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        ref: "safe", role: "safe", selector: "safe", text: "text",
+      }],
+      ["browser_wait", {}],
+      ["browser_wait_for", { condition: "safe", selector: "safe", value: "text" }],
     ]);
+    expect(TOOL_METADATA.new_tab.recordable).toBe(false);
+    expect(TOOL_METADATA.select_tab.recordable).toBe(false);
+    expect(TOOL_METADATA.close_tab.recordable).toBe(false);
     expect(TOOL_METADATA.browser_wait.tab).toBe("optional");
   });
 
