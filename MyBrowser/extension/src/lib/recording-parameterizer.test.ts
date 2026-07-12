@@ -133,6 +133,25 @@ describe("parameterizeArgs", () => {
       expect(JSON.stringify(result)).not.toContain(url);
     }
   });
+
+  it("parameterizes every explicit non-HTTP(S) navigation scheme", () => {
+    const state: ParameterizationState = { nextVariable: 1 };
+    const urls = [
+      "chrome://settings/passwords",
+      "about:blank",
+      "file:///tmp/SECRET_FILE_URL_4421",
+      "data:text/plain,SECRET_DATA_URL_5318",
+      "javascript:alert('SECRET_JS_URL_6209')",
+      "custom-scheme://host/SECRET_CUSTOM_URL_7190",
+    ];
+
+    for (const url of urls) {
+      const result = parameterizeArgs("browser_navigate", { url }, state);
+      expect(result.args.url).toMatch(/^\{\{navigation_\d+\}\}$/);
+      expect(JSON.stringify(result)).not.toContain(url);
+    }
+    expect(state.nextVariable).toBe(7);
+  });
 });
 
 describe("sanitizePageUrl", () => {
@@ -143,5 +162,22 @@ describe("sanitizePageUrl", () => {
     expectAbsent(sanitizePageUrl(
       `https://user:pass@example.test/orders/42?token=${SECRET_NAVIGATION}#receipt`,
     ), [SECRET_NAVIGATION, "user", "pass", "receipt"]);
+  });
+
+  it("keeps only valid HTTP(S) origin plus pathname and empties passive non-web metadata", () => {
+    expect(sanitizePageUrl("http://example.test/plain/path?private=1#fragment"))
+      .toBe("http://example.test/plain/path");
+    expect(sanitizePageUrl("https://example.test/secure/path"))
+      .toBe("https://example.test/secure/path");
+    for (const url of [
+      "chrome://settings/passwords",
+      "about:blank",
+      "file:///tmp/SECRET_CAPTURE_FILE_8214",
+      "data:text/plain,SECRET_CAPTURE_DATA_9305",
+      "javascript:alert('SECRET_CAPTURE_JS_1046')",
+      "custom-scheme://host/SECRET_CAPTURE_CUSTOM_2157",
+    ]) {
+      expect(sanitizePageUrl(url), url).toBe("");
+    }
   });
 });

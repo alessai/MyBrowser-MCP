@@ -535,14 +535,14 @@ describe("recording tools and persistence", () => {
     expect(sendSocketMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("stops without a tab and releases a partial recording after sanitizing it", async () => {
+  it("stops without a tab and releases a validated partial recording", async () => {
     const state = createRecordingState();
     const context = {
       sendSocketMessage: vi.fn().mockResolvedValue({
         name: validRecording.name,
         steps: validRecording.steps.length,
         durationMs: 100,
-        recording: { ...validRecording, ignored: "drop-me" },
+        recording: { ...validRecording },
       }),
     } as unknown as Context;
     const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
@@ -563,7 +563,6 @@ describe("recording tools and persistence", () => {
       throw new Error("Expected text recording result content");
     }
     expect(summary.text).toContain("partial");
-    expect(payload.text).not.toContain("ignored");
     expect(state.releaseRecordingReservation).toHaveBeenCalledWith("session-a", "Checkout_Flow");
   });
 
@@ -610,7 +609,7 @@ describe("recording tools and persistence", () => {
           name: validRecording.name,
           steps: validRecording.steps.length,
           durationMs: 100,
-          recording: { ...validRecording, ignored: "drop-me" },
+          recording: { ...validRecording },
         })
         .mockRejectedValueOnce(new Error("No recording in progress")),
     } as unknown as Context;

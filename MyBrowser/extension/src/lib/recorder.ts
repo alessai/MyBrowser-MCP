@@ -29,9 +29,11 @@ export interface Recording {
 export interface RecordingStorage {
   get<T>(key: string): Promise<T | undefined>;
   has(key: string): Promise<boolean>;
+  getKeys(): Promise<string[]>;
   set<T>(key: string, value: T): Promise<void>;
   setMany(values: Record<string, unknown>): Promise<void>;
   remove(key: string): Promise<void>;
+  removeMany(keys: string[]): Promise<void>;
 }
 
 export interface RecordingTransport {
@@ -103,7 +105,8 @@ export const RECORDING_RENEWAL_ALARM = 'active-recordings-renewal';
 export const RECORDING_RENEWAL_MINUTES = 5;
 
 const ACTIVE_PREFIX = 'active-recording:';
-const ACTIVE_INDEX_KEY = 'active-recording-index';
+const ACTIVE_MARKER_PREFIX = 'active-recording-index:';
+const LEGACY_ACTIVE_INDEX_KEY = 'active-recording-index';
 const COMPLETED_PREFIX = 'recording:';
 const COMPLETED_DIGEST_PREFIX = 'recording-digest:';
 const SERVER_TIMEOUT_MS = 10_000;
@@ -121,6 +124,10 @@ class ChromeStorageAdapter implements RecordingStorage {
     return (await this.area.getBytesInUse(key)) > 0;
   }
 
+  async getKeys(): Promise<string[]> {
+    return this.area.getKeys();
+  }
+
   async set<T>(key: string, value: T): Promise<void> {
     await this.area.set({ [key]: value });
   }
@@ -131,6 +138,10 @@ class ChromeStorageAdapter implements RecordingStorage {
 
   async remove(key: string): Promise<void> {
     await this.area.remove(key);
+  }
+
+  async removeMany(keys: string[]): Promise<void> {
+    await this.area.remove(keys);
   }
 }
 
@@ -163,13 +174,6 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   const expected = [...keys].sort();
   return actual.length === expected.length
     && actual.every((key, index) => key === expected[index]);
-}
-
-function parseIndex(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.filter((entry): entry is string => (
-    typeof entry === 'string' && entry.length > 0
-  )))].sort();
 }
 
 function isActiveRecording(
@@ -297,8 +301,7 @@ export class RecordingManager {
       if (byteLength(completedProjection) + COMMIT_OVERHEAD_BYTES > this.limits.maxRecordingBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
-      const index = [...this.active.keys(), sessionId].sort();
-      const aggregateBytes = this.aggregateBytesWith(state, index);
+      const aggregateBytes = this.aggregateBytesWith(state);
       if (aggregateBytes + COMMIT_OVERHEAD_BYTES > this.limits.maxAggregateBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
@@ -309,8 +312,7 @@ export class RecordingManager {
       } catch {
         this.active.delete(sessionId);
         try {
-          await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
-          await this.removeFromIndexUnlocked(sessionId);
+          await this.removeActiveStateUnlocked(sessionId);
         } catch {
           // A later restore rejects incomplete state before renewal.
         }
@@ -373,7 +375,7 @@ export class RecordingManager {
         + COMMIT_OVERHEAD_BYTES;
       const pendingBytes = [...this.pending.values()]
         .reduce((total, entry) => total + entry.reservedAggregateDelta, 0);
-      const aggregateBytes = this.aggregateBytesWith(undefined, [...this.active.keys()].sort());
+      const aggregateBytes = this.aggregateBytesWith();
       if (aggregateBytes + pendingBytes + reservedAggregateDelta > this.limits.maxAggregateBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
@@ -552,8 +554,8 @@ export class RecordingManager {
 
   renewPersistedSessions(): Promise<void> {
     return this.enqueue(async () => {
-      const index = parseIndex(await this.sessionStorage.get<unknown>(ACTIVE_INDEX_KEY));
-      for (const sessionId of index) {
+      const sessionIds = await this.persistedSessionIdsUnlocked();
+      for (const sessionId of sessionIds) {
         const restored = await this.restoreSessionUnlocked(sessionId);
         if (!restored) continue;
         const active = this.active.get(sessionId)!;
@@ -592,63 +594,85 @@ export class RecordingManager {
   }
 
   private async restoreAllUnlocked(): Promise<void> {
-    const index = parseIndex(await this.sessionStorage.get<unknown>(ACTIVE_INDEX_KEY));
-    for (const sessionId of index) await this.restoreSessionUnlocked(sessionId);
+    const sessionIds = await this.persistedSessionIdsUnlocked();
+    for (const sessionId of sessionIds) await this.restoreSessionUnlocked(sessionId);
   }
 
   private async restoreSessionUnlocked(sessionId: string): Promise<boolean> {
     if (this.active.has(sessionId)) return true;
     const stored = await this.sessionStorage.get<unknown>(`${ACTIVE_PREFIX}${sessionId}`);
     if (!isActiveRecording(stored, sessionId, true)) {
-      if (stored !== undefined) await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
-      await this.removeFromIndexUnlocked(sessionId);
+      await this.removeActiveStateUnlocked(sessionId);
       return false;
     }
     const completedProjection = { ...stored.recording, stoppedAt: Number.MAX_SAFE_INTEGER };
     if (stored.recording.steps.length > this.limits.maxSteps
       || byteLength(completedProjection) + COMMIT_OVERHEAD_BYTES > this.limits.maxRecordingBytes) {
-      await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
-      await this.removeFromIndexUnlocked(sessionId);
+      await this.removeActiveStateUnlocked(sessionId);
       return false;
     }
     this.active.set(sessionId, clone(stored));
-    const index = parseIndex(await this.sessionStorage.get<unknown>(ACTIVE_INDEX_KEY));
-    if (this.aggregateBytesWith(undefined, index) + COMMIT_OVERHEAD_BYTES
+    if (this.aggregateBytesWith() + COMMIT_OVERHEAD_BYTES
       > this.limits.maxAggregateBytes) {
       this.active.delete(sessionId);
-      await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
-      await this.removeFromIndexUnlocked(sessionId);
+      await this.removeActiveStateUnlocked(sessionId);
       return false;
     }
-    await this.addToIndexUnlocked(sessionId);
+    await this.persistActiveUnlocked(stored);
     await this.scheduler.ensureRenewal();
     return true;
   }
 
-  private aggregateBytesWith(replacement: ActiveRecording | undefined, index: string[]): number {
-    let total = byteLength(index);
+  private aggregateBytesWith(replacement?: ActiveRecording): number {
+    let total = 0;
     for (const [sessionId, state] of this.active) {
       total += byteLength(replacement?.sessionId === sessionId ? replacement : state);
+      total += byteLength(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
     }
-    if (replacement && !this.active.has(replacement.sessionId)) total += byteLength(replacement);
+    if (replacement && !this.active.has(replacement.sessionId)) {
+      total += byteLength(replacement);
+      total += byteLength(`${ACTIVE_MARKER_PREFIX}${replacement.sessionId}`);
+    }
     return total;
   }
 
   private async persistActiveUnlocked(state: ActiveRecording): Promise<void> {
-    await this.sessionStorage.set(`${ACTIVE_PREFIX}${state.sessionId}`, clone(state));
-    await this.addToIndexUnlocked(state.sessionId);
+    await this.sessionStorage.setMany({
+      [`${ACTIVE_PREFIX}${state.sessionId}`]: clone(state),
+      [`${ACTIVE_MARKER_PREFIX}${state.sessionId}`]: true,
+    });
   }
 
-  private async addToIndexUnlocked(sessionId: string): Promise<void> {
-    const index = parseIndex(await this.sessionStorage.get<unknown>(ACTIVE_INDEX_KEY));
-    await this.sessionStorage.set(ACTIVE_INDEX_KEY, [...new Set([...index, sessionId])].sort());
+  private async persistedSessionIdsUnlocked(): Promise<string[]> {
+    const keys = await this.sessionStorage.getKeys();
+    const isSessionId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
+    const sessionIds = new Set(keys
+      .filter((key) => key.startsWith(ACTIVE_MARKER_PREFIX))
+      .map((key) => key.slice(ACTIVE_MARKER_PREFIX.length))
+      .filter(isSessionId));
+    if (keys.includes(LEGACY_ACTIVE_INDEX_KEY)) {
+      for (const key of keys) {
+        if (key.startsWith(ACTIVE_PREFIX)) {
+          const sessionId = key.slice(ACTIVE_PREFIX.length);
+          if (isSessionId(sessionId)) sessionIds.add(sessionId);
+        }
+      }
+      const migratedMarkers = Object.fromEntries(
+        [...sessionIds].map((sessionId) => [`${ACTIVE_MARKER_PREFIX}${sessionId}`, true]),
+      );
+      if (Object.keys(migratedMarkers).length > 0) {
+        await this.sessionStorage.setMany(migratedMarkers);
+      }
+      await this.sessionStorage.removeMany([LEGACY_ACTIVE_INDEX_KEY]);
+    }
+    return [...sessionIds].sort();
   }
 
-  private async removeFromIndexUnlocked(sessionId: string): Promise<string[]> {
-    const index = parseIndex(await this.sessionStorage.get<unknown>(ACTIVE_INDEX_KEY))
-      .filter((entry) => entry !== sessionId);
-    await this.sessionStorage.set(ACTIVE_INDEX_KEY, index);
-    return index;
+  private async removeActiveStateUnlocked(sessionId: string): Promise<void> {
+    await this.sessionStorage.removeMany([
+      `${ACTIVE_PREFIX}${sessionId}`,
+      `${ACTIVE_MARKER_PREFIX}${sessionId}`,
+    ]);
   }
 
   private async persistCompletedUnlocked(
@@ -679,9 +703,7 @@ export class RecordingManager {
 
   private async finishStopUnlocked(sessionId: string): Promise<boolean> {
     try {
-      await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
-      const remaining = await this.removeFromIndexUnlocked(sessionId);
-      if (remaining.length === 0) await this.scheduler.clearRenewal();
+      await this.removeActiveStateUnlocked(sessionId);
     } catch {
       return false;
     }
@@ -689,6 +711,13 @@ export class RecordingManager {
     this.replaying.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
+    }
+    try {
+      const hasActiveMarkers = (await this.sessionStorage.getKeys())
+        .some((key) => key.startsWith(ACTIVE_MARKER_PREFIX));
+      if (!hasActiveMarkers) await this.scheduler.clearRenewal();
+    } catch {
+      // A stale alarm is harmless because restore enumerates active markers.
     }
     return true;
   }
@@ -765,7 +794,7 @@ export async function loadRecordingFromStorage(name: string): Promise<Recording 
 }
 
 export async function listRecordingsFromStorage(): Promise<string[]> {
-  const keys = await chrome.storage.local.getKeys();
+  const keys = await completedStorage().getKeys();
   return keys
     .filter((key) => key.startsWith(COMPLETED_PREFIX))
     .map((key) => key.slice(COMPLETED_PREFIX.length));

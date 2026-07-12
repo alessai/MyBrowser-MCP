@@ -125,7 +125,7 @@ export const RecordingSchema = z.object({
   url: z.string(),
   steps: z.array(RecordedStepSchema).max(MAX_RECORDING_STEPS),
   requiredVariables: z.array(RequiredVariableSchema),
-});
+}).strict();
 
 export type SanitizedRecording = z.infer<typeof RecordingSchema>;
 
@@ -171,17 +171,20 @@ export const SERVER_RECORDING_NON_STRING_PATHS = {
 
 const RECORDABLE_ACTIONS = new Set(Object.keys(SERVER_RECORDING_STRING_METADATA));
 
-function isSanitizedPageUrl(value: string): boolean {
+function isSanitizedHttpUrl(value: string): boolean {
   if (value.length > 8_192) return false;
   try {
     const url = new URL(value);
     if (url.username || url.password || url.search || url.hash) return false;
-    if (url.origin !== "null") return `${url.origin}${url.pathname}` === value;
-    return ["about:", "chrome:", "edge:"].includes(url.protocol)
-      && `${url.protocol}${url.pathname}` === value;
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && `${url.origin}${url.pathname}` === value;
   } catch {
-    return value === "";
+    return false;
   }
+}
+
+function isSanitizedPageUrl(value: string): boolean {
+  return value === "" || isSanitizedHttpUrl(value);
 }
 
 function validatePlaceholder(
@@ -216,7 +219,7 @@ function validateArgumentStrings(
     const kind = classifications[path] ?? classifications[wildcardPath(path)];
     if (!kind) return false;
     if (kind === "safe") return true;
-    if (kind === "navigation" && isSanitizedPageUrl(value)) return true;
+    if (kind === "navigation" && isSanitizedHttpUrl(value)) return true;
     return validatePlaceholder(value, kind, variables, used);
   }
   if (Array.isArray(value)) {
@@ -273,7 +276,7 @@ function hasSanitizedActionData(recording: SanitizedRecording): boolean {
     if (step.action === "browser_navigate") {
       const url = args.url;
       if (typeof url !== "string") return false;
-      if (!isSanitizedPageUrl(url) && !/^\{\{navigation_\d+\}\}$/.test(url)) return false;
+      if (!isSanitizedHttpUrl(url) && !/^\{\{navigation_\d+\}\}$/.test(url)) return false;
     }
   }
 

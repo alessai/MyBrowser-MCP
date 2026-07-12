@@ -33,9 +33,8 @@ function bounded(value: string): string {
 export function sanitizePageUrl(value: string): string {
   try {
     const url = new URL(value);
-    if (url.origin !== 'null') return bounded(`${url.origin}${url.pathname}`);
-    if (url.protocol === 'about:' || url.protocol === 'chrome:' || url.protocol === 'edge:') {
-      return bounded(`${url.protocol}${url.pathname}`);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return bounded(`${url.origin}${url.pathname}`);
     }
     return '';
   } catch {
@@ -50,7 +49,7 @@ function isSensitiveNavigation(value: string): boolean {
       || url.password.length > 0
       || url.search.length > 0
       || url.hash.length > 0
-      || !['http:', 'https:', 'about:', 'chrome:', 'edge:'].includes(url.protocol);
+      || (url.protocol !== 'http:' && url.protocol !== 'https:');
   } catch {
     return true;
   }

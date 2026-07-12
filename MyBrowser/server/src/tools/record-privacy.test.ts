@@ -163,6 +163,79 @@ describe("recording argument privacy", () => {
     }
   });
 
+  it("allows only HTTP(S) residual metadata and rejects explicit non-web navigation", () => {
+    const explicitEmpty = recording();
+    explicitEmpty.steps = [{
+      action: "browser_navigate",
+      args: { url: "" },
+      timestamp: 1,
+      durationMs: 1,
+      url: "",
+    }];
+    explicitEmpty.requiredVariables = [];
+    expect(() => sanitizeRecording(explicitEmpty)).toThrow("unsanitized action data");
+
+    for (const url of [
+      "http://example.test/orders/7",
+      "https://example.test/orders/7",
+    ]) {
+      const candidate = recording();
+      candidate.url = url;
+      candidate.steps[0]!.url = url;
+      expect(sanitizeRecording(candidate)).toMatchObject({ url });
+    }
+
+    for (const url of [
+      "chrome://settings/passwords",
+      "about:blank",
+      "file:///tmp/SECRET_SERVER_FILE_URL_3021",
+      "data:text/plain,SECRET_SERVER_DATA_URL_4132",
+      "javascript:alert('SECRET_SERVER_JS_URL_5243')",
+      "custom-scheme://host/SECRET_SERVER_CUSTOM_URL_6354",
+    ]) {
+      const explicit = recording();
+      explicit.steps.find((step) => step.action === "browser_navigate")!.args.url = url;
+      expect(() => sanitizeRecording(explicit), url).toThrow("unsanitized action data");
+
+      const passive = recording();
+      passive.url = url;
+      expect(() => sanitizeRecording(passive), url).toThrow("unsanitized action data");
+      passive.url = "";
+      passive.steps[0]!.url = "";
+      expect(sanitizeRecording(passive)).toMatchObject({ url: "" });
+    }
+  });
+
+  it("strictly rejects secret-bearing unknown fields before persistence at every fixed level", () => {
+    const candidates = [
+      () => Object.assign(recording(), { unknownTop: "SECRET_FIXED_TOP_7465" }),
+      () => {
+        const candidate = recording();
+        Object.assign(candidate.steps[0]!, { unknownStep: "SECRET_FIXED_STEP_8576" });
+        return candidate;
+      },
+      () => {
+        const candidate = recording();
+        Object.assign(candidate.requiredVariables[0]!, {
+          unknownVariable: "SECRET_FIXED_VARIABLE_9687",
+        });
+        return candidate;
+      },
+    ];
+
+    for (const createCandidate of candidates) {
+      expect(() => sanitizeRecording(createCandidate())).toThrow();
+      let diskTouched = false;
+      expect(() => saveRecordingToFile(createCandidate(), "/unused", {
+        openSync: () => {
+          diskTouched = true;
+          throw new Error("DISK_TOUCHED");
+        },
+      })).toThrow();
+      expect(diskTouched).toBe(false);
+    }
+  });
+
   it("never passes an unclassified canary to disk operations", () => {
     const candidate = recording();
     candidate.steps[0]!.args.extra = SECRET_EXTRA;

@@ -45,6 +45,8 @@ class MemoryStorage implements RecordingStorage {
   failSetKey: string | undefined;
   failSetKeyOnCall: number | undefined;
   failRemoveKey: string | undefined;
+  failRemoveMany: Error | undefined;
+  readonly removeManyCalls: string[][] = [];
   private readonly setCounts = new Map<string, number>();
 
   constructor(events: string[] = []) {
@@ -61,6 +63,10 @@ class MemoryStorage implements RecordingStorage {
   async has(key: string): Promise<boolean> {
     if (this.failHas) throw this.failHas;
     return this.values.has(key);
+  }
+
+  async getKeys(): Promise<string[]> {
+    return [...this.values.keys()];
   }
 
   async set<T>(key: string, value: T): Promise<void> {
@@ -94,11 +100,23 @@ class MemoryStorage implements RecordingStorage {
     this.events.push(`storage:remove:${key}`);
     this.values.delete(key);
   }
+
+  async removeMany(keys: string[]): Promise<void> {
+    this.removeManyCalls.push([...keys]);
+    if (this.failRemoveMany || keys.some((key) => this.failRemoveKey === key)) {
+      throw this.failRemoveMany ?? new Error("REMOVE_FAILED");
+    }
+    for (const key of keys) {
+      this.events.push(`storage:remove:${key}`);
+      this.values.delete(key);
+    }
+  }
 }
 
 class FakeScheduler implements RecordingAlarmScheduler {
   ensured = 0;
   cleared = 0;
+  failClear = false;
 
   async ensureRenewal(): Promise<void> {
     this.ensured += 1;
@@ -106,6 +124,7 @@ class FakeScheduler implements RecordingAlarmScheduler {
 
   async clearRenewal(): Promise<void> {
     this.cleared += 1;
+    if (this.failClear) throw new Error("ALARM_CLEAR_FAILED");
   }
 }
 
@@ -180,6 +199,8 @@ describe("RecordingManager privacy and ownership", () => {
 
     expect(message).toBe("RECORDING_START_FAILED");
     expect(manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expect(scheduler.ensured).toBe(0);
     expectAbsent({ message, snapshot: manager.snapshot() });
   });
@@ -507,26 +528,32 @@ describe("RecordingManager restart and stop persistence", () => {
     expectAbsent({ storage: sessionStorage.writes, requests: renewedTransport.requests });
   });
 
-  it("preserves other persisted sessions across cross-session and single-session stops", async () => {
+  it("enumerates per-session markers and preserves concurrent sessions across stops", async () => {
     const sessionStorage = new MemoryStorage();
     const first = createManager({ sessionStorage });
     await first.manager.start("session-a", "alpha", 11, "https://example.test/a");
     await first.manager.start("session-b", "bravo", 22, "https://example.test/b");
 
     const restarted = createManager({ sessionStorage });
+    await restarted.manager.renewPersistedSessions();
+    expect(restarted.transport.requests.map((request) => request.payload)).toEqual([
+      { sessionId: "session-a", name: "alpha" },
+      { sessionId: "session-b", name: "bravo" },
+    ]);
     await expect(restarted.manager.stop("session-c")).rejects.toThrow("NO_ACTIVE_RECORDING");
-    expect(sessionStorage.values.get("active-recording-index"))
-      .toEqual(["session-a", "session-b"]);
+    expect(sessionStorage.values.get("active-recording-index:session-a")).toBe(true);
+    expect(sessionStorage.values.get("active-recording-index:session-b")).toBe(true);
 
     await restarted.manager.stop("session-a");
-    expect(sessionStorage.values.get("active-recording-index")).toEqual(["session-b"]);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(sessionStorage.values.get("active-recording-index:session-b")).toBe(true);
     expect(sessionStorage.values.has("active-recording:session-b")).toBe(true);
     expect(restarted.scheduler.cleared).toBe(0);
   });
 
-  it("rejects legacy restart state containing an original sensitive value", async () => {
+  it("cleans an unsafe legacy indexed snapshot without reading the shared index value", async () => {
     const sessionStorage = new MemoryStorage();
-    sessionStorage.values.set("active-recording-index", ["session-a"]);
+    sessionStorage.values.set("active-recording-index", { secret: SECRET_TEXT });
     sessionStorage.values.set("active-recording:session-a", {
       sessionId: "session-a",
       tabId: 11,
@@ -547,11 +574,35 @@ describe("RecordingManager restart and stop persistence", () => {
     });
     const { manager } = createManager({ sessionStorage });
 
-    await expect(manager.restoreSession("session-a")).resolves.toBe(false);
+    await manager.renewPersistedSessions();
 
     expect(manager.snapshot().active).toEqual([]);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index")).toBe(false);
+    expect(sessionStorage.reads).not.toContain("active-recording-index");
     expectAbsent({ snapshot: manager.snapshot(), writes: sessionStorage.writes });
+  });
+
+  it("migrates a valid legacy snapshot without reading the shared index value", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "legacy-migrate", 11, "https://example.test");
+    sessionStorage.values.delete("active-recording-index:session-a");
+    sessionStorage.values.set("active-recording-index", { secret: SECRET_FORM });
+    sessionStorage.reads.length = 0;
+    sessionStorage.events.length = 0;
+
+    const restarted = createManager({ sessionStorage });
+    await restarted.manager.renewPersistedSessions();
+
+    expect(restarted.transport.requests).toHaveLength(1);
+    expect(sessionStorage.values.has("active-recording-index")).toBe(false);
+    expect(sessionStorage.values.get("active-recording-index:session-a")).toBe(true);
+    expect(sessionStorage.reads).not.toContain("active-recording-index");
+    expect(sessionStorage.events.indexOf("storage:set:active-recording-index:session-a"))
+      .toBeLessThan(sessionStorage.events.indexOf("storage:remove:active-recording-index"));
+    expectAbsent({ snapshot: restarted.manager.snapshot(), writes: sessionStorage.writes });
   });
 
   it("deletes restored state that exceeds current limits before renewal", async () => {
@@ -567,7 +618,7 @@ describe("RecordingManager restart and stop persistence", () => {
 
     expect(restarted.transport.requests).toHaveLength(0);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
-    expect(sessionStorage.values.get("active-recording-index")).toEqual([]);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
   });
 
   it("aborts and deletes restart state on expiry or session closure", async () => {
@@ -578,7 +629,11 @@ describe("RecordingManager restart and stop persistence", () => {
 
     expect(manager.snapshot().active).toEqual([]);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
-    expect(sessionStorage.values.get("active-recording-index")).toEqual([]);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(sessionStorage.removeManyCalls.at(-1)).toEqual([
+      "active-recording:session-a",
+      "active-recording-index:session-a",
+    ]);
     expect(scheduler.cleared).toBe(1);
   });
 
@@ -641,13 +696,13 @@ describe("RecordingManager restart and stop persistence", () => {
     expectAbsent({ first, second, writes: localStorage.writes, snapshot: manager.snapshot() });
   });
 
-  it("returns cleanup partial status and retries after active-key removal failure", async () => {
+  it("keeps snapshot and marker atomic on cleanup failure, then retries after worker restart", async () => {
     const sessionStorage = new MemoryStorage();
     const localStorage = new MemoryStorage();
     const { manager } = createManager({ sessionStorage, localStorage });
     await manager.start("session-a", "cleanup-key", 11, "https://example.test");
     await captureType(manager, "session-a", 11, SECRET_TEXT);
-    sessionStorage.failRemoveKey = "active-recording:session-a";
+    sessionStorage.failRemoveMany = new Error(`REMOVE_FAILED_${SECRET_FORM}`);
 
     const partial = await manager.stop("session-a");
     expect(partial).toMatchObject({
@@ -657,52 +712,47 @@ describe("RecordingManager restart and stop persistence", () => {
     });
     expect(manager.snapshot().active).toHaveLength(1);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
-    expect(sessionStorage.values.get("active-recording-index")).toEqual(["session-a"]);
+    expect(sessionStorage.values.get("active-recording-index:session-a")).toBe(true);
+    expect(sessionStorage.removeManyCalls.at(-1)).toEqual([
+      "active-recording:session-a",
+      "active-recording-index:session-a",
+    ]);
 
-    sessionStorage.failRemoveKey = undefined;
-    const retried = await manager.stop("session-a");
+    sessionStorage.failRemoveMany = undefined;
+    const restarted = createManager({ sessionStorage, localStorage });
+    const retried = await restarted.manager.stop("session-a");
     expect(retried).toMatchObject({ extensionSaved: true, serverSaved: true });
     expect(retried).not.toHaveProperty("error");
     expect(retried.recording).toEqual(partial.recording);
-    expect(manager.snapshot().active).toEqual([]);
+    expect(restarted.manager.snapshot().active).toEqual([]);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
-    expect(sessionStorage.values.get("active-recording-index")).toEqual([]);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expect(localStorage.writes.filter((entry) => JSON.stringify(entry).includes("recording:cleanup-key")))
       .toHaveLength(1);
     expectAbsent({ partial, retried, storage: sessionStorage.writes, local: localStorage.writes });
   });
 
-  it("retries index cleanup idempotently without resurrection or data loss", async () => {
+  it("treats alarm clearing as best effort after atomic state removal", async () => {
     const sessionStorage = new MemoryStorage();
     const localStorage = new MemoryStorage();
-    const { manager } = createManager({ sessionStorage, localStorage });
-    await manager.start("session-a", "cleanup-index", 11, "https://example.test");
-    sessionStorage.failSetKey = "active-recording-index";
-    sessionStorage.failSetKeyOnCall = 3;
+    const scheduler = new FakeScheduler();
+    scheduler.failClear = true;
+    const { manager } = createManager({ sessionStorage, localStorage, scheduler });
+    await manager.start("session-a", "cleanup-alarm", 11, "https://example.test");
 
-    const partial = await manager.stop("session-a");
-    expect(partial).toMatchObject({
-      extensionSaved: true,
-      serverSaved: true,
-      error: "ACTIVE_STATE_CLEANUP_FAILED",
-    });
-    expect(manager.snapshot().active).toHaveLength(1);
-    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
-    expect(sessionStorage.values.get("active-recording-index")).toEqual(["session-a"]);
-
-    sessionStorage.failSetKey = undefined;
-    sessionStorage.failSetKeyOnCall = undefined;
-    const retried = await manager.stop("session-a");
-    expect(retried.recording).toEqual(partial.recording);
-    expect(retried).not.toHaveProperty("error");
+    const result = await manager.stop("session-a");
+    expect(result).toMatchObject({ extensionSaved: true, serverSaved: true });
+    expect(result).not.toHaveProperty("error");
     expect(manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
 
     const restarted = createManager({ sessionStorage, localStorage });
     await restarted.manager.renewPersistedSessions();
     expect(restarted.transport.requests).toEqual([]);
     expect(restarted.manager.snapshot().active).toEqual([]);
-    expect(localStorage.values.get("recording:cleanup-index")).toEqual(retried.recording);
-    expectAbsent({ partial, retried, storage: sessionStorage.writes, local: localStorage.writes });
+    expect(localStorage.values.get("recording:cleanup-alarm")).toEqual(result.recording);
+    expectAbsent({ result, storage: sessionStorage.writes, local: localStorage.writes });
   });
 
   it("returns sanitized partial status for server and local failures", async () => {
