@@ -4,9 +4,12 @@
 // persistent port (chrome.runtime.connect) which wakes the SW on demand.
 
 import { addMessageHandler, sendToTab } from '../../lib/messaging';
-import { InputDevice } from '../../lib/input-device';
-import { handleTool, type ToolContext } from '../../lib/tools';
-import { resolveTabId, injectIntoAllTabs, setLastUsedTabId, initTabCleanup } from '../../lib/tab-manager';
+import { getNetworkCaptureTabId, handleTool } from '../../lib/tools';
+import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
+import { RequestToolContext } from '../../lib/request-context';
+import { RequestScheduler } from '../../lib/request-scheduler';
+import { SessionStateStore } from '../../lib/session-state';
+import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
 import {
   enableRuntime,
   enablePageDomain,
@@ -29,7 +32,11 @@ import {
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
-import type { ToolRequest, ToolResponse, WsStatusResponse } from '../../lib/protocol';
+import {
+  isToolRequestV2,
+  type ToolResponseV2,
+  type WsStatusResponse,
+} from '../../lib/protocol';
 
 export default defineBackground(() => {
   // =====================================================================
@@ -182,9 +189,9 @@ export default defineBackground(() => {
   // =====================================================================
 
   async function handleToolRequest(raw: string): Promise<void> {
-    let request: ToolRequest;
+    let parsed: unknown;
     try {
-      request = JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch {
       recordExtensionIssue('ws_message', 'Failed to parse WS message', { raw }, 'warn');
       console.warn('Failed to parse WS message:', raw);
@@ -192,7 +199,7 @@ export default defineBackground(() => {
     }
 
     // Intercept non-tool WS messages before they hit the tool dispatcher.
-    const anyMsg = request as unknown as {
+    const anyMsg = parsed as {
       type?: string;
       id?: string;
       ok?: boolean;
@@ -229,16 +236,107 @@ export default defineBackground(() => {
       return;
     }
 
-    if (currentTabId < 0) {
-      try {
-        const tabId = await resolveTabId();
-        setTabId(tabId);
-      } catch {}
+    if (!isToolRequestV2(parsed)) {
+      recordExtensionIssue('ws_message', 'Rejected malformed v2 tool request', undefined, 'warn');
+      if (typeof anyMsg.id === 'string') {
+        const invalidResponse: ToolResponseV2 = {
+          type: 'messageResponse',
+          payload: {
+            requestId: anyMsg.id,
+            error: 'PROTOCOL_VERSION_MISMATCH',
+          },
+        };
+        await tellOffscreen({
+          type: '_os_ws_send',
+          payload: JSON.stringify(invalidResponse),
+        });
+      }
+      return;
     }
 
-    let response: ToolResponse;
+    const request = parsed;
+    const expiresAt = Date.now() + Math.max(0, request.timeoutMs);
+    let response: ToolResponseV2;
     try {
-      const result = await handleTool(request.type, request.payload ?? {}, toolCtx);
+      const metadata = TOOL_METADATA[request.type as ToolName];
+      if (!metadata) throw new Error(`Unknown tool: ${request.type}`);
+
+      const sessionFallback = await sessionState.getLastTab(request.sessionId);
+      const requestedTabId = typeof request.payload.tabId === 'number'
+        ? request.payload.tabId
+        : undefined;
+      let tabId = -1;
+
+      if (metadata.tab === 'required') {
+        try {
+          tabId = await resolveTabId(requestedTabId, sessionFallback);
+          if (
+            requestedTabId === undefined &&
+            sessionFallback !== undefined &&
+            tabId !== sessionFallback
+          ) {
+            await sessionState.clearSession(request.sessionId);
+          }
+        } catch (error) {
+          if (requestedTabId === undefined && sessionFallback !== undefined) {
+            await sessionState.clearSession(request.sessionId);
+          }
+          throw error;
+        }
+      } else if (metadata.tab === 'optional') {
+        if (requestedTabId !== undefined) {
+          try {
+            tabId = await resolveTabId(requestedTabId);
+          } catch {}
+        }
+        if (tabId < 0) {
+          try {
+            tabId = await resolveTabId(undefined, sessionFallback);
+            if (sessionFallback !== undefined && tabId !== sessionFallback) {
+              await sessionState.clearSession(request.sessionId);
+            }
+          } catch {
+            if (sessionFallback !== undefined) {
+              await sessionState.clearSession(request.sessionId);
+            }
+          }
+        }
+      }
+
+      const context = new RequestToolContext({
+        sessionId: request.sessionId,
+        requestId: request.id,
+        expiresAt,
+        tabId,
+        sessionState,
+      });
+      const requestMeta = {
+        requestId: request.id,
+        sessionId: request.sessionId,
+        expiresAt,
+      };
+      const work = async (): Promise<unknown> => {
+        if (expiresAt <= Date.now()) throw new Error('REQUEST_EXPIRED');
+        return handleTool(request.type, request.payload, context);
+      };
+
+      let result: unknown;
+      switch (metadata.queue) {
+        case 'tab':
+          if (tabId < 0) throw new Error('TAB_CLOSED');
+          result = await scheduler.runTab(tabId, requestMeta, work);
+          break;
+        case 'session':
+          result = await scheduler.runSession(request.sessionId, requestMeta, work);
+          break;
+        case 'global':
+          result = await scheduler.runGlobal(requestMeta, work);
+          break;
+        case 'none':
+          result = await work();
+          break;
+      }
+
       response = {
         type: 'messageResponse',
         payload: { requestId: request.id, result },
@@ -291,9 +389,6 @@ export default defineBackground(() => {
       if (msg.type === '_os_connected') {
         recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
         setBadge('connected');
-        if (currentTabId > 0) {
-          enableRuntime(currentTabId).catch(() => {});
-        }
         return;
       }
 
@@ -327,9 +422,6 @@ export default defineBackground(() => {
   addMessageHandler('_os_connected', async () => {
     recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
     setBadge('connected');
-    if (currentTabId > 0) {
-      try { await enableRuntime(currentTabId); } catch {}
-    }
   });
 
   addMessageHandler('_os_disconnected', async () => {
@@ -387,31 +479,20 @@ export default defineBackground(() => {
   // State
   // =====================================================================
 
-  const currentInput = new InputDevice(-1);
-  let currentTabId = -1;
-
-  function getTabId(): number {
-    return currentTabId;
-  }
-
-  function setTabId(tabId: number): void {
-    currentTabId = tabId;
-    currentInput.updateTabId(tabId);
-    setLastUsedTabId(tabId);
-  }
-
-  const toolCtx: ToolContext = {
-    input: currentInput,
-    getTabId,
-    setTabId,
-  };
+  const sessionState = new SessionStateStore();
+  const scheduler = new RequestScheduler();
 
   // =====================================================================
   // Init cleanup listeners
   // =====================================================================
 
   initDebuggerCleanup();
-  initTabCleanup();
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    scheduler.cancelTab(tabId, 'TAB_CLOSED');
+    sessionState.clearTab(tabId).catch((error) => {
+      recordExtensionIssue('tab_cleanup', 'Failed to clear closed tab state', { tabId, error });
+    });
+  });
 
   // =====================================================================
   // Popup → Background messages
@@ -423,26 +504,24 @@ export default defineBackground(() => {
   });
 
   async function buildPopupDiagnostics(): Promise<Record<string, unknown>> {
-    const [storage, offscreenStatus, tabs] = await Promise.all([
+    const [storage, offscreenStatus, tabs, activeTabs] = await Promise.all([
       getStorageAll().catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
       askOffscreen({ type: '_os_ws_status' }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
       chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[]),
+      chrome.tabs.query({ active: true, currentWindow: true }).catch(() => [] as chrome.tabs.Tab[]),
     ]);
 
+    const activeTab = activeTabs[0];
+    const currentTabId = activeTab?.id ?? -1;
     let currentTab: Record<string, unknown> | null = null;
-    if (currentTabId > 0) {
-      try {
-        const tab = await chrome.tabs.get(currentTabId);
-        currentTab = {
-          id: tab.id,
-          title: tab.title,
-          url: tab.url,
-          status: tab.status,
-          windowId: tab.windowId,
-        };
-      } catch (error) {
-        currentTab = { error: error instanceof Error ? error.message : String(error) };
-      }
+    if (activeTab) {
+      currentTab = {
+        id: activeTab.id,
+        title: activeTab.title,
+        url: activeTab.url,
+        status: activeTab.status,
+        windowId: activeTab.windowId,
+      };
     }
 
     return getExtensionDiagnostics({
@@ -470,7 +549,6 @@ export default defineBackground(() => {
 
   addMessageHandler('select_tab', async (payload) => {
     const { tabId } = payload as { tabId: number };
-    setTabId(tabId);
     try { await enableRuntime(tabId); } catch {}
     clearConsoleLogs(tabId);
   });
@@ -819,8 +897,8 @@ export default defineBackground(() => {
     }
   });
 
-  startConsoleCapture(() => (currentTabId > 0 ? currentTabId : null));
-  startNetworkCapture(() => (currentTabId > 0 ? currentTabId : null));
+  startConsoleCapture(() => null);
+  startNetworkCapture(getNetworkCaptureTabId);
 
   // F1: dialog interception + new_tab + network_timeout watchdog
   startDialogCapture({

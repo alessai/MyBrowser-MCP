@@ -19,30 +19,6 @@ export interface Recording {
   variables?: Record<string, string>;
 }
 
-// IMPORTANT: This set defines all user-facing tools that should be captured in recordings.
-// When adding new browser automation tools to tools.ts, add their names here too.
-// browser_action is excluded because its sub-steps are recorded individually.
-// Observation-only tools (screenshot, snapshot, find) are excluded to avoid replay bloat.
-const RECORDABLE_TOOLS = new Set([
-  'browser_navigate',
-  'browser_go_back',
-  'browser_go_forward',
-  'browser_wait',
-  'browser_click',
-  'browser_type',
-  'browser_hover',
-  'browser_press_key',
-  'browser_drag',
-  'browser_select_option',
-  'browser_fill_form',
-  'browser_wait_for',
-  'browser_set_viewport',
-  'browser_reset_viewport',
-  'new_tab',
-  'close_tab',
-  'select_tab',
-]);
-
 let activeRecording: Recording | null = null;
 let replaying = false;
 
@@ -76,8 +52,8 @@ export function stopRecording(): Recording {
   return recording;
 }
 
-export function shouldRecord(toolName: string): boolean {
-  return activeRecording !== null && !replaying && RECORDABLE_TOOLS.has(toolName);
+export function shouldRecord(recordable: boolean): boolean {
+  return activeRecording !== null && !replaying && recordable;
 }
 
 export function pushStep(step: RecordedStep): void {

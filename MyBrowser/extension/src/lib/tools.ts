@@ -1,9 +1,7 @@
 // Tool handlers for browser automation (ULTRA Phase 1)
 
-import { InputDevice } from './input-device';
+import type { InputDevice } from './input-device';
 import {
-  resolveTabId,
-  setLastUsedTabId,
   listTabs as listTabsImpl,
   ensureContentScript,
 } from './tab-manager';
@@ -46,12 +44,18 @@ import {
 } from './recorder';
 import { replayRecording, type ReplayOptions } from './replayer';
 import { getExtensionDiagnostics } from './diagnostics';
+import { TOOL_METADATA, type ToolName } from './tool-metadata';
 
 const STABLE_DOM_TIMEOUT_MS = 2000;
 const STABLE_DOM_MIN_MS = 500;
 const SCREENSHOT_MAX_WIDTH = 1024;
 const SCREENSHOT_MAX_HEIGHT = 768;
 const AFTER_ACTION_DELAY_MS = 500;
+let networkCaptureTabId: number | null = null;
+
+export function getNetworkCaptureTabId(): number | null {
+  return networkCaptureTabId;
+}
 
 type ViewportPresetName = 'iphone' | 'ipad' | 'desktop';
 type ViewportOrientation = 'portrait' | 'landscape';
@@ -401,7 +405,8 @@ async function sendToServer(type: string, payload: unknown): Promise<void> {
 export interface ToolContext {
   input: InputDevice;
   getTabId: () => number;
-  setTabId: (tabId: number) => void;
+  setTabId: (tabId: number) => Promise<void>;
+  clearTab: (tabId: number) => Promise<void>;
 }
 
 type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
@@ -819,8 +824,7 @@ const handlers: Record<string, ToolHandler> = {
   async select_tab(args, ctx) {
     const tabId = args.tabId as number;
     await chrome.tabs.update(tabId, { active: true });
-    ctx.setTabId(tabId);
-    setLastUsedTabId(tabId);
+    await ctx.setTabId(tabId);
     await ensureContentScript(tabId);
   },
 
@@ -828,8 +832,7 @@ const handlers: Record<string, ToolHandler> = {
     const url = (args.url as string) || 'about:blank';
     const tab = await chrome.tabs.create({ url });
     if (tab.id === undefined) throw new Error('Failed to create tab');
-    ctx.setTabId(tab.id);
-    setLastUsedTabId(tab.id);
+    await ctx.setTabId(tab.id);
     if (url !== 'about:blank') {
       await waitForTabLoad(tab.id);
       try { await ensureContentScript(tab.id); } catch {}
@@ -840,6 +843,7 @@ const handlers: Record<string, ToolHandler> = {
   async close_tab(args, ctx) {
     const tabId = (args.tabId as number) ?? ctx.getTabId();
     await chrome.tabs.remove(tabId);
+    await ctx.clearTab(tabId);
   },
 
   // === ULTRA Phase 3: Session recording ===
@@ -1117,6 +1121,7 @@ const handlers: Record<string, ToolHandler> = {
       }
       await sendCommand(tabId, 'Network.enable');
       setNetworkCaptureActive(true);
+      networkCaptureTabId = tabId;
       return { status: 'capturing', message: 'Network capture started.' };
     }
 
@@ -1124,6 +1129,7 @@ const handlers: Record<string, ToolHandler> = {
       await ensureAttached(tabId);
       await sendCommand(tabId, 'Network.disable').catch(() => {});
       setNetworkCaptureActive(false);
+      networkCaptureTabId = null;
       return { status: 'stopped', message: 'Network capture stopped.' };
     }
 
@@ -1498,6 +1504,10 @@ const handlers: Record<string, ToolHandler> = {
   },
 };
 
+export function getRegisteredToolNames(): string[] {
+  return Object.keys(handlers);
+}
+
 export async function handleTool(
   name: string,
   args: Record<string, unknown>,
@@ -1506,29 +1516,9 @@ export async function handleTool(
   const handler = handlers[name];
   if (!handler) throw new Error(`Unknown tool: ${name}`);
 
-  const NO_TAB_TOOLS = ['list_tabs', 'browser_get_console_logs', 'browser_diagnostics', 'browser_wait', 'browser_record_list', 'browser_record_start', 'browser_record_stop'];
-  if (!NO_TAB_TOOLS.includes(name)) {
-    const requestedTab = args.tabId as number | undefined;
-    if (requestedTab !== undefined) {
-      ctx.setTabId(requestedTab);
-    }
-    let tabId = ctx.getTabId();
-    if (tabId > 0) {
-      try {
-        await chrome.tabs.get(tabId);
-      } catch {
-        tabId = -1;
-      }
-    }
-    if (tabId < 0) {
-      const freshId = await resolveTabId();
-      ctx.setTabId(freshId);
-    }
-    setLastUsedTabId(ctx.getTabId());
-  }
-
   // Capture timing + URL for recording
-  const recordThis = shouldRecord(name);
+  const metadata = TOOL_METADATA[name as ToolName];
+  const recordThis = shouldRecord(metadata.recordable);
   const startTime = recordThis ? Date.now() : 0;
 
   const result = await handler(args, ctx);

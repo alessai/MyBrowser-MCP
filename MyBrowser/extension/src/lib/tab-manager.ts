@@ -1,4 +1,4 @@
-// Tab management: resolve active tab, inject content scripts, track last used tab
+// Tab management: resolve active tabs and inject content scripts.
 
 export interface TabInfo {
   tabId: number;
@@ -6,16 +6,6 @@ export interface TabInfo {
   url: string;
   active: boolean;
   windowId: number;
-}
-
-let lastUsedTabId: number | null = null;
-
-export function getLastUsedTabId(): number | null {
-  return lastUsedTabId;
-}
-
-export function setLastUsedTabId(tabId: number): void {
-  lastUsedTabId = tabId;
 }
 
 function isInjectableUrl(url: string | undefined): boolean {
@@ -30,28 +20,31 @@ function isInjectableUrl(url: string | undefined): boolean {
   }
 }
 
-export async function resolveTabId(requestedTabId?: number): Promise<number> {
-  // Priority: explicit → lastUsed → active tab
+export async function resolveTabId(
+  requestedTabId?: number,
+  sessionFallback?: number,
+): Promise<number> {
   if (requestedTabId !== undefined) {
-    lastUsedTabId = requestedTabId;
-    return requestedTabId;
-  }
-  if (lastUsedTabId !== null) {
-    // Verify the tab still exists
     try {
-      await chrome.tabs.get(lastUsedTabId);
-      return lastUsedTabId;
+      await chrome.tabs.get(requestedTabId);
+      return requestedTabId;
     } catch {
-      lastUsedTabId = null;
+      throw new Error('TAB_CLOSED');
     }
   }
-  // Fall back to active tab
+
+  if (sessionFallback !== undefined) {
+    try {
+      await chrome.tabs.get(sessionFallback);
+      return sessionFallback;
+    } catch {}
+  }
+
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (activeTab?.id !== undefined) {
-    lastUsedTabId = activeTab.id;
     return activeTab.id;
   }
-  throw new Error('No active tab found');
+  throw new Error('TAB_CLOSED');
 }
 
 export async function listTabs(): Promise<TabInfo[]> {
@@ -108,13 +101,4 @@ export async function injectIntoAllTabs(): Promise<void> {
       return injectContentScript(t.id);
     }),
   );
-}
-
-// Clear lastUsedTabId when tab is removed (called from background init)
-export function initTabCleanup(): void {
-  chrome.tabs.onRemoved.addListener((tabId) => {
-    if (lastUsedTabId === tabId) {
-      lastUsedTabId = null;
-    }
-  });
 }
