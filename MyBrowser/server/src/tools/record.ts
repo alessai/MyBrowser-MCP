@@ -3,7 +3,9 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   chmodSync,
   closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -35,6 +37,7 @@ interface RecordingFileOps {
   openSync: typeof openSync;
   readFileSync: typeof readFileSync;
   writeFileSync: typeof writeFileSync;
+  fstatSync: typeof fstatSync;
   fsyncSync: typeof fsyncSync;
   closeSync: typeof closeSync;
   unlinkSync: typeof unlinkSync;
@@ -48,6 +51,7 @@ const RECORDING_FILE_OPS: RecordingFileOps = {
   openSync,
   readFileSync,
   writeFileSync,
+  fstatSync,
   fsyncSync,
   closeSync,
   unlinkSync,
@@ -345,9 +349,22 @@ export function saveRecordingToFile(
       throw new Error(`Existing recording artifact must have exact mode 0600: ${filePath}`);
     }
 
-    const existingFd = ops.openSync(filePath, "r");
+    const noFollow = typeof fsConstants.O_NOFOLLOW === "number"
+      ? fsConstants.O_NOFOLLOW
+      : 0;
+    const existingFd = ops.openSync(filePath, fsConstants.O_RDONLY | noFollow);
     let verificationFailure: unknown;
     try {
+      const descriptorStats = ops.fstatSync(existingFd);
+      if (!descriptorStats.isFile()) {
+        throw new Error(`Existing recording descriptor must be a regular file: ${filePath}`);
+      }
+      if ((descriptorStats.mode & 0o777) !== 0o600) {
+        throw new Error(`Existing recording descriptor must have exact mode 0600: ${filePath}`);
+      }
+      if (descriptorStats.dev !== stats.dev || descriptorStats.ino !== stats.ino) {
+        throw new Error(`Existing recording artifact changed between lstat and open: ${filePath}`);
+      }
       const existing = sanitizeRecording(JSON.parse(ops.readFileSync(existingFd, "utf-8")));
       if (!isDeepStrictEqual(existing, sanitized)) {
         throw error;

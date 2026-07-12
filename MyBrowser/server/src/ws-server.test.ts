@@ -1,11 +1,16 @@
 import {
   chmodSync,
   closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -65,7 +70,10 @@ function getRecordingApi() {
         chmodSync?: typeof chmodSync;
         statSync?: typeof statSync;
         closeSync?: typeof closeSync;
+        fstatSync?: typeof fstatSync;
         fsyncSync?: typeof fsyncSync;
+        lstatSync?: typeof lstatSync;
+        openSync?: typeof openSync;
         unlinkSync?: typeof unlinkSync;
       },
     ) => "created" | "existing-identical";
@@ -817,6 +825,79 @@ describe("recording tools and persistence", () => {
       .toThrow("regular non-symlink");
   });
 
+  it("rejects pathname replacement when descriptor identity differs from lstat", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-replaced-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const replacementPath = join(base, "replacement.json");
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+    writeFileSync(replacementPath, readFileSync(filePath));
+    chmodSync(replacementPath, 0o600);
+    const lstat = vi.fn(((path: Parameters<typeof lstatSync>[0]) => {
+      const snapshot = lstatSync(path);
+      renameSync(replacementPath, filePath);
+      return snapshot;
+    }) as typeof lstatSync);
+    const fsync = vi.fn(fsyncSync);
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({ fsyncSync: fsync, lstatSync: lstat }),
+    )).toThrow("changed between lstat and open");
+    expect(fsync).not.toHaveBeenCalled();
+  });
+
+  it("rejects replacement by symlink between lstat and descriptor open", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-replaced-symlink-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const targetPath = join(base, "target.json");
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+    writeFileSync(targetPath, readFileSync(filePath));
+    chmodSync(targetPath, 0o600);
+    const lstat = ((path: Parameters<typeof lstatSync>[0]) => {
+      const snapshot = lstatSync(path);
+      unlinkSync(filePath);
+      symlinkSync(targetPath, filePath);
+      return snapshot;
+    }) as typeof lstatSync;
+    const fsync = vi.fn(fsyncSync);
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({ fsyncSync: fsync, lstatSync: lstat }),
+    )).toThrow();
+    expect(fsync).not.toHaveBeenCalled();
+  });
+
+  it("rejects a descriptor whose mode changed after the lstat snapshot", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-descriptor-mode-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+    const open = ((
+      path: Parameters<typeof openSync>[0],
+      flags: Parameters<typeof openSync>[1],
+      mode?: number,
+    ) => {
+      if (flags !== "wx") chmodSync(filePath, 0o640);
+      return openSync(path, flags, mode);
+    }) as typeof openSync;
+    const fsync = vi.fn(fsyncSync);
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({ fsyncSync: fsync, openSync: open }),
+    )).toThrow("descriptor must have exact mode 0600");
+    expect(fsync).not.toHaveBeenCalled();
+  });
+
   it("rejects an identical existing artifact when descriptor fsync fails", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-existing-fsync-"));
     tempDirs.push(base);
@@ -861,15 +942,21 @@ describe("recording tools and persistence", () => {
     chmodSync(filePath, 0o600);
     const fsync = vi.fn(fsyncSync);
     const close = vi.fn(closeSync);
+    const open = vi.fn(openSync);
 
     expect(getRecordingApi().saveRecordingToFile(
       validRecording,
       recordingsDir,
-      recordingFileOps({ closeSync: close, fsyncSync: fsync }),
+      recordingFileOps({ closeSync: close, fsyncSync: fsync, openSync: open }),
     )).toBe("existing-identical");
     expect(fsync).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
     expect(fsync.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
+    const existingOpenFlags = open.mock.calls[1]?.[1];
+    expect(typeof existingOpenFlags).toBe("number");
+    if (typeof fsConstants.O_NOFOLLOW === "number") {
+      expect((existingOpenFlags as number) & fsConstants.O_NOFOLLOW).toBe(fsConstants.O_NOFOLLOW);
+    }
   });
 
   it("corrects an existing permissive recordings directory to 0700", () => {
