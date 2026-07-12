@@ -5,6 +5,7 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -29,7 +30,7 @@ import type { Tool } from "./types.js";
 const RECORDINGS_DIR = join(homedir(), ".mybrowser", "recordings");
 export { RECORDING_RESERVATION_LEASE_MS } from "../state-manager.js";
 
-interface RecordingFileOps {
+export interface RecordingFileOps {
   mkdirSync: typeof mkdirSync;
   chmodSync: typeof chmodSync;
   statSync: typeof statSync;
@@ -37,6 +38,7 @@ interface RecordingFileOps {
   openSync: typeof openSync;
   readFileSync: typeof readFileSync;
   writeFileSync: typeof writeFileSync;
+  fchmodSync: typeof fchmodSync;
   fstatSync: typeof fstatSync;
   fsyncSync: typeof fsyncSync;
   closeSync: typeof closeSync;
@@ -51,6 +53,7 @@ const RECORDING_FILE_OPS: RecordingFileOps = {
   openSync,
   readFileSync,
   writeFileSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   closeSync,
@@ -384,6 +387,14 @@ export function saveRecordingToFile(
 
   let persistenceFailure: unknown;
   try {
+    ops.fchmodSync(fd, 0o600);
+    const descriptorStats = ops.fstatSync(fd);
+    if (!descriptorStats.isFile()) {
+      throw new Error(`New recording descriptor must be a regular file: ${filePath}`);
+    }
+    if ((descriptorStats.mode & 0o777) !== 0o600) {
+      throw new Error(`New recording descriptor must have exact mode 0600: ${filePath}`);
+    }
     ops.writeFileSync(fd, JSON.stringify(sanitized, null, 2) + "\n");
     ops.fsyncSync(fd);
   } catch (writeError) {

@@ -3,6 +3,7 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -26,7 +27,11 @@ import { PROTOCOL_VERSION, WS_CLOSE } from "./protocol.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import * as recordingTools from "./tools/record.js";
 import type { Tool } from "./tools/types.js";
-import { createWebSocketServer, type WsServerResult } from "./ws-server.js";
+import {
+  createWebSocketServer,
+  type WsServerOptions,
+  type WsServerResult,
+} from "./ws-server.js";
 
 const TOKEN = "test-token";
 
@@ -70,6 +75,7 @@ function getRecordingApi() {
         chmodSync?: typeof chmodSync;
         statSync?: typeof statSync;
         closeSync?: typeof closeSync;
+        fchmodSync?: typeof fchmodSync;
         fstatSync?: typeof fstatSync;
         fsyncSync?: typeof fsyncSync;
         lstatSync?: typeof lstatSync;
@@ -155,13 +161,17 @@ function waitForClose(ws: WebSocket): Promise<CloseEvent> {
   });
 }
 
-async function startHub(recordingsDir?: string): Promise<WsServerResult> {
+async function startHub(
+  recordingsDir?: string,
+  recordingFileOps?: WsServerOptions["recordingFileOps"],
+): Promise<WsServerResult> {
   const result = await createWebSocketServer({
     host: "127.0.0.1",
     port: 0,
     token: TOKEN,
     context: new Context(),
     recordingsDir,
+    recordingFileOps,
   });
   servers.push(result);
   expect(result.isHub).toBe(true);
@@ -221,11 +231,14 @@ async function callHubRpc(
   return response;
 }
 
-async function setupReservedRecording(recordingsDir: string): Promise<{
+async function setupReservedRecording(
+  recordingsDir: string,
+  recordingFileOps?: WsServerOptions["recordingFileOps"],
+): Promise<{
   server: WsServerResult;
   extension: WebSocket;
 }> {
-  const server = await startHub(recordingsDir);
+  const server = await startHub(recordingsDir, recordingFileOps);
   const extension = await connect(server);
   await authenticate(extension, "extension");
   const client = await connect(server);
@@ -789,6 +802,69 @@ describe("recording tools and persistence", () => {
     expect(existsSync(filePath)).toBe(true);
   });
 
+  it("closes and unlinks a new artifact when descriptor fchmod fails", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-new-fchmod-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const close = vi.fn(closeSync);
+    const unlink = vi.fn(unlinkSync);
+    const fchmod = vi.fn(() => {
+      throw new Error("injected fchmod failure");
+    });
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({
+        closeSync: close,
+        fchmodSync: fchmod,
+        unlinkSync: unlink,
+      }),
+    )).toThrow("injected fchmod failure");
+    expect(fchmod).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(filePath);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(unlink.mock.invocationCallOrder[0]!);
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it("rejects and removes a new descriptor whose hardened mode is not exactly 0600", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-new-mode-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const close = vi.fn(closeSync);
+    const unlink = vi.fn(unlinkSync);
+    const write = vi.fn(writeFileSync);
+    const fchmod = vi.fn();
+    const fstat = vi.fn(((fd: number) => {
+      const stats = fstatSync(fd);
+      Object.defineProperty(stats, "mode", {
+        value: (stats.mode & ~0o777) | 0o400,
+      });
+      return stats;
+    }) as typeof fstatSync);
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({
+        closeSync: close,
+        fchmodSync: fchmod,
+        fstatSync: fstat,
+        unlinkSync: unlink,
+        writeFileSync: write,
+      }),
+    )).toThrow("New recording descriptor must have exact mode 0600");
+    expect(fchmod).toHaveBeenCalledTimes(1);
+    expect(fstat).toHaveBeenCalledTimes(1);
+    expect(write).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(filePath);
+    expect(existsSync(filePath)).toBe(false);
+  });
+
   it("rejects an existing identical artifact whose file mode is not exactly 0600", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-file-mode-"));
     tempDirs.push(base);
@@ -1078,6 +1154,29 @@ describe("acknowledged recording reservation messages", () => {
       .toMatchObject({ name: "Checkout_Flow", steps: validRecording.steps });
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(false);
+  });
+
+  it("does not release or acknowledge when new descriptor fchmod fails", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-ack-fchmod-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const { server, extension } = await setupReservedRecording(recordingsDir, {
+      fchmodSync: () => {
+        throw new Error("injected fchmod failure");
+      },
+    });
+    const release = vi.spyOn(server.stateManager, "releaseRecordingReservation");
+
+    await expect(persistRecordingMessage(extension, "persist-fchmod-failure")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-fchmod-failure",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(release).not.toHaveBeenCalled();
+    expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
+    await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(true);
   });
 
   it("does not acknowledge false live release and retries only an identical artifact", async () => {

@@ -5,6 +5,7 @@ import {
   RECORDING_RESERVATION_LEASE_MS,
   sanitizeRecording,
   saveRecordingToFile,
+  type RecordingFileOps,
 } from "./tools/record.js";
 import { saveNote, listNotes } from "./notes.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
@@ -59,6 +60,7 @@ export interface WsServerOptions {
   token: string;
   context: Context;
   recordingsDir?: string;
+  recordingFileOps?: Partial<RecordingFileOps>;
 }
 
 export interface WsServerResult {
@@ -609,7 +611,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
               return;
             }
 
-            saveRecordingToFile(recording, options.recordingsDir);
+            saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
             const released = await stateManager.releaseRecordingReservation(
               sessionId,
               recording.name,
