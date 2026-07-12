@@ -1,13 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import type { Context } from "./context.js";
-import {
-  RECORDING_RESERVATION_LEASE_MS,
-  sanitizeRecording,
-  saveRecordingToFile,
-  verifyExistingRecordingFile,
-  type RecordingFileOps,
-} from "./tools/record.js";
+import { RECORDING_RESERVATION_LEASE_MS, type RecordingFileOps, sanitizeRecording, saveRecordingToFile } from './tools/record.js';
 import { saveNote, listNotes } from "./notes.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import { HubStateManager } from "./hub-client.js";
@@ -159,7 +153,7 @@ function isPortInUse(port: number): Promise<boolean> {
 async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
   const stateManager = new LocalStateManager();
-  const persistedRecordingRetries = new Map<string, Set<string>>();
+  const persistedRecordingRetries = new Map<string, Map<string, string>>();
 
   // Wire up browser listing to context
   stateManager.setListBrowsersFn(() => context.listBrowsers());
@@ -590,6 +584,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           });
           return;
         }
+        const canonicalRecording = JSON.stringify(recording);
 
         if (!connectionSessions.hasLiveSession(sessionId)) {
           safeSend(ws, {
@@ -605,10 +600,10 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           .hasRecordingReservation(sessionId, recording.name)
           .then(async (hasReservation) => {
             if (!hasReservation) {
-              const retryNames = persistedRecordingRetries.get(sessionId);
-              if (retryNames?.has(recording.name)) {
+              const retryRecordings = persistedRecordingRetries.get(sessionId);
+              if (retryRecordings?.get(recording.name) === canonicalRecording) {
                 try {
-                  verifyExistingRecordingFile(
+                  saveRecordingToFile(
                     recording,
                     options.recordingsDir,
                     options.recordingFileOps,
@@ -632,10 +627,14 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
               return;
             }
 
+            const retryRecordings = persistedRecordingRetries.get(sessionId) ?? new Map<string, string>();
+            const expectedRecording = retryRecordings.get(recording.name);
+            if (expectedRecording !== undefined && expectedRecording !== canonicalRecording) {
+              throw new Error("Recording recovery payload changed");
+            }
+            retryRecordings.set(recording.name, canonicalRecording);
+            persistedRecordingRetries.set(sessionId, retryRecordings);
             saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
-            const retryNames = persistedRecordingRetries.get(sessionId) ?? new Set<string>();
-            retryNames.add(recording.name);
-            persistedRecordingRetries.set(sessionId, retryNames);
             const released = await stateManager.releaseRecordingReservation(
               sessionId,
               recording.name,

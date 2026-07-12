@@ -17,7 +17,7 @@ import {
   configureRecordingTransport,
   disconnectRecordingTransport,
   getRecordingManager,
-  getTerminatedRecordingSession,
+  getRecordingTermination,
 } from '../../lib/recording-runtime';
 import {
   enableRuntime,
@@ -220,9 +220,13 @@ export default defineBackground(() => {
       error?: string;
     };
     if (acceptRecordingServerMessage(parsed)) return;
-    const terminatedSessionId = getTerminatedRecordingSession(parsed);
-    if (terminatedSessionId) {
-      await getRecordingManager().abortSession(terminatedSessionId);
+    const termination = getRecordingTermination(parsed);
+    if (termination) {
+      if (termination.reason === 'session_closed') {
+        await getRecordingManager().abortSession(termination.sessionId);
+      } else {
+        await getRecordingManager().expireReservation(termination.sessionId);
+      }
       return;
     }
     if (anyMsg.type === 'saveNoteResult' && anyMsg.id) {

@@ -88,7 +88,7 @@ function ensureRecordingsDir(
 const RecordStartArgs = z.object({
   name: z.string().trim().min(1).describe("Name for this recording session (e.g. 'checkout_flow')"),
   tabId: z.number().int().nonnegative().describe("Tab where recording starts"),
-});
+}).strict();
 
 const RecordStopArgs = z.object({}).strict();
 
@@ -303,7 +303,7 @@ const RecordStopResultSchema = z.object({
   serverSaved: z.boolean().optional(),
   recording: RecordingSchema,
   error: z.string().optional(),
-});
+}).strict();
 
 export function createRecordingTools(
   stateManager: IStateManager,
@@ -551,18 +551,6 @@ function verifyExistingRecording(
     verificationFailure ??= closeError;
   }
   if (verificationFailure) throw verificationFailure;
-}
-
-export function verifyExistingRecordingFile(
-  recording: unknown,
-  recordingsDir = RECORDINGS_DIR,
-  fileOps: Partial<RecordingFileOps> = {},
-): "existing-identical" {
-  const sanitized = sanitizeRecording(recording);
-  const ops = { ...RECORDING_FILE_OPS, ...fileOps };
-  const filePath = join(recordingsDir, `${normalizeRecordingName(sanitized.name)}.json`);
-  verifyExistingRecording(sanitized, filePath, ops, new Error("Recording artifact differs"));
-  return "existing-identical";
 }
 
 export function saveRecordingToFile(

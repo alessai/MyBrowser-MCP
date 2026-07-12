@@ -288,6 +288,60 @@ describe("recording tools and persistence", () => {
     expect(sendSocketMessage).not.toHaveBeenCalled();
   });
 
+  it("strictly rejects unknown recording tool and stop-result fields without echoing canaries", async () => {
+    const secret = "SECRET_RECORDING_FIXED_SCHEMA_4821";
+
+    const startState = createRecordingState();
+    const startProxy = vi.fn().mockResolvedValue({ status: "recording" });
+    const startTools = getRecordingApi().createRecordingTools(startState, () => "session-a");
+    let startError = "";
+    try {
+      await startTools.recordStart.handle(
+        { sendSocketMessage: startProxy } as unknown as Context,
+        { name: "strict", tabId: 7, unknownStart: secret },
+      );
+    } catch (error) {
+      startError = error instanceof Error ? error.message : String(error);
+    }
+    expect(startError).not.toContain(secret);
+    expect(startState.reserveRecording).not.toHaveBeenCalled();
+    expect(startProxy).not.toHaveBeenCalled();
+
+    const state = createRecordingState();
+    const tools = getRecordingApi().createRecordingTools(state, () => "session-a");
+    await tools.recordStart.handle(
+      { sendSocketMessage: vi.fn().mockResolvedValue({ status: "recording" }) } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    const stopProxy = vi.fn().mockResolvedValue({
+      extensionSaved: true,
+      serverSaved: true,
+      recording: validRecording,
+      unknownResult: secret,
+    });
+    await expect(tools.recordStop.handle(
+      { sendSocketMessage: stopProxy } as unknown as Context,
+      { unknownStop: secret },
+    )).rejects.not.toThrow(secret);
+    expect(stopProxy).not.toHaveBeenCalled();
+
+    const listProxy = vi.fn();
+    await expect(tools.recordList.handle(
+      { sendSocketMessage: listProxy } as unknown as Context,
+      { unknownList: secret },
+    )).rejects.not.toThrow(secret);
+    expect(listProxy).not.toHaveBeenCalled();
+
+    let resultError = "";
+    try {
+      await tools.recordStop.handle({ sendSocketMessage: stopProxy } as unknown as Context, {});
+    } catch (error) {
+      resultError = error instanceof Error ? error.message : String(error);
+    }
+    expect(resultError).not.toContain(secret);
+    expect(resultError).not.toBe("");
+  });
+
   it("reserves before starting and forwards the required tabId", async () => {
     const state = createRecordingState();
     const sendSocketMessage = vi.fn().mockResolvedValue({ status: "recording" });
@@ -539,9 +593,6 @@ describe("recording tools and persistence", () => {
     const state = createRecordingState();
     const context = {
       sendSocketMessage: vi.fn().mockResolvedValue({
-        name: validRecording.name,
-        steps: validRecording.steps.length,
-        durationMs: 100,
         recording: { ...validRecording },
       }),
     } as unknown as Context;
@@ -606,9 +657,6 @@ describe("recording tools and persistence", () => {
     const stopContext = {
       sendSocketMessage: vi.fn()
         .mockResolvedValueOnce({
-          name: validRecording.name,
-          steps: validRecording.steps.length,
-          durationMs: 100,
           recording: { ...validRecording },
         })
         .mockRejectedValueOnce(new Error("No recording in progress")),
@@ -1277,6 +1325,46 @@ describe("acknowledged recording reservation messages", () => {
     expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(true);
+  });
+
+  it("recovers the exact sanitized payload after a failed persist and wrapper release", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-recovery-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    let failWrite = true;
+    const { server, extension } = await setupReservedRecording(recordingsDir, {
+      fchmodSync: (fd, mode) => {
+        if (failWrite) throw new Error("injected recovery failure");
+        fchmodSync(fd, mode);
+      },
+    });
+
+    await expect(persistRecordingMessage(extension, "persist-recovery-first")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-recovery-first",
+      ok: false,
+      error: "persistence failed",
+    });
+    await expect(server.stateManager.releaseRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(true);
+    failWrite = false;
+
+    await expect(persistRecordingMessage(extension, "persist-recovery-changed", {
+      ...validRecording,
+      url: "https://different.test/",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-recovery-changed",
+      ok: false,
+      error: "reservation unavailable",
+    });
+    await expect(persistRecordingMessage(extension, "persist-recovery-retry")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-recovery-retry",
+      ok: true,
+    });
+    expect(JSON.parse(readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8")))
+      .toMatchObject({ name: "Checkout_Flow", steps: validRecording.steps });
   });
 
   it("does not acknowledge false live release and retries only an identical artifact", async () => {

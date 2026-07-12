@@ -528,6 +528,79 @@ describe("RecordingManager restart and stop persistence", () => {
     expectAbsent({ storage: sessionStorage.writes, requests: renewedTransport.requests });
   });
 
+  it("persists server-failed stop recovery without renewal or expiry deletion", async () => {
+    const sessionStorage = new MemoryStorage();
+    const localStorage = new MemoryStorage();
+    const transport = new FakeTransport();
+    transport.responses.push(new Error(`persist failed ${SECRET_TEXT}`));
+    const first = createManager({ sessionStorage, localStorage, transport });
+    await first.manager.start("session-a", "recover-server", 11, "https://example.test");
+    await captureType(first.manager, "session-a", 11, SECRET_TEXT);
+
+    const partial = await first.manager.stop("session-a");
+    expect(partial).toMatchObject({
+      extensionSaved: false,
+      serverSaved: false,
+      error: "SERVER_PERSIST_FAILED",
+    });
+    expect(first.manager.snapshot().active).toEqual([
+      expect.objectContaining({
+        sessionId: "session-a",
+        status: "stopping",
+        stopStatus: {
+          extensionSaved: false,
+          serverSaved: false,
+          error: "SERVER_PERSIST_FAILED",
+        },
+      }),
+    ]);
+    expect(first.scheduler.cleared).toBeGreaterThan(0);
+    const requestCount = transport.requests.length;
+    await first.manager.renewPersistedSessions();
+    await first.manager.expireReservation("session-a");
+    expect(transport.requests).toHaveLength(requestCount);
+    expect(first.manager.snapshot().active).toHaveLength(1);
+    await expect(first.manager.start("session-a", "replacement", 11, "https://example.test"))
+      .rejects.toThrow("ACTIVE_RECORDING_EXISTS");
+
+    const recoveryTransport = new FakeTransport();
+    const restarted = createManager({
+      sessionStorage,
+      localStorage,
+      transport: recoveryTransport,
+    });
+    await restarted.manager.renewPersistedSessions();
+    expect(recoveryTransport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active[0]).toMatchObject({ status: "stopping" });
+
+    const recovered = await restarted.manager.stop("session-a");
+    expect(recovered).toMatchObject({ extensionSaved: true, serverSaved: true });
+    expect(recovered.recording).toEqual(partial.recording);
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expectAbsent({ partial, recovered, storage: sessionStorage.writes, local: localStorage.writes });
+  });
+
+  it("cleans recovery after durable server success even when local persistence fails", async () => {
+    const sessionStorage = new MemoryStorage();
+    const localStorage = new MemoryStorage();
+    localStorage.failSet = new Error(`local failed ${SECRET_FORM}`);
+    const { manager, scheduler } = createManager({ sessionStorage, localStorage });
+    await manager.start("session-a", "server-only", 11, "https://example.test");
+
+    const partial = await manager.stop("session-a");
+
+    expect(partial).toMatchObject({
+      extensionSaved: false,
+      serverSaved: true,
+      error: "LOCAL_PERSIST_FAILED",
+    });
+    expect(manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(scheduler.cleared).toBeGreaterThan(0);
+    expectAbsent(partial);
+  });
+
   it("enumerates per-session markers and preserves concurrent sessions across stops", async () => {
     const sessionStorage = new MemoryStorage();
     const first = createManager({ sessionStorage });
@@ -541,12 +614,15 @@ describe("RecordingManager restart and stop persistence", () => {
       { sessionId: "session-b", name: "bravo" },
     ]);
     await expect(restarted.manager.stop("session-c")).rejects.toThrow("NO_ACTIVE_RECORDING");
-    expect(sessionStorage.values.get("active-recording-index:session-a")).toBe(true);
-    expect(sessionStorage.values.get("active-recording-index:session-b")).toBe(true);
+    expect(sessionStorage.values.get("active-recording-index:session-a"))
+      .toEqual({ sessionId: "session-a", status: "active" });
+    expect(sessionStorage.values.get("active-recording-index:session-b"))
+      .toEqual({ sessionId: "session-b", status: "active" });
 
     await restarted.manager.stop("session-a");
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
-    expect(sessionStorage.values.get("active-recording-index:session-b")).toBe(true);
+    expect(sessionStorage.values.get("active-recording-index:session-b"))
+      .toEqual({ sessionId: "session-b", status: "active" });
     expect(sessionStorage.values.has("active-recording:session-b")).toBe(true);
     expect(restarted.scheduler.cleared).toBe(0);
   });
@@ -584,7 +660,7 @@ describe("RecordingManager restart and stop persistence", () => {
     expectAbsent({ snapshot: manager.snapshot(), writes: sessionStorage.writes });
   });
 
-  it("migrates a valid legacy snapshot without reading the shared index value", async () => {
+  it("cleans a markerless legacy snapshot without reading it or the shared index value", async () => {
     const sessionStorage = new MemoryStorage();
     const first = createManager({ sessionStorage });
     await first.manager.start("session-a", "legacy-migrate", 11, "https://example.test");
@@ -596,13 +672,81 @@ describe("RecordingManager restart and stop persistence", () => {
     const restarted = createManager({ sessionStorage });
     await restarted.manager.renewPersistedSessions();
 
-    expect(restarted.transport.requests).toHaveLength(1);
+    expect(restarted.transport.requests).toHaveLength(0);
     expect(sessionStorage.values.has("active-recording-index")).toBe(false);
-    expect(sessionStorage.values.get("active-recording-index:session-a")).toBe(true);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.reads).not.toContain("active-recording-index");
-    expect(sessionStorage.events.indexOf("storage:set:active-recording-index:session-a"))
-      .toBeLessThan(sessionStorage.events.indexOf("storage:remove:active-recording-index"));
+    expect(sessionStorage.reads).not.toContain("active-recording:session-a");
     expectAbsent({ snapshot: restarted.manager.snapshot(), writes: sessionStorage.writes });
+  });
+
+  it("requires a strict matching marker before reading or restoring a snapshot", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "orphan", 11, "https://example.test");
+    sessionStorage.values.delete("active-recording-index:session-a");
+    sessionStorage.reads.length = 0;
+    sessionStorage.writes.length = 0;
+
+    const missingMarker = createManager({ sessionStorage });
+    await expect(missingMarker.manager.stop("session-a")).rejects.toThrow("NO_ACTIVE_RECORDING");
+    expect(sessionStorage.reads).toContain("active-recording-index:session-a");
+    expect(sessionStorage.reads).not.toContain("active-recording:session-a");
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.writes).toEqual([]);
+
+    const liveStorage = new MemoryStorage();
+    const live = createManager({ sessionStorage: liveStorage });
+    await live.manager.start("session-a", "live-orphan", 11, "https://example.test");
+    liveStorage.values.delete("active-recording-index:session-a");
+    liveStorage.writes.length = 0;
+    await expect(live.manager.stop("session-a")).rejects.toThrow("NO_ACTIVE_RECORDING");
+    expect(liveStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(liveStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(liveStorage.writes).toEqual([]);
+
+    const malformedStorage = new MemoryStorage();
+    const malformedFirst = createManager({ sessionStorage: malformedStorage });
+    await malformedFirst.manager.start("session-a", "malformed-marker", 11, "https://example.test");
+    malformedStorage.values.set("active-recording-index:session-a", {
+      sessionId: "session-a",
+      status: "active",
+      extra: SECRET_FORM,
+    });
+    malformedStorage.reads.length = 0;
+    const malformedMarker = createManager({ sessionStorage: malformedStorage });
+    await expect(malformedMarker.manager.restoreSession("session-a")).resolves.toBe(false);
+    expect(malformedStorage.reads).not.toContain("active-recording:session-a");
+    expect(malformedStorage.values.has("active-recording:session-a")).toBe(false);
+    expectAbsent({ writes: malformedStorage.writes, snapshot: malformedMarker.manager.snapshot() });
+
+    const mismatchedStorage = new MemoryStorage();
+    const mismatchSource = createManager({ sessionStorage: mismatchedStorage });
+    await mismatchSource.manager.start("session-a", "mismatched", 11, "https://example.test");
+    const snapshot = mismatchedStorage.values.get("active-recording:session-a") as Record<string, unknown>;
+    const recording = snapshot.recording as Record<string, unknown>;
+    mismatchedStorage.values.set("active-recording:session-a", {
+      ...snapshot,
+      status: "stopping",
+      recording: { ...recording, stoppedAt: 1_700_000_000_001 },
+    });
+    mismatchedStorage.reads.length = 0;
+    const mismatched = createManager({ sessionStorage: mismatchedStorage });
+    await expect(mismatched.manager.restoreSession("session-a")).resolves.toBe(false);
+    expect(mismatchedStorage.reads).toContain("active-recording-index:session-a");
+    expect(mismatchedStorage.reads).toContain("active-recording:session-a");
+    expect(mismatchedStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(mismatchedStorage.values.has("active-recording-index:session-a")).toBe(false);
+
+    const markerOnlyStorage = new MemoryStorage();
+    markerOnlyStorage.values.set("active-recording-index:session-a", {
+      sessionId: "session-a",
+      status: "active",
+    });
+    const markerOnly = createManager({ sessionStorage: markerOnlyStorage });
+    await expect(markerOnly.manager.restoreSession("session-a")).resolves.toBe(false);
+    expect(markerOnlyStorage.values.has("active-recording-index:session-a")).toBe(false);
   });
 
   it("deletes restored state that exceeds current limits before renewal", async () => {
@@ -621,20 +765,32 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
   });
 
-  it("aborts and deletes restart state on expiry or session closure", async () => {
-    const { manager, sessionStorage, scheduler } = createManager();
+  it("expires active state on false renewal and deletes stopping state on session closure", async () => {
+    const sessionStorage = new MemoryStorage();
+    const renewalTransport = new FakeTransport();
+    renewalTransport.responses.push({ ok: false });
+    const { manager, scheduler } = createManager({ sessionStorage, transport: renewalTransport });
     await manager.start("session-a", "flow", 11, "https://example.test");
-
-    await manager.abortSession("session-a");
-
+    await manager.renewPersistedSessions();
     expect(manager.snapshot().active).toEqual([]);
-    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
-    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+
+    const failedTransport = new FakeTransport();
+    failedTransport.responses.push(new Error("SERVER_UNAVAILABLE"));
+    const stopping = createManager({ sessionStorage, transport: failedTransport });
+    await stopping.manager.start("session-b", "close-stopping", 12, "https://example.test");
+    await stopping.manager.stop("session-b");
+    expect(stopping.manager.snapshot().active).toHaveLength(1);
+
+    await stopping.manager.abortSession("session-b");
+
+    expect(stopping.manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-b")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-b")).toBe(false);
     expect(sessionStorage.removeManyCalls.at(-1)).toEqual([
-      "active-recording:session-a",
-      "active-recording-index:session-a",
+      "active-recording:session-b",
+      "active-recording-index:session-b",
     ]);
-    expect(scheduler.cleared).toBe(1);
+    expect(scheduler.cleared).toBeGreaterThan(0);
   });
 
   it("persists to the server before creating the local completed copy", async () => {
@@ -668,7 +824,7 @@ describe("RecordingManager restart and stop persistence", () => {
     });
     expect(localStorage.values.get("recording:flow")).toEqual({ existing: true });
     expect(localStorage.reads).not.toContain("recording:flow");
-    expect(manager.snapshot().active).toHaveLength(1);
+    expect(manager.snapshot().active).toHaveLength(0);
   });
 
   it("serializes concurrent same-name stops and never overwrites differing content", async () => {
@@ -692,14 +848,14 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(localStorage.values.get("recording:shared")).toEqual(first.recording);
     expect(localStorage.writes.filter((entry) => JSON.stringify(entry).includes("recording:shared")))
       .toHaveLength(1);
-    expect(manager.snapshot().active).toEqual([expect.objectContaining({ sessionId: "session-b" })]);
+    expect(manager.snapshot().active).toEqual([]);
     expectAbsent({ first, second, writes: localStorage.writes, snapshot: manager.snapshot() });
   });
 
   it("keeps snapshot and marker atomic on cleanup failure, then retries after worker restart", async () => {
     const sessionStorage = new MemoryStorage();
     const localStorage = new MemoryStorage();
-    const { manager } = createManager({ sessionStorage, localStorage });
+    const { manager, transport } = createManager({ sessionStorage, localStorage });
     await manager.start("session-a", "cleanup-key", 11, "https://example.test");
     await captureType(manager, "session-a", 11, SECRET_TEXT);
     sessionStorage.failRemoveMany = new Error(`REMOVE_FAILED_${SECRET_FORM}`);
@@ -712,16 +868,25 @@ describe("RecordingManager restart and stop persistence", () => {
     });
     expect(manager.snapshot().active).toHaveLength(1);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
-    expect(sessionStorage.values.get("active-recording-index:session-a")).toBe(true);
+    expect(sessionStorage.values.get("active-recording-index:session-a")).toEqual({
+      sessionId: "session-a",
+      status: "stopping",
+    });
     expect(sessionStorage.removeManyCalls.at(-1)).toEqual([
       "active-recording:session-a",
       "active-recording-index:session-a",
     ]);
+    const requestsBeforeTick = transport.requests.length;
+    await manager.renewPersistedSessions();
+    await manager.expireReservation("session-a");
+    expect(transport.requests).toHaveLength(requestsBeforeTick);
+    expect(manager.snapshot().active).toHaveLength(1);
 
     sessionStorage.failRemoveMany = undefined;
     const restarted = createManager({ sessionStorage, localStorage });
     const retried = await restarted.manager.stop("session-a");
     expect(retried).toMatchObject({ extensionSaved: true, serverSaved: true });
+    expect(restarted.transport.requests).toEqual([]);
     expect(retried).not.toHaveProperty("error");
     expect(retried.recording).toEqual(partial.recording);
     expect(restarted.manager.snapshot().active).toEqual([]);
@@ -780,7 +945,7 @@ describe("RecordingManager restart and stop persistence", () => {
       serverSaved: true,
       error: "LOCAL_PERSIST_FAILED",
     });
-    expect(localCase.manager.snapshot().active).toHaveLength(1);
+    expect(localCase.manager.snapshot().active).toHaveLength(0);
 
     expectAbsent({
       serverResult,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RecordingRequestBroker } from "./recording-transport";
-import { getTerminatedRecordingSession } from "./recording-runtime";
+import { getRecordingTermination } from "./recording-runtime";
 
 const SECRET = "SECRET_TRANSPORT_ALPHA_8107";
 
@@ -106,17 +106,17 @@ describe("RecordingRequestBroker", () => {
 
 describe("recording lifecycle broadcasts", () => {
   it("extracts nested session closure and reservation expiry identities", () => {
-    expect(getTerminatedRecordingSession({
+    expect(getRecordingTermination({
       id: "bcast-1",
       type: "session_closed",
       payload: { sessionId: "session-a" },
-    })).toBe("session-a");
-    expect(getTerminatedRecordingSession({
+    })).toEqual({ sessionId: "session-a", reason: "session_closed" });
+    expect(getRecordingTermination({
       id: "bcast-2",
       type: "recording_reservation_expired",
       payload: { sessionId: "session-b", name: "flow" },
-    })).toBe("session-b");
-    expect(getTerminatedRecordingSession({
+    })).toEqual({ sessionId: "session-b", reason: "reservation_expired" });
+    expect(getRecordingTermination({
       type: "session_closed",
       sessionId: "untrusted-top-level",
     })).toBeUndefined();

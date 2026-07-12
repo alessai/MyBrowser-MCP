@@ -77,11 +77,21 @@ export interface RecordingStopResult {
     | 'ACTIVE_STATE_CLEANUP_FAILED';
 }
 
+type RecordingStateStatus = 'active' | 'stopping';
+type CachedStopStatus = Omit<RecordingStopResult, 'recording'>;
+
 interface ActiveRecording {
   sessionId: string;
   tabId: number;
   nextVariable: number;
+  status: RecordingStateStatus;
+  stopStatus?: CachedStopStatus;
   recording: Recording;
+}
+
+interface RecordingMarker {
+  sessionId: string;
+  status: RecordingStateStatus;
 }
 
 interface PendingReservation {
@@ -179,12 +189,30 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 function isActiveRecording(
   value: unknown,
   sessionId: string,
-  allowStopped = false,
 ): value is ActiveRecording {
   if (!isRecord(value) || value.sessionId !== sessionId) return false;
-  if (!hasExactKeys(value, ['sessionId', 'tabId', 'nextVariable', 'recording'])) return false;
+  const stateKeys = ['sessionId', 'tabId', 'nextVariable', 'status', 'recording'];
+  if ('stopStatus' in value) stateKeys.push('stopStatus');
+  if (!hasExactKeys(value, stateKeys)) return false;
   if (!Number.isInteger(value.tabId) || (value.tabId as number) < 0) return false;
   if (!Number.isInteger(value.nextVariable) || (value.nextVariable as number) < 1) return false;
+  if (value.status !== 'active' && value.status !== 'stopping') return false;
+  if ('stopStatus' in value) {
+    if (value.status !== 'stopping' || !isRecord(value.stopStatus)) return false;
+    const stopStatusKeys = ['extensionSaved', 'serverSaved'];
+    if ('error' in value.stopStatus) stopStatusKeys.push('error');
+    if (!hasExactKeys(value.stopStatus, stopStatusKeys)) return false;
+    if (typeof value.stopStatus.extensionSaved !== 'boolean'
+      || typeof value.stopStatus.serverSaved !== 'boolean') return false;
+    if (value.stopStatus.extensionSaved && !value.stopStatus.serverSaved) return false;
+    if ('error' in value.stopStatus && ![
+      'SERVER_PERSIST_FAILED',
+      'LOCAL_RECORDING_CONFLICT',
+      'LOCAL_PERSIST_FAILED',
+      'ACTIVE_STATE_PERSIST_FAILED',
+      'ACTIVE_STATE_CLEANUP_FAILED',
+    ].includes(value.stopStatus.error as string)) return false;
+  }
   const recording = value.recording;
   if (!isRecord(recording) || typeof recording.name !== 'string') return false;
   const recordingKeys = ['name', 'startedAt', 'url', 'steps', 'requiredVariables'];
@@ -192,7 +220,8 @@ function isActiveRecording(
   if (hasStoppedAt) recordingKeys.push('stoppedAt');
   if (!hasExactKeys(recording, recordingKeys)) return false;
   if (typeof recording.startedAt !== 'number' || typeof recording.url !== 'string') return false;
-  if (hasStoppedAt && (!allowStopped
+  if (value.status === 'active' && (hasStoppedAt || 'stopStatus' in value)) return false;
+  if (value.status === 'stopping' && (!hasStoppedAt
     || typeof recording.stoppedAt !== 'number'
     || !Number.isFinite(recording.stoppedAt))) return false;
   if (!Array.isArray(recording.steps) || !Array.isArray(recording.requiredVariables)) return false;
@@ -230,6 +259,13 @@ function isActiveRecording(
     && [...variables.keys()].every((name) => usedVariables.has(name));
 }
 
+function isRecordingMarker(value: unknown, sessionId: string): value is RecordingMarker {
+  return isRecord(value)
+    && hasExactKeys(value, ['sessionId', 'status'])
+    && value.sessionId === sessionId
+    && (value.status === 'active' || value.status === 'stopping');
+}
+
 export function isSanitizedRecording(
   value: unknown,
 ): value is Recording & { stoppedAt: number } {
@@ -240,8 +276,9 @@ export function isSanitizedRecording(
     sessionId: 'validation',
     tabId: 0,
     nextVariable: Array.isArray(value.requiredVariables) ? value.requiredVariables.length + 1 : 1,
+    status: 'stopping',
     recording: value,
-  }, 'validation', true);
+  }, 'validation');
 }
 
 export class RecordingManager {
@@ -289,6 +326,7 @@ export class RecordingManager {
         sessionId,
         tabId,
         nextVariable: 1,
+        status: 'active',
         recording: {
           name,
           startedAt: this.now(),
@@ -331,7 +369,7 @@ export class RecordingManager {
       await this.restoreAllUnlocked();
       const active = this.active.get(sessionId);
       if (!active || this.replaying.has(sessionId) || active.tabId !== tabId) return null;
-      if (active.recording.stoppedAt !== undefined) throw new Error('RECORDING_STOP_PENDING');
+      if (active.status !== 'active') throw new Error('RECORDING_STOP_PENDING');
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
       }
@@ -412,6 +450,7 @@ export class RecordingManager {
         !reservation
         || reservation.sessionId !== sessionId
         || !active
+        || active.status !== 'active'
         || active.recording.steps.length !== reservation.baseStepCount
         || active.nextVariable !== reservation.baseNextVariable
       ) {
@@ -463,23 +502,27 @@ export class RecordingManager {
   stop(sessionId: string): Promise<RecordingStopResult> {
     return this.enqueue(async () => {
       await this.restoreSessionUnlocked(sessionId);
-      const active = this.active.get(sessionId);
-      if (!active) throw new Error('NO_ACTIVE_RECORDING');
+      let state = this.active.get(sessionId);
+      if (!state) throw new Error('NO_ACTIVE_RECORDING');
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
       }
 
       let recording: Recording & { stoppedAt: number };
-      if (active.recording.stoppedAt !== undefined) {
-        recording = clone(active.recording) as Recording & { stoppedAt: number };
+      if (state.status === 'stopping') {
+        recording = clone(state.recording) as Recording & { stoppedAt: number };
       } else {
-        recording = { ...clone(active.recording), stoppedAt: this.now() };
-        const stoppedActive: ActiveRecording = { ...active, recording };
-        this.active.set(sessionId, stoppedActive);
+        recording = { ...clone(state.recording), stoppedAt: this.now() };
+        const stoppingState: ActiveRecording = {
+          ...state,
+          status: 'stopping',
+          recording,
+        };
+        this.active.set(sessionId, stoppingState);
         try {
-          await this.persistActiveUnlocked(stoppedActive);
+          await this.persistActiveUnlocked(stoppingState);
         } catch {
-          this.active.set(sessionId, active);
+          this.active.set(sessionId, state);
           return {
             extensionSaved: false,
             serverSaved: false,
@@ -487,44 +530,66 @@ export class RecordingManager {
             error: 'ACTIVE_STATE_PERSIST_FAILED',
           };
         }
-      }
-      let serverSaved = false;
-      try {
-        const response = await this.transport.request('persistRecording', {
-          sessionId,
-          payload: recording,
-        }, SERVER_TIMEOUT_MS);
-        serverSaved = isRecord(response) && response.ok === true;
-      } catch {
-        serverSaved = false;
+        state = stoppingState;
+        await this.refreshRenewalAlarmUnlocked();
       }
 
+      let serverSaved = state.stopStatus?.serverSaved === true;
       if (!serverSaved) {
-        return {
-          extensionSaved: false,
-          serverSaved: false,
-          recording,
-          error: 'SERVER_PERSIST_FAILED',
-        };
-      }
-
-      try {
-        const localResult = await this.persistCompletedUnlocked(recording);
-        if (localResult === 'conflict') {
-          return {
-            extensionSaved: false,
-            serverSaved: true,
-            recording,
-            error: 'LOCAL_RECORDING_CONFLICT',
-          };
+        try {
+          const response = await this.transport.request('persistRecording', {
+            sessionId,
+            payload: recording,
+          }, SERVER_TIMEOUT_MS);
+          serverSaved = isRecord(response) && response.ok === true;
+        } catch {
+          serverSaved = false;
         }
-      } catch {
-        return {
+
+        if (!serverSaved) {
+          const result: RecordingStopResult = {
+            extensionSaved: false,
+            serverSaved: false,
+            recording,
+            error: 'SERVER_PERSIST_FAILED',
+          };
+          state = await this.cacheStopStatusUnlocked(state, result);
+          return result;
+        }
+
+        state = await this.cacheStopStatusUnlocked(state, {
           extensionSaved: false,
           serverSaved: true,
           recording,
-          error: 'LOCAL_PERSIST_FAILED',
-        };
+        });
+      }
+
+      if (state.stopStatus?.extensionSaved !== true) {
+        let localError: RecordingStopResult['error'];
+        try {
+          const localResult = await this.persistCompletedUnlocked(recording);
+          if (localResult === 'conflict') localError = 'LOCAL_RECORDING_CONFLICT';
+        } catch {
+          localError = 'LOCAL_PERSIST_FAILED';
+        }
+
+        if (localError) {
+          const result: RecordingStopResult = {
+            extensionSaved: false,
+            serverSaved: true,
+            recording,
+            error: localError,
+          };
+          await this.cacheStopStatusUnlocked(state, result);
+          await this.finishStopUnlocked(sessionId);
+          return result;
+        }
+
+        state = await this.cacheStopStatusUnlocked(state, {
+          extensionSaved: true,
+          serverSaved: true,
+          recording,
+        });
       }
 
       const result: RecordingStopResult = {
@@ -539,6 +604,27 @@ export class RecordingManager {
     });
   }
 
+  private async cacheStopStatusUnlocked(
+    state: ActiveRecording,
+    result: RecordingStopResult,
+  ): Promise<ActiveRecording> {
+    const updated: ActiveRecording = {
+      ...state,
+      stopStatus: {
+        extensionSaved: result.extensionSaved,
+        serverSaved: result.serverSaved,
+        ...(result.error ? { error: result.error } : {}),
+      },
+    };
+    this.active.set(updated.sessionId, updated);
+    try {
+      await this.persistActiveUnlocked(updated);
+    } catch {
+      // The sanitized in-memory result remains retryable; restart retries the last durable phase.
+    }
+    return updated;
+  }
+
   setReplaying(sessionId: string, replaying: boolean): void {
     if (replaying) this.replaying.add(sessionId);
     else this.replaying.delete(sessionId);
@@ -546,6 +632,15 @@ export class RecordingManager {
 
   abortSession(sessionId: string): Promise<void> {
     return this.enqueue(() => this.abortSessionUnlocked(sessionId));
+  }
+
+  expireReservation(sessionId: string): Promise<void> {
+    return this.enqueue(async () => {
+      await this.restoreSessionUnlocked(sessionId);
+      if (this.active.get(sessionId)?.status === 'active') {
+        await this.finishStopUnlocked(sessionId);
+      }
+    });
   }
 
   restoreSession(sessionId: string): Promise<boolean> {
@@ -559,13 +654,14 @@ export class RecordingManager {
         const restored = await this.restoreSessionUnlocked(sessionId);
         if (!restored) continue;
         const active = this.active.get(sessionId)!;
+        if (active.status !== 'active') continue;
         try {
           const response = await this.transport.request('renewRecordingReservation', {
             sessionId,
             name: active.recording.name,
           }, SERVER_TIMEOUT_MS);
           if (!isRecord(response) || response.ok !== true) {
-            await this.abortSessionUnlocked(sessionId);
+            await this.finishStopUnlocked(sessionId);
           }
         } catch {
           // Preserve sanitized restart state for the next alarm attempt.
@@ -594,14 +690,25 @@ export class RecordingManager {
   }
 
   private async restoreAllUnlocked(): Promise<void> {
-    const sessionIds = await this.persistedSessionIdsUnlocked();
+    const sessionIds = new Set(await this.persistedSessionIdsUnlocked());
+    for (const sessionId of this.active.keys()) sessionIds.add(sessionId);
     for (const sessionId of sessionIds) await this.restoreSessionUnlocked(sessionId);
   }
 
   private async restoreSessionUnlocked(sessionId: string): Promise<boolean> {
-    if (this.active.has(sessionId)) return true;
+    const marker = await this.sessionStorage.get<unknown>(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
+    if (!isRecordingMarker(marker, sessionId)) {
+      await this.removeActiveStateUnlocked(sessionId);
+      return false;
+    }
+    const inMemory = this.active.get(sessionId);
+    if (inMemory) {
+      if (inMemory.status === marker.status) return true;
+      await this.removeActiveStateUnlocked(sessionId);
+      return false;
+    }
     const stored = await this.sessionStorage.get<unknown>(`${ACTIVE_PREFIX}${sessionId}`);
-    if (!isActiveRecording(stored, sessionId, true)) {
+    if (!isActiveRecording(stored, sessionId) || stored.status !== marker.status) {
       await this.removeActiveStateUnlocked(sessionId);
       return false;
     }
@@ -618,8 +725,8 @@ export class RecordingManager {
       await this.removeActiveStateUnlocked(sessionId);
       return false;
     }
-    await this.persistActiveUnlocked(stored);
-    await this.scheduler.ensureRenewal();
+    if (stored.status === 'active') await this.scheduler.ensureRenewal();
+    else await this.refreshRenewalAlarmUnlocked();
     return true;
   }
 
@@ -627,11 +734,12 @@ export class RecordingManager {
     let total = 0;
     for (const [sessionId, state] of this.active) {
       total += byteLength(replacement?.sessionId === sessionId ? replacement : state);
-      total += byteLength(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
+      const markerState = replacement?.sessionId === sessionId ? replacement : state;
+      total += byteLength({ sessionId, status: markerState.status });
     }
     if (replacement && !this.active.has(replacement.sessionId)) {
       total += byteLength(replacement);
-      total += byteLength(`${ACTIVE_MARKER_PREFIX}${replacement.sessionId}`);
+      total += byteLength({ sessionId: replacement.sessionId, status: replacement.status });
     }
     return total;
   }
@@ -639,7 +747,10 @@ export class RecordingManager {
   private async persistActiveUnlocked(state: ActiveRecording): Promise<void> {
     await this.sessionStorage.setMany({
       [`${ACTIVE_PREFIX}${state.sessionId}`]: clone(state),
-      [`${ACTIVE_MARKER_PREFIX}${state.sessionId}`]: true,
+      [`${ACTIVE_MARKER_PREFIX}${state.sessionId}`]: {
+        sessionId: state.sessionId,
+        status: state.status,
+      },
     });
   }
 
@@ -651,19 +762,12 @@ export class RecordingManager {
       .map((key) => key.slice(ACTIVE_MARKER_PREFIX.length))
       .filter(isSessionId));
     if (keys.includes(LEGACY_ACTIVE_INDEX_KEY)) {
-      for (const key of keys) {
-        if (key.startsWith(ACTIVE_PREFIX)) {
-          const sessionId = key.slice(ACTIVE_PREFIX.length);
-          if (isSessionId(sessionId)) sessionIds.add(sessionId);
-        }
-      }
-      const migratedMarkers = Object.fromEntries(
-        [...sessionIds].map((sessionId) => [`${ACTIVE_MARKER_PREFIX}${sessionId}`, true]),
-      );
-      if (Object.keys(migratedMarkers).length > 0) {
-        await this.sessionStorage.setMany(migratedMarkers);
-      }
-      await this.sessionStorage.removeMany([LEGACY_ACTIVE_INDEX_KEY]);
+      const orphanSnapshots = keys.filter((key) => {
+        if (!key.startsWith(ACTIVE_PREFIX)) return false;
+        const sessionId = key.slice(ACTIVE_PREFIX.length);
+        return isSessionId(sessionId) && !keys.includes(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
+      });
+      await this.sessionStorage.removeMany([LEGACY_ACTIVE_INDEX_KEY, ...orphanSnapshots]);
     }
     return [...sessionIds].sort();
   }
@@ -673,6 +777,11 @@ export class RecordingManager {
       `${ACTIVE_PREFIX}${sessionId}`,
       `${ACTIVE_MARKER_PREFIX}${sessionId}`,
     ]);
+    this.active.delete(sessionId);
+    this.replaying.delete(sessionId);
+    for (const [id, reservation] of this.pending) {
+      if (reservation.sessionId === sessionId) this.pending.delete(id);
+    }
   }
 
   private async persistCompletedUnlocked(
@@ -707,19 +816,25 @@ export class RecordingManager {
     } catch {
       return false;
     }
-    this.active.delete(sessionId);
-    this.replaying.delete(sessionId);
-    for (const [id, reservation] of this.pending) {
-      if (reservation.sessionId === sessionId) this.pending.delete(id);
-    }
-    try {
-      const hasActiveMarkers = (await this.sessionStorage.getKeys())
-        .some((key) => key.startsWith(ACTIVE_MARKER_PREFIX));
-      if (!hasActiveMarkers) await this.scheduler.clearRenewal();
-    } catch {
-      // A stale alarm is harmless because restore enumerates active markers.
-    }
+    await this.refreshRenewalAlarmUnlocked();
     return true;
+  }
+
+  private async refreshRenewalAlarmUnlocked(): Promise<void> {
+    try {
+      const keys = await this.sessionStorage.getKeys();
+      let hasActive = [...this.active.values()].some((state) => state.status === 'active');
+      for (const key of keys) {
+        if (hasActive || !key.startsWith(ACTIVE_MARKER_PREFIX)) continue;
+        const sessionId = key.slice(ACTIVE_MARKER_PREFIX.length);
+        const marker = await this.sessionStorage.get<unknown>(key);
+        if (isRecordingMarker(marker, sessionId) && marker.status === 'active') hasActive = true;
+      }
+      if (hasActive) await this.scheduler.ensureRenewal();
+      else await this.scheduler.clearRenewal();
+    } catch {
+      // Stale alarms are harmless because renewal ignores non-active states.
+    }
   }
 
   private async abortSessionUnlocked(sessionId: string): Promise<void> {

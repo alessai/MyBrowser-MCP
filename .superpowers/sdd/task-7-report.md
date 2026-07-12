@@ -35,6 +35,35 @@ Implemented and verified. Active recordings are isolated by authenticated sessio
 - Server: `npm run build` passed.
 - Repository: `git diff --check` passed.
 
+## Lifecycle and Schema Follow-Up (2026-07-12)
+
+### Changes
+
+- Persisted active snapshots and per-session markers now carry a strict matching `active` or `stopping` status. Stopping state caches only sanitized save status beside the single sanitized recording copy.
+- Stop persists `stopping` before server persistence and clears renewal when no active session remains. Renewal and reservation-expiry paths ignore stopping recovery; `session_closed` still removes all session state.
+- Server persistence failure remains restart-safe and retryable without renewal. A later stop uses a same-session, exact-canonical-sanitized server recovery token after Task 6 releases the reservation.
+- Server-durable local failure may clean extension recovery state. Any atomic cleanup failure preserves the stopping snapshot and marker for an idempotent retry.
+- Restore validates the strict per-session marker before reading a snapshot, rejects status mismatch, removes markerless/malformed/partial state atomically, and cannot recreate authority from a same-worker or restarted orphan snapshot.
+- Legacy shared-index values remain unread. Markerless legacy snapshots are now safely cleaned rather than promoted into authoritative state.
+- `RecordStartArgs`, `RecordStopResultSchema`, recording, step, required-variable, stop, and list fixed-shape schemas reject unknown fields. Dynamic action arguments remain under the recursive default-deny validator.
+- The accepted HTTP(S) origin+pathname residual policy and all previous argument/privacy controls are unchanged.
+
+### Evidence
+
+- Extension RED: 6 lifecycle/marker failures reproduced initially, followed by a dedicated same-worker marker-recreation failure.
+- Extension focused GREEN: recorder and lifecycle transport suites passed, 35 tests.
+- Extension final: `npm test` passed, 12 files and 113 tests.
+- Extension final: `npm run check` passed.
+- Extension final: `npm run build` passed.
+- Server RED: unknown fixed-schema fields reached reservation handling, and post-release failed-persist recovery was denied.
+- Server focused GREEN: WebSocket/server lifecycle suite passed, 63 tests.
+- Server final: `npm test` passed, 6 files and 140 tests.
+- Server final: `npm run check` passed.
+- Server final: `npm run build` passed.
+- Canary scan: all `SECRET_` matches remain confined to test files; stop results, snapshots, markers, storage writes, transport requests, diagnostics, and errors remain sanitized.
+- Lifecycle scan: stopping state has no renewal path; false renewal and reservation expiry delete active state only; marker validation precedes snapshot reads.
+- Repository: `git diff --check` passed.
+
 ## Self-Review
 
 - Verified prepare occurs before browser handlers and cap failures cannot run browser actions.
@@ -117,7 +146,7 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Restore and renewal enumerate marker keys; concurrent sessions remain isolated and one session's stop cannot orphan another.
 - A failed atomic removal retains snapshot, marker, and in-memory state; a restarted worker restores the stopped snapshot and retries server/local persistence and cleanup idempotently.
 - Alarm clearing is best-effort after successful state removal; stale alarms enumerate no markers and cannot resurrect a recording.
-- Legacy shared-index values are never read. Migration discovers active snapshot names from storage keys, writes per-session markers before deleting the legacy key, validates each snapshot, and atomically removes unsafe snapshot/marker pairs.
+- Superseded by the lifecycle follow-up below: legacy shared-index values are never read, and markerless legacy snapshots are now cleaned rather than promoted to authoritative state.
 - Added remove failure, worker restart, retry stop, concurrent marker enumeration, migration ordering, abort cleanup, stale-alarm, and no-orphan coverage.
 
 ### Final Follow-Up Verification

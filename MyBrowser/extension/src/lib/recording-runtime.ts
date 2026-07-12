@@ -24,12 +24,18 @@ export function disconnectRecordingTransport(): void {
   broker.disconnect();
 }
 
-export function getTerminatedRecordingSession(message: unknown): string | undefined {
+export function getRecordingTermination(message: unknown):
+  | { sessionId: string; reason: 'session_closed' | 'reservation_expired' }
+  | undefined {
   if (typeof message !== 'object' || message === null) return undefined;
   const candidate = message as Record<string, unknown>;
   if (candidate.type !== 'session_closed'
     && candidate.type !== 'recording_reservation_expired') return undefined;
   if (typeof candidate.payload !== 'object' || candidate.payload === null) return undefined;
   const sessionId = (candidate.payload as Record<string, unknown>).sessionId;
-  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined;
+  return {
+    sessionId,
+    reason: candidate.type === 'session_closed' ? 'session_closed' : 'reservation_expired',
+  };
 }
