@@ -135,12 +135,12 @@ export class HubStateManager implements IStateManager {
     await this.sendRpc("registerSession", { sessionId, name });
   }
 
-  async removeSession(sessionId: string): Promise<void> {
-    await this.sendRpc("removeSession", { sessionId });
+  async removeSession(_sessionId: string): Promise<void> {
+    await this.sendRpc("removeSession");
   }
 
-  async touchSession(sessionId: string): Promise<void> {
-    await this.sendRpc("touchSession", { sessionId });
+  async touchSession(_sessionId: string): Promise<void> {
+    await this.sendRpc("touchSession");
   }
 
   async listSessions(): Promise<SessionInfo[]> {
@@ -149,24 +149,24 @@ export class HubStateManager implements IStateManager {
 
   // -- Tab ownership (composite string keys) --
 
-  async claimTab(sessionId: string, tabKey: string): Promise<{ ok: boolean; owner?: string }> {
-    return (await this.sendRpc("claimTab", { sessionId, tabKey })) as { ok: boolean; owner?: string };
+  async claimTab(_sessionId: string, tabKey: string): Promise<{ ok: boolean; owner?: string }> {
+    return (await this.sendRpc("claimTab", { tabKey })) as { ok: boolean; owner?: string };
   }
 
-  async releaseTab(sessionId: string, tabKey: string): Promise<boolean> {
-    return (await this.sendRpc("releaseTab", { sessionId, tabKey })) as boolean;
+  async releaseTab(_sessionId: string, tabKey: string): Promise<boolean> {
+    return (await this.sendRpc("releaseTab", { tabKey })) as boolean;
   }
 
-  async transferTab(fromSessionId: string, toSessionId: string, tabKey: string): Promise<boolean> {
-    return (await this.sendRpc("transferTab", { fromSessionId, toSessionId, tabKey })) as boolean;
+  async transferTab(_fromSessionId: string, toSessionId: string, tabKey: string): Promise<boolean> {
+    return (await this.sendRpc("transferTab", { toSessionId, tabKey })) as boolean;
   }
 
-  async releaseAllTabs(sessionId: string): Promise<void> {
-    await this.sendRpc("releaseAllTabs", { sessionId });
+  async releaseAllTabs(_sessionId: string): Promise<void> {
+    await this.sendRpc("releaseAllTabs");
   }
 
-  async isTabAvailable(tabKey: string, sessionId: string): Promise<boolean> {
-    return (await this.sendRpc("isTabAvailable", { tabKey, sessionId })) as boolean;
+  async isTabAvailable(tabKey: string, _sessionId: string): Promise<boolean> {
+    return (await this.sendRpc("isTabAvailable", { tabKey })) as boolean;
   }
 
   async getTabOwner(tabKey: string): Promise<string | undefined> {
@@ -183,12 +183,12 @@ export class HubStateManager implements IStateManager {
 
   // -- Per-session browser targeting --
 
-  async selectBrowser(sessionId: string, browserId: string): Promise<void> {
-    await this.sendRpc("selectBrowser", { sessionId, browserId });
+  async selectBrowser(_sessionId: string, browserId: string): Promise<void> {
+    await this.sendRpc("selectBrowser", { browserId });
   }
 
-  async getSessionBrowser(sessionId: string): Promise<string | undefined> {
-    return (await this.sendRpc("getSessionBrowser", { sessionId })) as string | undefined;
+  async getSessionBrowser(_sessionId: string): Promise<string | undefined> {
+    return (await this.sendRpc("getSessionBrowser")) as string | undefined;
   }
 
   async setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo> {
@@ -203,8 +203,8 @@ export class HubStateManager implements IStateManager {
     await this.sendRpc("clearDefaultBrowser");
   }
 
-  async resolveBrowserTarget(sessionId?: string): Promise<BrowserTargetResolution> {
-    return (await this.sendRpc("resolveBrowserTarget", { sessionId })) as BrowserTargetResolution;
+  async resolveBrowserTarget(_sessionId?: string): Promise<BrowserTargetResolution> {
+    return (await this.sendRpc("resolveBrowserTarget")) as BrowserTargetResolution;
   }
 
   // -- Browser listing --
@@ -270,14 +270,13 @@ export class HubStateManager implements IStateManager {
   // -- Event handlers (F1 browser_on) --
 
   async registerEventHandler(
-    sessionId: string,
+    _sessionId: string,
     browserId: string,
     event: EventName,
     action: HandlerAction,
     options?: HandlerOptions,
   ): Promise<EventHandler> {
     return (await this.sendRpc("registerEventHandler", {
-      sessionId,
       browserId,
       event,
       action,
@@ -286,27 +285,25 @@ export class HubStateManager implements IStateManager {
   }
 
   async unregisterEventHandler(
-    sessionId: string,
+    _sessionId: string,
     handlerId: string,
   ): Promise<boolean> {
     return (await this.sendRpc("unregisterEventHandler", {
-      sessionId,
       handlerId,
     })) as boolean;
   }
 
   async listEventHandlers(
-    sessionId: string,
+    _sessionId: string,
     browserId?: string,
   ): Promise<EventHandler[]> {
     return (await this.sendRpc("listEventHandlers", {
-      sessionId,
       browserId,
     })) as EventHandler[];
   }
 
-  async clearEventHandlersForSession(sessionId: string): Promise<void> {
-    await this.sendRpc("clearEventHandlersForSession", { sessionId });
+  async clearEventHandlersForSession(_sessionId: string): Promise<void> {
+    await this.sendRpc("clearEventHandlersForSession");
   }
 
   async clearEventHandlersForBrowser(browserId: string): Promise<void> {
@@ -314,13 +311,12 @@ export class HubStateManager implements IStateManager {
   }
 
   async hasMatchingEventHandler(
-    sessionId: string,
+    _sessionId: string,
     browserId: string,
     event: EventName,
     queueName: string,
   ): Promise<boolean> {
     return (await this.sendRpc("hasMatchingEventHandler", {
-      sessionId,
       browserId,
       event,
       queueName,
@@ -328,7 +324,7 @@ export class HubStateManager implements IStateManager {
   }
 
   async pushEvent(
-    sessionId: string,
+    _sessionId: string,
     browserId: string,
     event: EventName,
     queueName: string,
@@ -336,7 +332,6 @@ export class HubStateManager implements IStateManager {
     tabId?: number,
   ): Promise<void> {
     await this.sendRpc("pushEvent", {
-      sessionId,
       browserId,
       event,
       queueName,
@@ -346,7 +341,7 @@ export class HubStateManager implements IStateManager {
   }
 
   async waitForEvent(
-    sessionId: string,
+    _sessionId: string,
     queueName: string,
     timeoutMs: number,
   ): Promise<
@@ -356,7 +351,7 @@ export class HubStateManager implements IStateManager {
     // hub can respond normally when the waiter times out there.
     return (await this.sendRpc(
       "waitForEvent",
-      { sessionId, queueName, timeoutMs },
+      { queueName, timeoutMs },
       timeoutMs + 5_000,
     )) as { ok: true; event: QueuedEvent } | { ok: false; reason: string };
   }
@@ -364,7 +359,7 @@ export class HubStateManager implements IStateManager {
   // -- F3: named mutexes --
 
   async acquireLock(
-    sessionId: string,
+    _sessionId: string,
     name: string,
     timeoutMs: number,
     ttlMs?: number,
@@ -374,17 +369,16 @@ export class HubStateManager implements IStateManager {
     // respond normally.
     return (await this.sendRpc(
       "acquireLock",
-      { sessionId, name, timeoutMs, ttlMs },
+      { name, timeoutMs, ttlMs },
       timeoutMs + 5_000,
     )) as AcquireLockResult;
   }
 
   async releaseLock(
-    sessionId: string,
+    _sessionId: string,
     name: string,
   ): Promise<ReleaseLockResult> {
     return (await this.sendRpc("releaseLock", {
-      sessionId,
       name,
     })) as ReleaseLockResult;
   }
@@ -393,7 +387,7 @@ export class HubStateManager implements IStateManager {
     return (await this.sendRpc("listLocks")) as Lock[];
   }
 
-  async releaseLocksForSession(sessionId: string): Promise<void> {
-    await this.sendRpc("releaseLocksForSession", { sessionId });
+  async releaseLocksForSession(_sessionId: string): Promise<void> {
+    await this.sendRpc("releaseLocksForSession");
   }
 }

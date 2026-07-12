@@ -12,8 +12,10 @@ import {
   isAuthResultV2,
   type AuthRequestV2,
   type ConnectionRole,
+  type ToolRequestV2,
 } from "./protocol.js";
 import { SessionConnectionRegistry } from "./session-connections.js";
+import { dispatchHubRpc } from "./hub-rpc.js";
 import net from "node:net";
 
 // Hard cap on incoming WS frames: notes can carry a base64 PNG, but nothing
@@ -72,6 +74,15 @@ const CLIENT_HEARTBEAT_TIMEOUT_MS = 10_000;
 const DEFAULT_PROXY_TIMEOUT_MS = 29_000;
 const MAX_PROXY_TIMEOUT_MS = 10 * 60_000;
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
+const EXPLICIT_BROWSER_ROUTING_TYPES = new Set([
+  "browser_register_handler",
+  "browser_unregister_handler",
+  "browser_list_handlers",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /** Send without throwing if the socket is gone or buffer full. */
 function safeSend(ws: WebSocket, payload: unknown): void {
@@ -127,225 +138,6 @@ function isPortInUse(port: number): Promise<boolean> {
     });
     server.listen(port);
   });
-}
-
-// =========================================================================
-// Hub RPC dispatcher
-// =========================================================================
-
-function requireString(params: Record<string, unknown>, key: string): string {
-  const val = params[key];
-  if (typeof val !== "string") throw new Error(`${key} must be a string`);
-  return val;
-}
-
-async function dispatchHubRpc(
-  stateManager: LocalStateManager,
-  method: string,
-  params: Record<string, unknown>,
-): Promise<unknown> {
-  switch (method) {
-    // -- Sessions --
-    case "registerSession":
-      await stateManager.registerSession(
-        requireString(params, "sessionId"),
-        typeof params.name === "string" ? params.name : undefined,
-      );
-      return { ok: true };
-    case "removeSession":
-      await stateManager.removeSession(requireString(params, "sessionId"));
-      return { ok: true };
-    case "touchSession":
-      await stateManager.touchSession(requireString(params, "sessionId"));
-      return { ok: true };
-    case "listSessions":
-      return await stateManager.listSessions();
-
-    // -- Tab ownership (composite string keys) --
-    case "claimTab":
-      return await stateManager.claimTab(
-        requireString(params, "sessionId"),
-        requireString(params, "tabKey"),
-      );
-    case "releaseTab":
-      return await stateManager.releaseTab(
-        requireString(params, "sessionId"),
-        requireString(params, "tabKey"),
-      );
-    case "transferTab":
-      return await stateManager.transferTab(
-        requireString(params, "fromSessionId"),
-        requireString(params, "toSessionId"),
-        requireString(params, "tabKey"),
-      );
-    case "releaseAllTabs":
-      await stateManager.releaseAllTabs(requireString(params, "sessionId"));
-      return { ok: true };
-    case "isTabAvailable":
-      return await stateManager.isTabAvailable(
-        requireString(params, "tabKey"),
-        requireString(params, "sessionId"),
-      );
-    case "getTabOwner":
-      return await stateManager.getTabOwner(requireString(params, "tabKey"));
-    case "shouldEnforceOwnership":
-      return await stateManager.shouldEnforceOwnership();
-    case "getSessionName":
-      return await stateManager.getSessionName(requireString(params, "sessionId"));
-
-    // -- Browser targeting --
-    case "selectBrowser":
-      await stateManager.selectBrowser(
-        requireString(params, "sessionId"),
-        requireString(params, "browserId"),
-      );
-      return { ok: true };
-    case "getSessionBrowser":
-      return await stateManager.getSessionBrowser(requireString(params, "sessionId"));
-    case "setDefaultBrowser":
-      return await stateManager.setDefaultBrowser(requireString(params, "browserId"));
-    case "getDefaultBrowser":
-      return await stateManager.getDefaultBrowser();
-    case "clearDefaultBrowser":
-      await stateManager.clearDefaultBrowser();
-      return { ok: true };
-    case "resolveBrowserTarget":
-      return await stateManager.resolveBrowserTarget(
-        typeof params.sessionId === "string" ? params.sessionId : undefined,
-      );
-    case "listBrowsers":
-      return await stateManager.listBrowsers();
-
-    // -- Shared state --
-    case "sharedGet":
-      return await stateManager.sharedGet(requireString(params, "key"));
-    case "sharedSet":
-      await stateManager.sharedSet(requireString(params, "key"), params.value);
-      return { ok: true };
-    case "sharedDelete":
-      return await stateManager.sharedDelete(requireString(params, "key"));
-    case "sharedList":
-      return await stateManager.sharedList();
-
-    // -- Annotation notes --
-    case "notesList": {
-      const status =
-        typeof params.status === "string"
-          ? (params.status as "pending" | "archived" | "all")
-          : "pending";
-      return await stateManager.notesList(status);
-    }
-    case "notesGet":
-      return await stateManager.notesGet(requireString(params, "id"));
-    case "notesArchive": {
-      const resolution =
-        typeof params.resolution === "string" ? params.resolution : undefined;
-      return await stateManager.notesArchive(
-        requireString(params, "id"),
-        resolution,
-      );
-    }
-    case "notesUnarchive":
-      return await stateManager.notesUnarchive(requireString(params, "id"));
-    case "notesDelete":
-      return await stateManager.notesDelete(
-        requireString(params, "id"),
-        params.force === true,
-      );
-
-    // -- Event handlers (F1 browser_on) --
-    case "registerEventHandler":
-      return await stateManager.registerEventHandler(
-        requireString(params, "sessionId"),
-        requireString(params, "browserId"),
-        requireString(params, "event") as
-          | "dialog"
-          | "beforeunload"
-          | "new_tab"
-          | "network_timeout",
-        requireString(params, "action") as
-          | "dismiss"
-          | "accept"
-          | "emit"
-          | "ignore",
-        params.options as Record<string, unknown> | undefined,
-      );
-    case "unregisterEventHandler":
-      return await stateManager.unregisterEventHandler(
-        requireString(params, "sessionId"),
-        requireString(params, "handlerId"),
-      );
-    case "listEventHandlers":
-      return await stateManager.listEventHandlers(
-        requireString(params, "sessionId"),
-        typeof params.browserId === "string" ? params.browserId : undefined,
-      );
-    case "clearEventHandlersForSession":
-      await stateManager.clearEventHandlersForSession(
-        requireString(params, "sessionId"),
-      );
-      return { ok: true };
-    case "clearEventHandlersForBrowser":
-      await stateManager.clearEventHandlersForBrowser(
-        requireString(params, "browserId"),
-      );
-      return { ok: true };
-    case "hasMatchingEventHandler":
-      return await stateManager.hasMatchingEventHandler(
-        requireString(params, "sessionId"),
-        requireString(params, "browserId"),
-        requireString(params, "event") as
-          | "dialog"
-          | "beforeunload"
-          | "new_tab"
-          | "network_timeout",
-        requireString(params, "queueName"),
-      );
-    case "pushEvent":
-      await stateManager.pushEvent(
-        requireString(params, "sessionId"),
-        requireString(params, "browserId"),
-        requireString(params, "event") as
-          | "dialog"
-          | "beforeunload"
-          | "new_tab"
-          | "network_timeout",
-        requireString(params, "queueName"),
-        params.data,
-        typeof params.tabId === "number" ? params.tabId : undefined,
-      );
-      return { ok: true };
-    case "waitForEvent":
-      return await stateManager.waitForEvent(
-        requireString(params, "sessionId"),
-        requireString(params, "queueName"),
-        typeof params.timeoutMs === "number" ? params.timeoutMs : 30_000,
-      );
-
-    // -- F3: named mutexes --
-    case "acquireLock":
-      return await stateManager.acquireLock(
-        requireString(params, "sessionId"),
-        requireString(params, "name"),
-        typeof params.timeoutMs === "number" ? params.timeoutMs : 30_000,
-        typeof params.ttlMs === "number" ? params.ttlMs : undefined,
-      );
-    case "releaseLock":
-      return await stateManager.releaseLock(
-        requireString(params, "sessionId"),
-        requireString(params, "name"),
-      );
-    case "listLocks":
-      return await stateManager.listLocks();
-    case "releaseLocksForSession":
-      await stateManager.releaseLocksForSession(
-        requireString(params, "sessionId"),
-      );
-      return { ok: true };
-
-    default:
-      throw new Error(`Unknown hub RPC method: ${method}`);
-  }
 }
 
 // =========================================================================
@@ -610,9 +402,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
       // ---- Hub RPC (from MCP client processes) ----
       if (msg.type === "hub_rpc" && msg.id && msg.method) {
-        if (msg.method === "registerSession" && typeof msg.params?.sessionId === "string") {
-          const sessionId = msg.params.sessionId;
-          if (sessionId.trim().length === 0) {
+        if (msg.method === "registerSession") {
+          const sessionId = msg.params?.sessionId;
+          if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
             safeSend(ws, {
               type: "hub_rpc_result",
               id: msg.id,
@@ -630,9 +422,45 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             return;
           }
           cancelSessionCleanup(sessionId);
+
+          stateManager
+            .registerSession(
+              sessionId,
+              typeof msg.params?.name === "string" ? msg.params.name : undefined,
+            )
+            .then(() => {
+              safeSend(ws, {
+                type: "hub_rpc_result",
+                id: msg.id,
+                result: { ok: true },
+              });
+            })
+            .catch((err) => {
+              safeSend(ws, {
+                type: "hub_rpc_result",
+                id: msg.id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            });
+          return;
         }
 
-        dispatchHubRpc(stateManager, msg.method, msg.params ?? {})
+        const sessionId = connectionSessions.getSession(ws);
+        if (!sessionId) {
+          safeSend(ws, {
+            type: "hub_rpc_result",
+            id: msg.id,
+            error: "SESSION_NOT_REGISTERED",
+          });
+          return;
+        }
+
+        dispatchHubRpc(
+          stateManager,
+          { role: "client", sessionId },
+          msg.method,
+          isRecord(msg.params) ? msg.params : {},
+        )
           .then((result) => {
             ws.send(JSON.stringify({ type: "hub_rpc_result", id: msg.id, result }));
           })
@@ -806,13 +634,19 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
       // ---- Tool request proxy (MCP client → browser) ----
       if (connectionRole === "client" && msg.id && msg.type) {
-        // If the client specified an explicit target via
-        // `targetBrowserId` (used by F1 handler push to the correct
-        // browser), honor it; otherwise resolve using the same priority
-        // as direct hub-mode tools: session selection → persisted
-        // default browser name → exactly-one-browser auto target.
         const clientSessionId = connectionSessions.getSession(ws);
+        if (!clientSessionId) {
+          safeSend(ws, {
+            type: MESSAGE_RESPONSE_TYPE,
+            payload: {
+              requestId: msg.id,
+              error: "SESSION_NOT_REGISTERED",
+            },
+          });
+          return;
+        }
         const explicitTarget =
+          EXPLICIT_BROWSER_ROUTING_TYPES.has(msg.type) &&
           typeof msg.targetBrowserId === "string"
             ? msg.targetBrowserId
             : undefined;
@@ -858,7 +692,22 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         }
 
         const browserWs = browser.ws;
-        browserWs.send(JSON.stringify(msg));
+        const requestedTimeoutMs =
+          typeof msg.timeoutMs === "number" && Number.isFinite(msg.timeoutMs)
+            ? msg.timeoutMs
+            : DEFAULT_PROXY_TIMEOUT_MS + 1_000;
+        const normalizedTimeoutMs = Math.min(
+          Math.max(requestedTimeoutMs, 1_000),
+          MAX_PROXY_TIMEOUT_MS,
+        );
+        const forwarded: ToolRequestV2 = {
+          id: msg.id,
+          type: msg.type,
+          payload: isRecord(msg.payload) ? msg.payload : {},
+          sessionId: clientSessionId,
+          timeoutMs: normalizedTimeoutMs,
+        };
+        browserWs.send(JSON.stringify(forwarded));
 
         // Full cleanup — removes all listeners and clears timeout
         let settled = false;
@@ -904,15 +753,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         const clientCloseHandler = () => { cleanup(); };
         ws.once("close", clientCloseHandler);
 
-        const requestedTimeoutMs =
-          typeof msg.timeoutMs === "number" && Number.isFinite(msg.timeoutMs)
-            ? msg.timeoutMs
-            : undefined;
         const proxyTimeoutMs = Math.min(
           Math.max(
-            requestedTimeoutMs !== undefined
-              ? requestedTimeoutMs - 1_000
-              : DEFAULT_PROXY_TIMEOUT_MS,
+            normalizedTimeoutMs - 1_000,
             1_000,
           ),
           MAX_PROXY_TIMEOUT_MS,

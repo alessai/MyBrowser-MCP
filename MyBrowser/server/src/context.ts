@@ -237,7 +237,13 @@ export class Context {
     // long-running tool calls instead of applying its default short timeout.
     // Include targetBrowserId only when set so existing clients / servers
     // that don't understand the field still parse cleanly.
-    const message: Record<string, unknown> = { id, type, payload, timeoutMs };
+    const message: Record<string, unknown> = {
+      id,
+      type,
+      payload,
+      sessionId: this.sessionId,
+      timeoutMs,
+    };
     if (targetBrowserId !== undefined) {
       message.targetBrowserId = targetBrowserId;
     }
