@@ -1,4 +1,5 @@
 import { InputDevice } from './input-device';
+import type { NetworkCaptureController } from './network-capture-controller';
 
 export interface InitialTabResolutionOptions {
   requirement: 'required' | 'optional' | 'none';
@@ -47,12 +48,17 @@ export interface RequestSessionState {
   clearTab(tabId: number): Promise<void>;
 }
 
+export interface RequestToolServices {
+  networkCapture: NetworkCaptureController;
+}
+
 export interface RequestToolContextOptions {
   sessionId: string;
   requestId: string;
   expiresAt: number;
   tabId: number;
   sessionState: RequestSessionState;
+  services: RequestToolServices;
 }
 
 export class RequestToolContext {
@@ -60,6 +66,7 @@ export class RequestToolContext {
   readonly requestId: string;
   readonly expiresAt: number;
   readonly input: InputDevice;
+  readonly services: RequestToolServices;
   private tabId: number;
 
   constructor(private readonly options: RequestToolContextOptions) {
@@ -68,6 +75,7 @@ export class RequestToolContext {
     this.expiresAt = options.expiresAt;
     this.tabId = options.tabId;
     this.input = new InputDevice(options.tabId);
+    this.services = options.services;
   }
 
   getTabId(): number {

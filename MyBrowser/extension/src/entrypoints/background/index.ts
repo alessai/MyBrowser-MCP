@@ -4,11 +4,12 @@
 // persistent port (chrome.runtime.connect) which wakes the SW on demand.
 
 import { addMessageHandler, sendToTab } from '../../lib/messaging';
-import { getNetworkCaptureTabId, handleTool } from '../../lib/tools';
+import { handleTool } from '../../lib/tools';
 import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
 import { RequestToolContext, resolveInitialTab } from '../../lib/request-context';
 import { RequestScheduler } from '../../lib/request-scheduler';
 import { SessionStateStore } from '../../lib/session-state';
+import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
 import {
   enableRuntime,
@@ -277,6 +278,7 @@ export default defineBackground(() => {
         expiresAt,
         tabId,
         sessionState,
+        services: { networkCapture },
       });
       const requestMeta = {
         requestId: request.id,
@@ -449,6 +451,7 @@ export default defineBackground(() => {
 
   const sessionState = new SessionStateStore();
   const scheduler = new RequestScheduler();
+  const networkCapture = new NetworkCaptureController();
 
   // =====================================================================
   // Init cleanup listeners
@@ -866,7 +869,7 @@ export default defineBackground(() => {
   });
 
   startConsoleCapture(() => null);
-  startNetworkCapture(getNetworkCaptureTabId);
+  startNetworkCapture(networkCapture);
 
   // F1: dialog interception + new_tab + network_timeout watchdog
   startDialogCapture({

@@ -1,6 +1,7 @@
 // Tool handlers for browser automation (ULTRA Phase 1)
 
 import type { InputDevice } from './input-device';
+import type { RequestToolServices } from './request-context';
 import {
   listTabs as listTabsImpl,
   ensureContentScript,
@@ -17,8 +18,6 @@ import {
   getAttachedTabs,
   getNetworkLog,
   clearNetworkLog,
-  isNetworkCaptureActive,
-  setNetworkCaptureActive,
   waitForNetworkIdle,
   type NetworkEntry,
 } from './debugger';
@@ -51,11 +50,6 @@ const STABLE_DOM_MIN_MS = 500;
 const SCREENSHOT_MAX_WIDTH = 1024;
 const SCREENSHOT_MAX_HEIGHT = 768;
 const AFTER_ACTION_DELAY_MS = 500;
-let networkCaptureTabId: number | null = null;
-
-export function getNetworkCaptureTabId(): number | null {
-  return networkCaptureTabId;
-}
 
 type ViewportPresetName = 'iphone' | 'ipad' | 'desktop';
 type ViewportOrientation = 'portrait' | 'landscape';
@@ -404,6 +398,7 @@ async function sendToServer(type: string, payload: unknown): Promise<void> {
 
 export interface ToolContext {
   input: InputDevice;
+  services: RequestToolServices;
   getTabId: () => number;
   setTabId: (tabId: number) => Promise<void>;
   clearTab: (tabId: number) => Promise<void>;
@@ -676,7 +671,7 @@ const handlers: Record<string, ToolHandler> = {
       handlers: listHandlers(),
       recording: { active: isRecording() },
       debugger: {
-        networkCaptureActive: isNetworkCaptureActive(),
+        networkCaptureActive: ctx.services.networkCapture.active,
         consoleErrors,
         recentNetworkEntries: getNetworkLog().slice(-20),
       },
@@ -1120,16 +1115,15 @@ const handlers: Record<string, ToolHandler> = {
         throw new Error('Network capture requires Chrome debugger access which is currently unavailable. Close DevTools and conflicting extensions, then retry.');
       }
       await sendCommand(tabId, 'Network.enable');
-      setNetworkCaptureActive(true);
-      networkCaptureTabId = tabId;
+      ctx.services.networkCapture.start(tabId);
       return { status: 'capturing', message: 'Network capture started.' };
     }
 
     if (action === 'stop_capture') {
+      ctx.services.networkCapture.assertCanStop(tabId);
       await ensureAttached(tabId);
       await sendCommand(tabId, 'Network.disable').catch(() => {});
-      setNetworkCaptureActive(false);
-      networkCaptureTabId = null;
+      ctx.services.networkCapture.stop(tabId);
       return { status: 'stopped', message: 'Network capture stopped.' };
     }
 
@@ -1175,7 +1169,7 @@ const handlers: Record<string, ToolHandler> = {
       return {
         count: entries.length,
         totalCaptured: getNetworkLog().length,
-        capturing: isNetworkCaptureActive(),
+        capturing: ctx.services.networkCapture.active,
         entries,
       };
     }

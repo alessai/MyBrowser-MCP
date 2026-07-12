@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { NetworkCaptureController } from "./network-capture-controller";
 import { RequestToolContext, resolveInitialTab } from "./request-context";
+
+function createServices(): { networkCapture: NetworkCaptureController } {
+  return { networkCapture: new NetworkCaptureController() };
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -11,6 +16,45 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe("RequestToolContext", () => {
+  it("shares only the explicitly injected network capture target", async () => {
+    const networkCapture = new NetworkCaptureController();
+    const sessionState = {
+      setLastTab: vi.fn(async () => undefined),
+      clearTab: vi.fn(async () => undefined),
+    };
+    const first = new RequestToolContext({
+      sessionId: "session-a",
+      requestId: "request-a",
+      expiresAt: 100,
+      tabId: 1,
+      sessionState,
+      services: { networkCapture },
+    });
+    const second = new RequestToolContext({
+      sessionId: "session-b",
+      requestId: "request-b",
+      expiresAt: 100,
+      tabId: 2,
+      sessionState,
+      services: { networkCapture },
+    });
+
+    expect(first.services).not.toBe(second.services);
+    expect(first.services.networkCapture).toBe(networkCapture);
+    expect(second.services.networkCapture).toBe(networkCapture);
+    expect(networkCapture.targetTabId).toBeNull();
+
+    await first.setTabId(3);
+    expect(networkCapture.targetTabId).toBeNull();
+
+    first.services.networkCapture.start(first.getTabId());
+    expect(networkCapture.targetTabId).toBe(3);
+    expect(second.getTabId()).toBe(2);
+
+    await second.setTabId(4);
+    expect(networkCapture.targetTabId).toBe(3);
+  });
+
   it("creates a distinct InputDevice for every public request", () => {
     const state = {
       setLastTab: vi.fn(async () => undefined),
@@ -23,6 +67,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: 1,
       sessionState: state,
+      services: createServices(),
     });
     const second = new RequestToolContext({
       sessionId: "session-a",
@@ -30,6 +75,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: 2,
       sessionState: state,
+      services: createServices(),
     });
 
     expect(first.input).not.toBe(second.input);
@@ -47,6 +93,7 @@ describe("RequestToolContext", () => {
         setLastTab: vi.fn(async () => undefined),
         clearTab: vi.fn(async () => undefined),
       },
+      services: createServices(),
     });
 
     expect(context.sessionId).toBe("session-a");
@@ -64,6 +111,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: -1,
       sessionState: { setLastTab, clearTab: vi.fn(async () => undefined) },
+      services: createServices(),
     });
     let finished = false;
 
@@ -89,6 +137,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: 12,
       sessionState: { setLastTab: vi.fn(async () => undefined), clearTab },
+      services: createServices(),
     });
     let finished = false;
 

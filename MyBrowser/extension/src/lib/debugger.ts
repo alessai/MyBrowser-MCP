@@ -1,5 +1,7 @@
 // Chrome Debugger management: attach, detach, send CDP commands with error recovery
 
+import type { NetworkCaptureController } from './network-capture-controller';
+
 type Debuggee = chrome.debugger.Debuggee;
 
 const DETACH_DELAY_MS = 3000;
@@ -291,7 +293,6 @@ export interface NetworkEntry {
 
 const MAX_NETWORK_ENTRIES = 200;
 let networkLog: NetworkEntry[] = [];
-let networkCaptureActive = false;
 
 export function getNetworkLog(): NetworkEntry[] {
   return networkLog;
@@ -301,15 +302,7 @@ export function clearNetworkLog(): void {
   networkLog = [];
 }
 
-export function isNetworkCaptureActive(): boolean {
-  return networkCaptureActive;
-}
-
-export function setNetworkCaptureActive(active: boolean): void {
-  networkCaptureActive = active;
-}
-
-export function startNetworkCapture(getActiveTabId: () => number | null): () => void {
+export function startNetworkCapture(networkCapture: NetworkCaptureController): () => void {
   const listener = (
     source: Debuggee,
     method: string,
@@ -339,9 +332,7 @@ export function startNetworkCapture(getActiveTabId: () => number | null): () => 
     // Everything below is the networkLog — only runs when the user
     // has explicitly turned on browser_network capture, AND only for
     // the user's currently active tab (existing semantic).
-    if (!networkCaptureActive) return;
-    const activeTabId = getActiveTabId();
-    if (source.tabId !== activeTabId) return;
+    if (!networkCapture.isTarget(source.tabId)) return;
 
     if (method === 'Network.requestWillBeSent') {
       const { requestId, request, timestamp, type: resourceType } = params as {
