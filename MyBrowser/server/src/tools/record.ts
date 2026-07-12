@@ -94,7 +94,7 @@ const RecordStopArgs = z.object({}).strict();
 
 const RecordListArgs = z.object({}).strict();
 
-const MAX_RECORDING_STEPS = 1_000;
+export const MAX_RECORDING_STEPS = 1_000;
 const MAX_RECORDING_BYTES = 2 * 1024 * 1024;
 export const MAX_RECORDING_TIMESTAMP_MS = 8_640_000_000_000_000;
 export const MAX_RECORDED_DURATION_MS = 2_147_483_647;

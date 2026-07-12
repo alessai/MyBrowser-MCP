@@ -84,13 +84,16 @@ describe("TOOL_METADATA", () => {
     expect(Object.keys(RECORDING_ARGUMENT_TYPES).sort())
       .toEqual(recordable.map(([name]) => name).sort());
     for (const [name, metadata] of recordable) {
-      const types = RECORDING_ARGUMENT_TYPES[name as keyof typeof RECORDING_ARGUMENT_TYPES];
+      const stringMetadata = metadata as Readonly<Record<string, string>>;
+      const types = RECORDING_ARGUMENT_TYPES[
+        name as keyof typeof RECORDING_ARGUMENT_TYPES
+      ] as Readonly<Record<string, string>>;
       expect(types[""]).toBe("object");
-      for (const path of Object.keys(metadata)) expect(types[path]).toBe("string");
+      for (const path of Object.keys(stringMetadata)) expect(types[path]).toBe("string");
       expect(Object.entries(types)
         .filter(([, type]) => type === "string")
         .map(([path]) => path)
-        .sort()).toEqual(Object.keys(metadata).sort());
+        .sort()).toEqual(Object.keys(stringMetadata).sort());
       expect(Object.values(types).every((type) => [
         "array", "boolean", "number", "object", "string",
       ].includes(type))).toBe(true);
@@ -98,7 +101,9 @@ describe("TOOL_METADATA", () => {
         .filter(([, type]) => type === "number")
         .map(([path]) => path)
         .sort();
-      const bounds = RECORDING_NUMERIC_BOUNDS[name as keyof typeof RECORDING_NUMERIC_BOUNDS];
+      const bounds = RECORDING_NUMERIC_BOUNDS[
+        name as keyof typeof RECORDING_NUMERIC_BOUNDS
+      ] as Readonly<Record<string, { integer: boolean; min: number; max: number }>>;
       expect(Object.keys(bounds).sort()).toEqual(numericPaths);
       for (const constraint of Object.values(bounds)) {
         expect(Object.keys(constraint).sort()).toEqual(["integer", "max", "min"]);

@@ -306,3 +306,20 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Server `npm run build`: passed.
 - `git diff --check`: passed.
 - Canary/console scans: all canaries are test-only and Task 7 production console calls carry stable literal categories only.
+
+## Completed Recording Validation Correction
+
+### Findings And Fixes
+
+- Exact initial reproduction at commit `1131f1c`: `src/lib/recorder.test.ts` reported `1 failed file`, `3 failed`, and `36 passed` tests.
+- `isSanitizedRecording` used synthetic `tabId: 0` even though persisted active-state validation requires a positive Chrome tab ID. Completed-recording validation now uses synthetic `tabId: 1`.
+- Direct coverage proves a valid completed recording loads without deletion, while an invalid completed recording returns `null` and is deleted.
+- The strict missing-marker stop assertion now expects stable `NO_ACTIVE_RECORDING`; it continues to assert that the orphan snapshot is never read or restored.
+- Required exact verification also exposed and fixed prior test-only TypeScript/canary defects in metadata and server privacy tests; no runtime behavior was weakened.
+
+### Exact Pre-Commit Verification
+
+- `cd MyBrowser/extension && npm test -- src/lib/recorder.test.ts`: `1 passed file`, `40 passed tests`.
+- Extension `npm test`: `12 passed files`, `128 passed tests` by the emitted per-file counts.
+- Extension `npm run check && npm run build`: TypeScript check passed; Chrome MV3 production build passed (`434.24 kB`).
+- Server `npm test && npm run check && npm run build`: `6 passed files`, `146 passed tests`; chained TypeScript check and build exited successfully.

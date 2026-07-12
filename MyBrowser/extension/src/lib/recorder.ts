@@ -334,7 +334,7 @@ export function isSanitizedRecording(
   }
   return isActiveRecording({
     sessionId: 'validation',
-    tabId: 0,
+    tabId: 1,
     nextVariable: Array.isArray(value.requiredVariables) ? value.requiredVariables.length + 1 : 1,
     status: 'stopping',
     recording: value,
@@ -1088,8 +1088,10 @@ export async function runRecordedAction<T>(options: {
 
 const completedStorage = (): RecordingStorage => new ChromeStorageAdapter(chrome.storage.local);
 
-export async function loadRecordingFromStorage(name: string): Promise<Recording | null> {
-  const storage = completedStorage();
+export async function loadRecordingFromStorage(
+  name: string,
+  storage: RecordingStorage = completedStorage(),
+): Promise<Recording | null> {
   const key = `${COMPLETED_PREFIX}${name}`;
   const recording = await storage.get<unknown>(key);
   if (recording === undefined) return null;

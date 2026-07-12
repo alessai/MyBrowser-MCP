@@ -5,7 +5,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
-  MAX_ACTIVE_RECORDING_STEPS,
+  MAX_RECORDING_STEPS,
   MAX_RECORDED_DURATION_MS,
   MAX_RECORDING_TIMESTAMP_MS,
   SERVER_RECORDING_ARGUMENT_TYPES,
@@ -350,7 +350,7 @@ describe("recording argument privacy", () => {
     }
     expect(sanitizeRecording(boundary)).toBeDefined();
     const maxSteps = structuredClone(boundary);
-    while (maxSteps.steps.length < MAX_ACTIVE_RECORDING_STEPS) {
+    while (maxSteps.steps.length < MAX_RECORDING_STEPS) {
       maxSteps.steps.push({
         action: "browser_go_back",
         args: {},
@@ -359,7 +359,7 @@ describe("recording argument privacy", () => {
         url: "",
       });
     }
-    expect(sanitizeRecording(maxSteps).steps).toHaveLength(MAX_ACTIVE_RECORDING_STEPS);
+    expect(sanitizeRecording(maxSteps).steps).toHaveLength(MAX_RECORDING_STEPS);
     maxSteps.steps.push({
       action: "browser_go_back",
       args: {},
@@ -392,7 +392,7 @@ describe("recording argument privacy", () => {
       ["__proto__", "{{form_7}}"],
       ["constructor", "{{form_8}}"],
       ["prototype", "{{form_9}}"],
-    ]) {
+    ] as const) {
       Object.defineProperty(fields, key, {
         value,
         enumerable: true,
@@ -401,7 +401,11 @@ describe("recording argument privacy", () => {
       });
     }
     fill.args.fields = fields;
-    parameterized.requiredVariables.push(
+    (parameterized.requiredVariables as unknown as Array<{
+      name: string;
+      source: string;
+      hint: string;
+    }>).push(
       { name: "form_7", source: "form", hint: "form_input_7" },
       { name: "form_8", source: "form", hint: "form_input_8" },
       { name: "form_9", source: "form", hint: "form_input_9" },
@@ -431,14 +435,14 @@ describe("recording argument privacy", () => {
 
     const hostileUnknown = recording();
     hostileUnknown.steps[0]!.args = JSON.parse(
-      `{"__proto__":"${SECRET_UNKNOWN}","url":"{{navigation_1}}"}`,
+      `{"__proto__":"${SECRET_EXTRA}","url":"{{navigation_1}}"}`,
     ) as Record<string, unknown>;
     expect(() => sanitizeRecording(hostileUnknown)).toThrow();
 
     const hostileValue = recording();
     const hostileFields = Object.create(null) as Record<string, string>;
     Object.defineProperty(hostileFields, "__proto__", {
-      value: SECRET_FORM,
+      value: SECRET_EXTRA,
       enumerable: true,
       writable: true,
       configurable: true,

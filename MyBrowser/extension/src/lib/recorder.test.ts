@@ -14,6 +14,7 @@ import {
   MAX_RECORDING_TIMESTAMP_MS,
   MAX_REQUIRED_VARIABLES,
   isSanitizedRecording,
+  loadRecordingFromStorage,
   RecordingManager,
   runRecordedAction,
   type RecordingAlarmScheduler,
@@ -259,6 +260,36 @@ describe("RecordingManager privacy and ownership", () => {
         label: SECRET_TEXT,
       }],
     })).toBe(false);
+  });
+
+  it("loads valid completed recordings without deleting them and deletes invalid ones", async () => {
+    const storage = new MemoryStorage();
+    const valid = {
+      name: "saved-valid",
+      startedAt: 1,
+      stoppedAt: 2,
+      url: "https://example.test/path",
+      steps: [{
+        action: "browser_go_back",
+        args: {},
+        timestamp: 1,
+        durationMs: 0,
+        url: "https://example.test/path",
+      }],
+      requiredVariables: [],
+    };
+    storage.values.set("recording:saved-valid", valid);
+
+    await expect(loadRecordingFromStorage("saved-valid", storage)).resolves.toEqual(valid);
+    expect(storage.values.get("recording:saved-valid")).toEqual(valid);
+
+    storage.values.set("recording:saved-invalid", {
+      ...valid,
+      name: "saved-invalid",
+      startedAt: -1,
+    });
+    await expect(loadRecordingFromStorage("saved-invalid", storage)).resolves.toBeNull();
+    expect(storage.values.has("recording:saved-invalid")).toBe(false);
   });
 
   it("isolates simultaneous sessions, bound tabs, and replay suppression", async () => {
@@ -974,7 +1005,7 @@ describe("RecordingManager restart and stop persistence", () => {
     sessionStorage.writes.length = 0;
 
     const missingMarker = createManager({ sessionStorage });
-    await expect(missingMarker.manager.stop("session-a")).rejects.toThrow("RECORDED_STATE_FAILED");
+    await expect(missingMarker.manager.stop("session-a")).rejects.toThrow("NO_ACTIVE_RECORDING");
     expect(sessionStorage.reads).toContain("active-recording-index:session-a");
     expect(sessionStorage.reads).not.toContain("active-recording:session-a");
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);

@@ -79,8 +79,8 @@ describe("parameterizeArgs", () => {
   it("round-trips prototype-like dynamic form keys as parameterized own data", () => {
     const fields = Object.create(null) as Record<string, string>;
     fields.__proto__ = SECRET_FORM;
-    fields.constructor = SECRET_TEXT;
-    fields.prototype = SECRET_SELECT;
+    fields["constructor"] = SECRET_TEXT;
+    fields["prototype"] = SECRET_SELECT;
 
     const result = parameterizeArgs("browser_fill_form", { fields }, { nextVariable: 1 });
     const sanitizedFields = result.args.fields as Record<string, unknown>;
