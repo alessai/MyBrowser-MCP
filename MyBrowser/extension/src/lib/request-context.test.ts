@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { RequestToolContext } from "./request-context";
+import { RequestToolContext, resolveInitialTab } from "./request-context";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -103,5 +103,98 @@ describe("RequestToolContext", () => {
     removal.resolve();
     await pending;
     expect(clearTab).toHaveBeenCalledWith(12);
+  });
+});
+
+describe("resolveInitialTab", () => {
+  it.each([
+    ["required", "TAB_CLOSED"],
+    ["required", "TAB_NOT_FOUND"],
+    ["optional", "TAB_CLOSED"],
+    ["optional", "TAB_NOT_FOUND"],
+  ] as const)(
+    "propagates %s %s for an explicit tab without fallback or handler execution",
+    async (requirement, errorCode) => {
+      const resolveTabId = vi.fn(async (requestedTabId?: number) => {
+        if (requestedTabId === 99) throw new Error(errorCode);
+        return 7;
+      });
+      const clearFallback = vi.fn(async () => undefined);
+      const handler = vi.fn(async (_tabId: number) => "handled");
+
+      const dispatch = async (): Promise<string> => {
+        const tabId = await resolveInitialTab({
+          requirement,
+          requestedTabId: 99,
+          sessionFallback: 7,
+          resolveTabId,
+          clearFallback,
+        });
+        return handler(tabId);
+      };
+
+      await expect(dispatch()).rejects.toThrow(errorCode);
+      expect(resolveTabId).toHaveBeenCalledTimes(1);
+      expect(resolveTabId).toHaveBeenCalledWith(99);
+      expect(clearFallback).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["required", "optional"] as const)(
+    "rejects a malformed %s explicit tab without resolving a fallback",
+    async (requirement) => {
+      const resolveTabId = vi.fn(async () => 7);
+      const handler = vi.fn(async (_tabId: number) => "handled");
+
+      const dispatch = async (): Promise<string> => {
+        const tabId = await resolveInitialTab({
+          requirement,
+          requestedTabId: "not-a-tab",
+          sessionFallback: 7,
+          resolveTabId,
+          clearFallback: vi.fn(async () => undefined),
+        });
+        return handler(tabId);
+      };
+
+      await expect(dispatch()).rejects.toThrow("TAB_NOT_FOUND");
+      expect(resolveTabId).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows an optional omitted tab to use the session fallback", async () => {
+    const resolveTabId = vi.fn(async () => 7);
+    const handler = vi.fn(async (tabId: number) => tabId);
+
+    const tabId = await resolveInitialTab({
+      requirement: "optional",
+      requestedTabId: undefined,
+      sessionFallback: 7,
+      resolveTabId,
+      clearFallback: vi.fn(async () => undefined),
+    });
+    await handler(tabId);
+
+    expect(resolveTabId).toHaveBeenCalledWith(undefined, 7);
+    expect(handler).toHaveBeenCalledWith(7);
+  });
+
+  it("allows an optional omitted tab to proceed without a tab", async () => {
+    const handler = vi.fn(async (tabId: number) => tabId);
+
+    const tabId = await resolveInitialTab({
+      requirement: "optional",
+      requestedTabId: undefined,
+      sessionFallback: undefined,
+      resolveTabId: vi.fn(async () => {
+        throw new Error("TAB_CLOSED");
+      }),
+      clearFallback: vi.fn(async () => undefined),
+    });
+    await handler(tabId);
+
+    expect(handler).toHaveBeenCalledWith(-1);
   });
 });

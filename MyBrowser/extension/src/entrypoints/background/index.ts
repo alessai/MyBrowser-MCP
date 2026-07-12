@@ -6,7 +6,7 @@
 import { addMessageHandler, sendToTab } from '../../lib/messaging';
 import { getNetworkCaptureTabId, handleTool } from '../../lib/tools';
 import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
-import { RequestToolContext } from '../../lib/request-context';
+import { RequestToolContext, resolveInitialTab } from '../../lib/request-context';
 import { RequestScheduler } from '../../lib/request-scheduler';
 import { SessionStateStore } from '../../lib/session-state';
 import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
@@ -262,46 +262,14 @@ export default defineBackground(() => {
       if (!metadata) throw new Error(`Unknown tool: ${request.type}`);
 
       const sessionFallback = await sessionState.getLastTab(request.sessionId);
-      const requestedTabId = typeof request.payload.tabId === 'number'
-        ? request.payload.tabId
-        : undefined;
-      let tabId = -1;
-
-      if (metadata.tab === 'required') {
-        try {
-          tabId = await resolveTabId(requestedTabId, sessionFallback);
-          if (
-            requestedTabId === undefined &&
-            sessionFallback !== undefined &&
-            tabId !== sessionFallback
-          ) {
-            await sessionState.clearSession(request.sessionId);
-          }
-        } catch (error) {
-          if (requestedTabId === undefined && sessionFallback !== undefined) {
-            await sessionState.clearSession(request.sessionId);
-          }
-          throw error;
-        }
-      } else if (metadata.tab === 'optional') {
-        if (requestedTabId !== undefined) {
-          try {
-            tabId = await resolveTabId(requestedTabId);
-          } catch {}
-        }
-        if (tabId < 0) {
-          try {
-            tabId = await resolveTabId(undefined, sessionFallback);
-            if (sessionFallback !== undefined && tabId !== sessionFallback) {
-              await sessionState.clearSession(request.sessionId);
-            }
-          } catch {
-            if (sessionFallback !== undefined) {
-              await sessionState.clearSession(request.sessionId);
-            }
-          }
-        }
-      }
+      const requestedTabId = request.payload.tabId;
+      const tabId = await resolveInitialTab({
+        requirement: metadata.tab,
+        requestedTabId,
+        sessionFallback,
+        resolveTabId,
+        clearFallback: () => sessionState.clearSession(request.sessionId),
+      });
 
       const context = new RequestToolContext({
         sessionId: request.sessionId,
