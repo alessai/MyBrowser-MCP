@@ -246,6 +246,8 @@ All tab-targeted public requests enter a FIFO queue keyed by browser-local tab I
 
 Protocol v2 recordings are single-tab. `browser_replay` requires an initial `tabId`, passes the existing server ownership check for that tab, and holds the same tab lease for its full sequence. `new_tab`, `select_tab`, and `close_tab` are no longer recordable. Secure multi-tab recordings require a future design with logical tab aliases and ownership checks for every transition.
 
+`browser_record_start` also requires `tabId`, passes server ownership validation, and stores that tab as the recording target. Actions the same session intentionally performs on other tabs still execute but are not appended to that recording. `browser_record_stop` changes session recording state rather than browser tab state, so it does not require `tabId` and is removed from the server's mutating-tab ownership set.
+
 Tools without a tab are handled as follows:
 
 - session recording start/stop use a FIFO queue keyed by session ID;
@@ -430,6 +432,7 @@ Tests cover:
 - state rehydration after a simulated worker restart;
 - simultaneous recordings for two sessions;
 - cross-session stop rejection;
+- required recording-start tab ownership and exclusion of actions from other tabs;
 - per-session replay suppression;
 - exclusion of new/select/close-tab from recordings;
 - incompatible marking and side-effect-free rejection of legacy multi-tab recordings;
