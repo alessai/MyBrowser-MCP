@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { getRecentExtensionIssues } from "./diagnostics";
 import { reportToolFailure } from "./background-privacy";
+import { validateSanitizedArgs } from "./recording-parameterizer";
+import { RECORDING_NUMERIC_BOUNDS } from "./tool-metadata";
 
 import {
   MAX_ACTIVE_RECORDING_BYTES,
@@ -514,6 +516,10 @@ describe("runRecordedAction", () => {
       }
       const { manager } = createManager({ sessionStorage });
       const run = vi.fn(async () => "must-not-run");
+      const issueCount = getRecentExtensionIssues(100).length;
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const error = await runRecordedAction({
         manager,
         sessionId: "session-a",
@@ -523,20 +529,28 @@ describe("runRecordedAction", () => {
         run,
         currentUrl: async () => "https://example.test",
       }).catch((caught: unknown) => caught);
-      const issueCount = getRecentExtensionIssues(100).length;
-      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const failure = reportToolFailure(error, {
         requestId: `prepare-${failurePoint}`,
         toolType: "browser_click",
       });
+      const consoleCalls = [
+        ...consoleLog.mock.calls,
+        ...consoleError.mock.calls,
+        ...consoleWarn.mock.calls,
+      ];
+      const consoleText = consoleCalls.flatMap((call) => call).map((value) => (
+        value instanceof Error
+          ? `${value.message}\n${value.stack ?? ""}`
+          : typeof value === "string" ? value : JSON.stringify(value)
+      )).join("\n");
       const evidence = {
         response: failure.responseError,
         diagnostics: getRecentExtensionIssues(100).slice(issueCount),
-        console: [...consoleError.mock.calls, ...consoleWarn.mock.calls],
+        console: consoleCalls,
         storage: sessionStorage.writes,
         snapshot: manager.snapshot(),
       };
+      consoleLog.mockRestore();
       consoleError.mockRestore();
       consoleWarn.mockRestore();
 
@@ -546,6 +560,11 @@ describe("runRecordedAction", () => {
         category: "RECORDED_STATE_FAILED",
         recorded: true,
       });
+      expect(consoleCalls).toEqual([]);
+      expect(consoleText).not.toContain(SECRET_TEXT);
+      expect(consoleText).not.toContain(SECRET_FORM);
+      expect(consoleText).not.toContain("RESTORE_EXPOSED");
+      expect(consoleText).not.toContain("STORAGE_EXPOSED");
       expectAbsent(evidence);
     }
   });
@@ -573,20 +592,32 @@ describe("runRecordedAction", () => {
     });
 
     for (const [index, testCase] of cases.entries()) {
-      const error = await testCase.invoke().catch((caught: unknown) => caught);
       const issueCount = getRecentExtensionIssues(100).length;
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const error = await testCase.invoke().catch((caught: unknown) => caught);
       const failure = reportToolFailure(error, {
         requestId: `public-recording-${index}`,
         toolType: testCase.toolType,
       });
+      const consoleCalls = [
+        ...consoleLog.mock.calls,
+        ...consoleError.mock.calls,
+        ...consoleWarn.mock.calls,
+      ];
+      const consoleText = consoleCalls.flatMap((call) => call).map((value) => (
+        value instanceof Error
+          ? `${value.message}\n${value.stack ?? ""}`
+          : typeof value === "string" ? value : JSON.stringify(value)
+      )).join("\n");
       const evidence = {
         response: failure.responseError,
         diagnostics: getRecentExtensionIssues(100).slice(issueCount),
-        console: [...consoleError.mock.calls, ...consoleWarn.mock.calls],
+        console: consoleCalls,
         storage: testCase.storage.writes,
       };
+      consoleLog.mockRestore();
       consoleError.mockRestore();
       consoleWarn.mockRestore();
       expect(failure).toEqual({
@@ -594,6 +625,12 @@ describe("runRecordedAction", () => {
         category: "RECORDED_STATE_FAILED",
         recorded: true,
       });
+      expect(consoleCalls).toEqual([]);
+      expect(consoleText).not.toContain(SECRET_TEXT);
+      expect(consoleText).not.toContain(SECRET_FORM);
+      expect(consoleText).not.toContain("START_RESTORE");
+      expect(consoleText).not.toContain("STOP_RESTORE");
+      expect(consoleText).not.toContain("STOP_RESTORE_DEBUG");
       expectAbsent(evidence);
     }
   });
@@ -1366,5 +1403,56 @@ describe("RecordingManager restart and stop persistence", () => {
       await expect(restarted.manager.restoreSession("session-a")).resolves.toBe(false);
       expect(restarted.manager.snapshot().active).toEqual([]);
     }
+  });
+
+  it("enforces every numeric argument bound during restore before promotion", async () => {
+    const numericBounds = RECORDING_NUMERIC_BOUNDS as Record<string, Record<
+      string,
+      { integer: boolean; min: number; max: number }
+    >>;
+    const validates = (action: string, path: string, value: number): boolean => (
+      validateSanitizedArgs(action, { [path]: value }, new Map(), new Set())
+    );
+    for (const [action, paths] of Object.entries(numericBounds)) {
+      for (const [path, bounds] of Object.entries(paths)) {
+        expect(validates(action, path, bounds.min), `${action}.${path} min`).toBe(true);
+        expect(validates(action, path, bounds.max), `${action}.${path} max`).toBe(true);
+        expect(validates(action, path, bounds.min - 1), `${action}.${path} below`).toBe(false);
+        expect(validates(action, path, bounds.max + 1), `${action}.${path} above`).toBe(false);
+        if (bounds.integer) {
+          expect(validates(action, path, bounds.min + 0.5), `${action}.${path} fraction`)
+            .toBe(false);
+        }
+        expect(validates(action, path, Number.MAX_SAFE_INTEGER + 1), `${action}.${path} unsafe`)
+          .toBe(false);
+        expect(validates(action, path, Number.NaN), `${action}.${path} NaN`).toBe(false);
+        expect(validates(action, path, Number.POSITIVE_INFINITY), `${action}.${path} infinity`)
+          .toBe(false);
+      }
+    }
+
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "invalid-restored-args", 11, "https://example.test");
+    const state = structuredClone(
+      sessionStorage.values.get("active-recording:session-a"),
+    ) as Record<string, unknown>;
+    const storedRecording = state.recording as Record<string, unknown>;
+    storedRecording.steps = [{
+      action: "browser_wait",
+      args: { time: 2_147_483.648 },
+      timestamp: 0,
+      durationMs: 0,
+      url: "",
+    }];
+    sessionStorage.values.set("active-recording:session-a", state);
+    const restarted = createManager({ sessionStorage });
+
+    await restarted.manager.renewPersistedSessions();
+
+    expect(restarted.transport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
   });
 });

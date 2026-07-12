@@ -278,3 +278,31 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Server `npm run build`: passed.
 - `git diff --check`: passed.
 - Canary/debug scans: all `SECRET_*` matches are test-only; no temporary debug output, sequential request ID, or raw Zod argument record remains.
+
+## Final Error-Log And Restore-Bounds Follow-Up
+
+### Error-Object Logging
+
+- Removed the recorder stop-path debug console call and every analogous raw error/message/URL console argument from the Task 7 background and server integration surfaces.
+- Public start/stop restore and storage failures emit no console output and retain only the stable `RECORDED_STATE_FAILED` response/diagnostic category.
+- Regression spies are installed before calls and explicitly serialize `Error.message` and `Error.stack`, preventing JSON's empty-Error behavior from masking leaks.
+- Canary tests scan console log/error/warn calls, diagnostics, responses, storage writes, and manager snapshots.
+
+### Restore Numeric Bounds
+
+- `validateSanitizedArgs` now applies `RECORDING_NUMERIC_BOUNDS` to every numeric path using the same shared constraint matcher as live parameterization.
+- Exact and wildcard paths enforce finite values, safe integers where required, and explicit minimum/maximum bounds.
+- Table-driven restore tests exercise every numeric metadata path at min, max, below min, above max, fractional integer, unsafe integer, NaN, and infinity.
+- An out-of-range persisted action step is deleted before any authoritative renewal request or quarantined promotion.
+
+### Verification
+
+- Focused extension recorder, parameterizer, metadata, transport, and background-privacy suites passed.
+- Extension full: 12 files, 129 tests passed.
+- Extension `npm run check`: passed.
+- Extension `npm run build`: passed.
+- Server full: 6 files, 146 tests passed.
+- Server `npm run check`: passed.
+- Server `npm run build`: passed.
+- `git diff --check`: passed.
+- Canary/console scans: all canaries are test-only and Task 7 production console calls carry stable literal categories only.

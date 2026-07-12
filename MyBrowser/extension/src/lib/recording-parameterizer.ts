@@ -87,6 +87,17 @@ function matchesArgumentType(value: unknown, type: RecordingArgumentType): boole
   return isPlainRecord(value);
 }
 
+function matchesNumericConstraint(
+  value: number,
+  constraint: RecordingNumericConstraint | undefined,
+): boolean {
+  return constraint !== undefined
+    && Number.isFinite(value)
+    && (!constraint.integer || Number.isSafeInteger(value))
+    && value >= constraint.min
+    && value <= constraint.max;
+}
+
 export function parameterizeArgs(
   toolName: ToolName,
   args: Record<string, unknown>,
@@ -115,10 +126,7 @@ export function parameterizeArgs(
     }
     if (typeof value === 'number') {
       const bounds = numericBounds[path] ?? numericBounds[wildcardPath(path)];
-      if (!bounds
-        || value < bounds.min
-        || value > bounds.max
-        || (bounds.integer && !Number.isSafeInteger(value))) {
+      if (!matchesNumericConstraint(value, bounds)) {
         throw new Error('RECORDING_METADATA_MISMATCH');
       }
     }
@@ -181,11 +189,18 @@ export function validateSanitizedArgs(
   const argumentTypes = (RECORDING_ARGUMENT_TYPES as Partial<
     Record<ToolName, Readonly<Record<string, RecordingArgumentType>>>
   >)[toolName as ToolName];
-  if (!argumentTypes) return false;
+  const numericBounds = (RECORDING_NUMERIC_BOUNDS as Partial<
+    Record<ToolName, Readonly<Record<string, RecordingNumericConstraint>>>
+  >)[toolName as ToolName];
+  if (!argumentTypes || !numericBounds) return false;
 
   const validate = (value: unknown, path: string): boolean => {
     const expectedType = argumentTypes[path] ?? argumentTypes[wildcardPath(path)];
     if (!expectedType || !matchesArgumentType(value, expectedType)) return false;
+    if (typeof value === 'number') {
+      const bounds = numericBounds[path] ?? numericBounds[wildcardPath(path)];
+      if (!matchesNumericConstraint(value, bounds)) return false;
+    }
     if (typeof value === 'string') {
       const kind = classifications[path] ?? classifications[wildcardPath(path)];
       if (!kind) return false;

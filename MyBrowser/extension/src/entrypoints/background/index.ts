@@ -733,8 +733,8 @@ export default defineBackground(() => {
       ctx.drawImage(bitmap, 0, 0, targetW, targetH);
       bitmap.close?.();
       return await canvasToBase64Png(canvas);
-    } catch (e) {
-      console.error('[MyBrowser] Downsample failed, using raw capture:', e);
+    } catch {
+      console.error('[MyBrowser] DOWNSAMPLE_FAILED');
       return dataUrl.slice(comma + 1);
     }
   }
@@ -825,7 +825,7 @@ export default defineBackground(() => {
       });
 
       if (!ack.ok) {
-          console.error('[MyBrowser] saveNote failed:', ack.error);
+          console.error('[MyBrowser] SAVE_NOTE_FAILED');
           recordExtensionIssue('annotation', ack.error || 'saveNote failed');
         // Leave the overlay intact; content script will restore the UI.
         return { ok: false, error: ack.error };
@@ -833,7 +833,7 @@ export default defineBackground(() => {
       return { ok: true, noteId: ack.noteId, pendingCount: ack.pendingCount ?? 0 };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error('[MyBrowser] annotation_save error:', msg);
+      console.error('[MyBrowser] ANNOTATION_SAVE_FAILED');
       recordExtensionIssue('annotation', msg, e);
       // Don't tear down the overlay on error — content script will restore it.
       return { ok: false, error: msg };
@@ -869,13 +869,13 @@ export default defineBackground(() => {
       });
       if (!tab?.id) return;
       if (isUnsupportedAnnotationUrl(tab.url)) {
-        console.error('[MyBrowser] annotation: unsupported page', tab.url);
+        console.error('[MyBrowser] ANNOTATION_UNSUPPORTED_PAGE');
         recordExtensionIssue('annotation', 'Unsupported page for annotation', { url: tab.url }, 'warn');
         return;
       }
       await sendToTab(tab.id, 'open_annotation_overlay');
     } catch (e) {
-      console.error('[MyBrowser] open_annotation command failed:', e);
+      console.error('[MyBrowser] OPEN_ANNOTATION_FAILED');
       recordExtensionIssue('annotation', 'open_annotation command failed', e);
     }
   });
@@ -886,7 +886,7 @@ export default defineBackground(() => {
 
   ensureAlive().catch((e) => {
     recordExtensionIssue('lifecycle', 'Init failed', e);
-    console.error('Init failed:', e);
+    console.error('[MyBrowser] INIT_FAILED');
   });
 
   chrome.runtime.onInstalled.addListener(async () => {

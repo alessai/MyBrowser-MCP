@@ -585,8 +585,7 @@ export class RecordingManager {
     return this.enqueue(async () => {
       try {
         await this.restoreSessionUnlocked(sessionId);
-      } catch (error) {
-        console.log("STOP_RESTORE_DEBUG", error);
+      } catch {
         throw new RecordedStateFailure();
       }
       let state = this.active.get(sessionId);

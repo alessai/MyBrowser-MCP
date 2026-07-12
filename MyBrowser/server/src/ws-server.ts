@@ -136,8 +136,8 @@ function safeSend(ws: WebSocket, payload: unknown): void {
   if (ws.readyState !== WebSocket.OPEN) return;
   try {
     ws.send(JSON.stringify(payload));
-  } catch (e) {
-    console.error("[MyBrowser MCP] ws.send failed:", e);
+  } catch {
+    console.error("[MyBrowser MCP] WS_SEND_FAILED");
   }
 }
 
@@ -257,7 +257,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         if (isSessionStillConnected(sessionId)) return;
         cleanupSession(sessionId)
           .then(() => console.error(`[MyBrowser MCP] Client session "${sessionId}" cleaned up`))
-          .catch((err) => console.error("Session cleanup failed:", err));
+          .catch(() => console.error("[MyBrowser MCP] SESSION_CLEANUP_FAILED"));
       }, delayMs),
     );
   }
@@ -780,8 +780,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
               typeof p.tabId === "number" ? p.tabId : undefined,
             );
           })
-          .catch((e) =>
-            console.error("[MyBrowser MCP] eventEmitted handler failed:", e),
+          .catch(() =>
+            console.error("[MyBrowser MCP] EVENT_HANDLER_FAILED"),
           );
         return;
       }
@@ -808,7 +808,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             message: "queryNotesCount failed",
             details: e,
           });
-          console.error("[MyBrowser MCP] queryNotesCount failed:", e);
+          console.error("[MyBrowser MCP] QUERY_NOTES_COUNT_FAILED");
           safeSend(ws, {
             type: "queryNotesCountResult",
             id: msg.id,
@@ -847,7 +847,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             message: `Failed to save note: ${errMsg}`,
             details: e,
           });
-          console.error("[MyBrowser MCP] Failed to save note:", errMsg);
+          console.error("[MyBrowser MCP] SAVE_NOTE_FAILED");
           if (msg.id) {
             // Don't leak internal error details to the client
             safeSend(ws, {
@@ -1039,8 +1039,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         // Session-scoped per the design — a fresh connection starts clean.
         stateManager
           .clearEventHandlersForBrowser(closedBrowserId)
-          .catch((err) =>
-            console.error("Failed to clear event handlers:", err),
+          .catch(() =>
+            console.error("[MyBrowser MCP] CLEAR_EVENT_HANDLERS_FAILED"),
           );
         recordIssue({
           level: "warn",
@@ -1235,7 +1235,9 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
         context.setClientMode(ws as any);
         startHeartbeat(ws as WebSocket);
         // Re-register session after reconnect
-        if (reconnectCb) reconnectCb().catch((e) => console.error("Reconnect callback failed:", e));
+        if (reconnectCb) reconnectCb().catch(() => {
+          console.error("[MyBrowser MCP] RECONNECT_CALLBACK_FAILED");
+        });
         return;
       }
 

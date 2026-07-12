@@ -332,8 +332,8 @@ export async function createServerWithTools(options: ServerOptions) {
     ]) {
       try {
         await step();
-      } catch (e) {
-        console.error("Session cleanup step failed:", e);
+      } catch {
+        console.error("[MyBrowser MCP] SESSION_CLEANUP_STEP_FAILED");
       }
     }
     await originalClose();
