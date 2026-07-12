@@ -31,7 +31,6 @@ import {
 } from './events';
 import { runActionSequence, type ActionStep } from './action-sequencer';
 import {
-  saveRecordingToStorage,
   loadRecordingFromStorage,
   listRecordingsFromStorage,
   type Recording,
@@ -848,14 +847,6 @@ const handlers: Record<string, ToolHandler> = {
   async browser_record_list() {
     const names = await listRecordingsFromStorage();
     return { recordings: names };
-  },
-
-  async saveRecording(args) {
-    // Persist a recording to chrome.storage.local (called from server via WS)
-    const recording = args as unknown as Recording;
-    if (!recording.name) throw new Error('Recording must have a name.');
-    await saveRecordingToStorage(recording);
-    return { saved: true, name: recording.name };
   },
 
   async loadRecording(args) {

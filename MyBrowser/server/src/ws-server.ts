@@ -5,6 +5,7 @@ import {
   RECORDING_RESERVATION_LEASE_MS,
   sanitizeRecording,
   saveRecordingToFile,
+  verifyExistingRecordingFile,
   type RecordingFileOps,
 } from "./tools/record.js";
 import { saveNote, listNotes } from "./notes.js";
@@ -158,6 +159,7 @@ function isPortInUse(port: number): Promise<boolean> {
 async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
   const stateManager = new LocalStateManager();
+  const persistedRecordingRetries = new Map<string, Set<string>>();
 
   // Wire up browser listing to context
   stateManager.setListBrowsersFn(() => context.listBrowsers());
@@ -186,6 +188,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     await step(() => stateManager.releaseLocksForSession(sessionId));
     await step(() => stateManager.clearEventHandlersForSession(sessionId));
     await step(() => stateManager.removeSession(sessionId));
+    persistedRecordingRetries.delete(sessionId);
     if (errors.length > 0) {
       throw new AggregateError(errors, `cleanupSession(${sessionId})`);
     }
@@ -602,6 +605,24 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           .hasRecordingReservation(sessionId, recording.name)
           .then(async (hasReservation) => {
             if (!hasReservation) {
+              const retryNames = persistedRecordingRetries.get(sessionId);
+              if (retryNames?.has(recording.name)) {
+                try {
+                  verifyExistingRecordingFile(
+                    recording,
+                    options.recordingsDir,
+                    options.recordingFileOps,
+                  );
+                  safeSend(ws, {
+                    type: "persistRecordingResult",
+                    id: msg.id,
+                    ok: true,
+                  });
+                  return;
+                } catch {
+                  // Fall through to the same redacted ownership response.
+                }
+              }
               safeSend(ws, {
                 type: "persistRecordingResult",
                 id: msg.id,
@@ -612,6 +633,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             }
 
             saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
+            const retryNames = persistedRecordingRetries.get(sessionId) ?? new Set<string>();
+            retryNames.add(recording.name);
+            persistedRecordingRetries.set(sessionId, retryNames);
             const released = await stateManager.releaseRecordingReservation(
               sessionId,
               recording.name,

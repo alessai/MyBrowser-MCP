@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { getRecentExtensionIssues } from "./diagnostics";
+import { reportToolFailure } from "./background-privacy";
 
 import {
   MAX_ACTIVE_RECORDING_BYTES,
@@ -39,6 +42,10 @@ class MemoryStorage implements RecordingStorage {
   failSet: Error | undefined;
   failGet: Error | undefined;
   failHas: Error | undefined;
+  failSetKey: string | undefined;
+  failSetKeyOnCall: number | undefined;
+  failRemoveKey: string | undefined;
+  private readonly setCounts = new Map<string, number>();
 
   constructor(events: string[] = []) {
     this.events = events;
@@ -57,14 +64,33 @@ class MemoryStorage implements RecordingStorage {
   }
 
   async set<T>(key: string, value: T): Promise<void> {
-    if (this.failSet) throw this.failSet;
+    const count = (this.setCounts.get(key) ?? 0) + 1;
+    this.setCounts.set(key, count);
+    if (this.failSet || (this.failSetKey === key
+      && (this.failSetKeyOnCall === undefined || this.failSetKeyOnCall === count))) {
+      throw this.failSet ?? new Error("SET_FAILED");
+    }
     const copy = clone(value);
     this.events.push(`storage:set:${key}`);
     this.writes.push({ key, value: copy });
     this.values.set(key, copy);
   }
 
+  async setMany(values: Record<string, unknown>): Promise<void> {
+    const entries = Object.entries(values);
+    if (this.failSet || entries.some(([key]) => this.failSetKey === key)) {
+      throw this.failSet ?? new Error("SET_FAILED");
+    }
+    for (const [key, value] of entries) {
+      const copy = clone(value);
+      this.events.push(`storage:set:${key}`);
+      this.writes.push({ key, value: copy });
+      this.values.set(key, copy);
+    }
+  }
+
   async remove(key: string): Promise<void> {
+    if (this.failRemoveKey === key) throw new Error("REMOVE_FAILED");
     this.events.push(`storage:remove:${key}`);
     this.values.delete(key);
   }
@@ -391,6 +417,54 @@ describe("runRecordedAction", () => {
     expectAbsent(stopped);
   });
 
+  it("keeps a prepared handler failure private after session abort", async () => {
+    const { manager, sessionStorage } = createManager();
+    await manager.start("session-a", "flow", 11, "https://example.test");
+    let rejectAction!: (error: Error) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const action = runRecordedAction({
+      manager,
+      sessionId: "session-a",
+      toolName: "browser_type",
+      args: { text: SECRET_TEXT },
+      tabId: 11,
+      run: () => new Promise<never>((_resolve, reject) => {
+        rejectAction = reject;
+        markStarted();
+      }),
+      currentUrl: async () => "https://example.test",
+    });
+    await started;
+    await manager.abortSession("session-a");
+    rejectAction(new Error(`deferred handler exposed ${SECRET_TEXT}`));
+    const actionError = await action.catch((error: unknown) => error);
+
+    const issueCount = getRecentExtensionIssues(100).length;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const failure = reportToolFailure(actionError, {
+      requestId: "request-private",
+      toolType: "browser_type",
+    });
+    const evidence = {
+      response: failure.responseError,
+      diagnostics: getRecentExtensionIssues(100).slice(issueCount),
+      console: [...consoleError.mock.calls, ...consoleWarn.mock.calls],
+      storage: sessionStorage.writes,
+      snapshot: manager.snapshot(),
+    };
+    consoleError.mockRestore();
+    consoleWarn.mockRestore();
+
+    expect(failure).toEqual({
+      responseError: "RECORDED_TOOL_ACTION_FAILED",
+      category: "RECORDED_TOOL_ACTION_FAILED",
+      recorded: true,
+    });
+    expectAbsent(evidence);
+  });
+
   it("reserves worst-case UTF-8 page metadata before browser effects", async () => {
     const { manager } = createManager({
       limits: { maxSteps: 1_000, maxRecordingBytes: 15_000, maxAggregateBytes: 50_000 },
@@ -539,6 +613,96 @@ describe("RecordingManager restart and stop persistence", () => {
     });
     expect(localStorage.values.get("recording:flow")).toEqual({ existing: true });
     expect(localStorage.reads).not.toContain("recording:flow");
+    expect(manager.snapshot().active).toHaveLength(1);
+  });
+
+  it("serializes concurrent same-name stops and never overwrites differing content", async () => {
+    const localStorage = new MemoryStorage();
+    const { manager } = createManager({ localStorage });
+    await manager.start("session-a", "shared", 11, "https://example.test/a");
+    await manager.start("session-b", "shared", 22, "https://example.test/b");
+    await captureType(manager, "session-b", 22, SECRET_TEXT);
+
+    const [first, second] = await Promise.all([
+      manager.stop("session-a"),
+      manager.stop("session-b"),
+    ]);
+
+    expect(first).toMatchObject({ extensionSaved: true, serverSaved: true });
+    expect(second).toMatchObject({
+      extensionSaved: false,
+      serverSaved: true,
+      error: "LOCAL_RECORDING_CONFLICT",
+    });
+    expect(localStorage.values.get("recording:shared")).toEqual(first.recording);
+    expect(localStorage.writes.filter((entry) => JSON.stringify(entry).includes("recording:shared")))
+      .toHaveLength(1);
+    expect(manager.snapshot().active).toEqual([expect.objectContaining({ sessionId: "session-b" })]);
+    expectAbsent({ first, second, writes: localStorage.writes, snapshot: manager.snapshot() });
+  });
+
+  it("returns cleanup partial status and retries after active-key removal failure", async () => {
+    const sessionStorage = new MemoryStorage();
+    const localStorage = new MemoryStorage();
+    const { manager } = createManager({ sessionStorage, localStorage });
+    await manager.start("session-a", "cleanup-key", 11, "https://example.test");
+    await captureType(manager, "session-a", 11, SECRET_TEXT);
+    sessionStorage.failRemoveKey = "active-recording:session-a";
+
+    const partial = await manager.stop("session-a");
+    expect(partial).toMatchObject({
+      extensionSaved: true,
+      serverSaved: true,
+      error: "ACTIVE_STATE_CLEANUP_FAILED",
+    });
+    expect(manager.snapshot().active).toHaveLength(1);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+    expect(sessionStorage.values.get("active-recording-index")).toEqual(["session-a"]);
+
+    sessionStorage.failRemoveKey = undefined;
+    const retried = await manager.stop("session-a");
+    expect(retried).toMatchObject({ extensionSaved: true, serverSaved: true });
+    expect(retried).not.toHaveProperty("error");
+    expect(retried.recording).toEqual(partial.recording);
+    expect(manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.get("active-recording-index")).toEqual([]);
+    expect(localStorage.writes.filter((entry) => JSON.stringify(entry).includes("recording:cleanup-key")))
+      .toHaveLength(1);
+    expectAbsent({ partial, retried, storage: sessionStorage.writes, local: localStorage.writes });
+  });
+
+  it("retries index cleanup idempotently without resurrection or data loss", async () => {
+    const sessionStorage = new MemoryStorage();
+    const localStorage = new MemoryStorage();
+    const { manager } = createManager({ sessionStorage, localStorage });
+    await manager.start("session-a", "cleanup-index", 11, "https://example.test");
+    sessionStorage.failSetKey = "active-recording-index";
+    sessionStorage.failSetKeyOnCall = 3;
+
+    const partial = await manager.stop("session-a");
+    expect(partial).toMatchObject({
+      extensionSaved: true,
+      serverSaved: true,
+      error: "ACTIVE_STATE_CLEANUP_FAILED",
+    });
+    expect(manager.snapshot().active).toHaveLength(1);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.get("active-recording-index")).toEqual(["session-a"]);
+
+    sessionStorage.failSetKey = undefined;
+    sessionStorage.failSetKeyOnCall = undefined;
+    const retried = await manager.stop("session-a");
+    expect(retried.recording).toEqual(partial.recording);
+    expect(retried).not.toHaveProperty("error");
+    expect(manager.snapshot().active).toEqual([]);
+
+    const restarted = createManager({ sessionStorage, localStorage });
+    await restarted.manager.renewPersistedSessions();
+    expect(restarted.transport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(localStorage.values.get("recording:cleanup-index")).toEqual(retried.recording);
+    expectAbsent({ partial, retried, storage: sessionStorage.writes, local: localStorage.writes });
   });
 
   it("returns sanitized partial status for server and local failures", async () => {
@@ -554,6 +718,7 @@ describe("RecordingManager restart and stop persistence", () => {
       error: "SERVER_PERSIST_FAILED",
     });
     expect(serverCase.localStorage.writes).toEqual([]);
+    expect(serverCase.manager.snapshot().active).toHaveLength(1);
 
     const localStorage = new MemoryStorage();
     const localCase = createManager({ localStorage });
@@ -565,6 +730,7 @@ describe("RecordingManager restart and stop persistence", () => {
       serverSaved: true,
       error: "LOCAL_PERSIST_FAILED",
     });
+    expect(localCase.manager.snapshot().active).toHaveLength(1);
 
     expectAbsent({
       serverResult,

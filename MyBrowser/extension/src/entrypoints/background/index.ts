@@ -41,6 +41,7 @@ import {
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
+import { parseInboundWsFrame, reportToolFailure } from '../../lib/background-privacy';
 import {
   isToolRequestV2,
   type ToolResponseV2,
@@ -203,14 +204,9 @@ export default defineBackground(() => {
   // =====================================================================
 
   async function handleToolRequest(raw: string): Promise<void> {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      recordExtensionIssue('ws_message', 'Failed to parse WS message', { raw }, 'warn');
-      console.warn('Failed to parse WS message:', raw);
-      return;
-    }
+    const decoded = parseInboundWsFrame(raw);
+    if (!decoded.ok) return;
+    const parsed = decoded.value;
 
     // Intercept non-tool WS messages before they hit the tool dispatcher.
     const anyMsg = parsed as {
@@ -344,20 +340,15 @@ export default defineBackground(() => {
         payload: { requestId: request.id, result },
       };
     } catch (e) {
-      const activeRecording = getRecordingManager().isRecording(request.sessionId);
-      const errorMessage = activeRecording
-        ? 'RECORDED_TOOL_ACTION_FAILED'
-        : e instanceof Error ? e.message : String(e);
-      recordExtensionIssue('tool_failure', errorMessage, {
-        toolName: request.type,
-        payload: activeRecording ? '[redacted while recording]' : request.payload,
-        stack: activeRecording ? undefined : e instanceof Error ? e.stack : undefined,
+      const failure = reportToolFailure(e, {
+        requestId: request.id,
+        toolType: request.type,
       });
       response = {
         type: 'messageResponse',
         payload: {
           requestId: request.id,
-          error: errorMessage,
+          error: failure.responseError,
         },
       };
     }
@@ -406,9 +397,10 @@ export default defineBackground(() => {
       }
 
       if (msg.type === '_os_ws_receive') {
-        handleToolRequest(msg.payload as string).catch((e) =>
-          console.error('Tool request handler error:', e)
-        );
+        handleToolRequest(msg.payload as string).catch(() => {
+          recordExtensionIssue('ws_message', 'TOOL_REQUEST_DISPATCH_FAILED');
+          console.error('[MyBrowser] TOOL_REQUEST_DISPATCH_FAILED');
+        });
         return;
       }
     });
@@ -439,7 +431,12 @@ export default defineBackground(() => {
   });
 
   addMessageHandler('_os_ws_receive', async (payload) => {
-    await handleToolRequest(payload as string);
+    try {
+      await handleToolRequest(payload as string);
+    } catch {
+      recordExtensionIssue('ws_message', 'TOOL_REQUEST_DISPATCH_FAILED');
+      console.error('[MyBrowser] TOOL_REQUEST_DISPATCH_FAILED');
+    }
   });
 
   // =====================================================================

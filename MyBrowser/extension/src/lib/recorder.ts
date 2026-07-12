@@ -30,6 +30,7 @@ export interface RecordingStorage {
   get<T>(key: string): Promise<T | undefined>;
   has(key: string): Promise<boolean>;
   set<T>(key: string, value: T): Promise<void>;
+  setMany(values: Record<string, unknown>): Promise<void>;
   remove(key: string): Promise<void>;
 }
 
@@ -44,6 +45,7 @@ export interface RecordingAlarmScheduler {
 
 export interface PreparedStep {
   readonly id: string;
+  readonly beganUnderRecording: true;
   readonly action: ToolName;
   readonly args: Record<string, unknown>;
   readonly timestamp: number;
@@ -51,11 +53,26 @@ export interface PreparedStep {
   readonly nextVariable: number;
 }
 
+export class RecordedActionFailure extends Error {
+  constructor() {
+    super('RECORDED_TOOL_ACTION_FAILED');
+    this.name = 'RecordedActionFailure';
+  }
+}
+
+export function isRecordedActionFailure(error: unknown): error is RecordedActionFailure {
+  return error instanceof RecordedActionFailure;
+}
+
 export interface RecordingStopResult {
   extensionSaved: boolean;
   serverSaved: boolean;
   recording: Recording & { stoppedAt: number };
-  error?: 'SERVER_PERSIST_FAILED' | 'LOCAL_RECORDING_CONFLICT' | 'LOCAL_PERSIST_FAILED';
+  error?: 'SERVER_PERSIST_FAILED'
+    | 'LOCAL_RECORDING_CONFLICT'
+    | 'LOCAL_PERSIST_FAILED'
+    | 'ACTIVE_STATE_PERSIST_FAILED'
+    | 'ACTIVE_STATE_CLEANUP_FAILED';
 }
 
 interface ActiveRecording {
@@ -88,6 +105,7 @@ export const RECORDING_RENEWAL_MINUTES = 5;
 const ACTIVE_PREFIX = 'active-recording:';
 const ACTIVE_INDEX_KEY = 'active-recording-index';
 const COMPLETED_PREFIX = 'recording:';
+const COMPLETED_DIGEST_PREFIX = 'recording-digest:';
 const SERVER_TIMEOUT_MS = 10_000;
 const COMMIT_OVERHEAD_BYTES = 1_024;
 
@@ -105,6 +123,10 @@ class ChromeStorageAdapter implements RecordingStorage {
 
   async set<T>(key: string, value: T): Promise<void> {
     await this.area.set({ [key]: value });
+  }
+
+  async setMany(values: Record<string, unknown>): Promise<void> {
+    await this.area.set(values);
   }
 
   async remove(key: string): Promise<void> {
@@ -162,10 +184,11 @@ function isActiveRecording(
   const recording = value.recording;
   if (!isRecord(recording) || typeof recording.name !== 'string') return false;
   const recordingKeys = ['name', 'startedAt', 'url', 'steps', 'requiredVariables'];
-  if (allowStopped) recordingKeys.push('stoppedAt');
+  const hasStoppedAt = 'stoppedAt' in recording;
+  if (hasStoppedAt) recordingKeys.push('stoppedAt');
   if (!hasExactKeys(recording, recordingKeys)) return false;
   if (typeof recording.startedAt !== 'number' || typeof recording.url !== 'string') return false;
-  if ('stoppedAt' in recording && (!allowStopped
+  if (hasStoppedAt && (!allowStopped
     || typeof recording.stoppedAt !== 'number'
     || !Number.isFinite(recording.stoppedAt))) return false;
   if (!Array.isArray(recording.steps) || !Array.isArray(recording.requiredVariables)) return false;
@@ -306,6 +329,7 @@ export class RecordingManager {
       await this.restoreAllUnlocked();
       const active = this.active.get(sessionId);
       if (!active || this.replaying.has(sessionId) || active.tabId !== tabId) return null;
+      if (active.recording.stoppedAt !== undefined) throw new Error('RECORDING_STOP_PENDING');
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
       }
@@ -356,6 +380,7 @@ export class RecordingManager {
 
       const prepared: PreparedStep = {
         id: `prepared_${++this.preparedCounter}`,
+        beganUnderRecording: true,
         action: toolName,
         args: parameterized.args,
         timestamp,
@@ -442,10 +467,25 @@ export class RecordingManager {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
       }
 
-      const recording: Recording & { stoppedAt: number } = {
-        ...clone(active.recording),
-        stoppedAt: this.now(),
-      };
+      let recording: Recording & { stoppedAt: number };
+      if (active.recording.stoppedAt !== undefined) {
+        recording = clone(active.recording) as Recording & { stoppedAt: number };
+      } else {
+        recording = { ...clone(active.recording), stoppedAt: this.now() };
+        const stoppedActive: ActiveRecording = { ...active, recording };
+        this.active.set(sessionId, stoppedActive);
+        try {
+          await this.persistActiveUnlocked(stoppedActive);
+        } catch {
+          this.active.set(sessionId, active);
+          return {
+            extensionSaved: false,
+            serverSaved: false,
+            recording,
+            error: 'ACTIVE_STATE_PERSIST_FAILED',
+          };
+        }
+      }
       let serverSaved = false;
       try {
         const response = await this.transport.request('persistRecording', {
@@ -458,52 +498,31 @@ export class RecordingManager {
       }
 
       if (!serverSaved) {
-        const result: RecordingStopResult = {
+        return {
           extensionSaved: false,
           serverSaved: false,
           recording,
           error: 'SERVER_PERSIST_FAILED',
         };
-        await this.finishStopUnlocked(sessionId);
-        return result;
       }
 
-      const key = `${COMPLETED_PREFIX}${recording.name}`;
-      let exists = false;
       try {
-        exists = await this.localStorage.has(key);
+        const localResult = await this.persistCompletedUnlocked(recording);
+        if (localResult === 'conflict') {
+          return {
+            extensionSaved: false,
+            serverSaved: true,
+            recording,
+            error: 'LOCAL_RECORDING_CONFLICT',
+          };
+        }
       } catch {
-        const result: RecordingStopResult = {
+        return {
           extensionSaved: false,
           serverSaved: true,
           recording,
           error: 'LOCAL_PERSIST_FAILED',
         };
-        await this.finishStopUnlocked(sessionId);
-        return result;
-      }
-      if (exists) {
-        const result: RecordingStopResult = {
-          extensionSaved: false,
-          serverSaved: true,
-          recording,
-          error: 'LOCAL_RECORDING_CONFLICT',
-        };
-        await this.finishStopUnlocked(sessionId);
-        return result;
-      }
-
-      try {
-        await this.localStorage.set(key, recording);
-      } catch {
-        const result: RecordingStopResult = {
-          extensionSaved: false,
-          serverSaved: true,
-          recording,
-          error: 'LOCAL_PERSIST_FAILED',
-        };
-        await this.finishStopUnlocked(sessionId);
-        return result;
       }
 
       const result: RecordingStopResult = {
@@ -511,7 +530,9 @@ export class RecordingManager {
         serverSaved: true,
         recording,
       };
-      await this.finishStopUnlocked(sessionId);
+      if (!await this.finishStopUnlocked(sessionId)) {
+        result.error = 'ACTIVE_STATE_CLEANUP_FAILED';
+      }
       return result;
     });
   }
@@ -578,7 +599,7 @@ export class RecordingManager {
   private async restoreSessionUnlocked(sessionId: string): Promise<boolean> {
     if (this.active.has(sessionId)) return true;
     const stored = await this.sessionStorage.get<unknown>(`${ACTIVE_PREFIX}${sessionId}`);
-    if (!isActiveRecording(stored, sessionId)) {
+    if (!isActiveRecording(stored, sessionId, true)) {
       if (stored !== undefined) await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
       await this.removeFromIndexUnlocked(sessionId);
       return false;
@@ -630,15 +651,46 @@ export class RecordingManager {
     return index;
   }
 
-  private async finishStopUnlocked(sessionId: string): Promise<void> {
+  private async persistCompletedUnlocked(
+    recording: Recording & { stoppedAt: number },
+  ): Promise<'created' | 'existing-identical' | 'conflict'> {
+    const key = `${COMPLETED_PREFIX}${recording.name}`;
+    const digestKey = `${COMPLETED_DIGEST_PREFIX}${recording.name}`;
+    const serialized = JSON.stringify(recording);
+    const digestBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serialized));
+    const digest = [...new Uint8Array(digestBytes)]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+    const [exists, digestExists] = await Promise.all([
+      this.localStorage.has(key),
+      this.localStorage.has(digestKey),
+    ]);
+    if (exists || digestExists) {
+      if (!exists || !digestExists) return 'conflict';
+      const existingDigest = await this.localStorage.get<unknown>(digestKey);
+      if (existingDigest !== digest) return 'conflict';
+      const existing = await this.localStorage.get<unknown>(key);
+      if (!isSanitizedRecording(existing) || JSON.stringify(existing) !== serialized) return 'conflict';
+      return 'existing-identical';
+    }
+    await this.localStorage.setMany({ [key]: recording, [digestKey]: digest });
+    return 'created';
+  }
+
+  private async finishStopUnlocked(sessionId: string): Promise<boolean> {
+    try {
+      await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
+      const remaining = await this.removeFromIndexUnlocked(sessionId);
+      if (remaining.length === 0) await this.scheduler.clearRenewal();
+    } catch {
+      return false;
+    }
     this.active.delete(sessionId);
     this.replaying.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
-    await this.sessionStorage.remove(`${ACTIVE_PREFIX}${sessionId}`);
-    const remaining = await this.removeFromIndexUnlocked(sessionId);
-    if (remaining.length === 0) await this.scheduler.clearRenewal();
+    return true;
   }
 
   private async abortSessionUnlocked(sessionId: string): Promise<void> {
@@ -674,9 +726,7 @@ export async function runRecordedAction<T>(options: {
     result = await options.run();
   } catch (error) {
     if (prepared) await options.manager.discardStep(options.sessionId, prepared);
-    if (options.manager.isRecording(options.sessionId)) {
-      throw new Error('RECORDED_TOOL_ACTION_FAILED');
-    }
+    if (prepared?.beganUnderRecording) throw new RecordedActionFailure();
     throw error;
   }
 
@@ -701,11 +751,6 @@ export async function runRecordedAction<T>(options: {
 
 const completedStorage = (): RecordingStorage => new ChromeStorageAdapter(chrome.storage.local);
 
-export async function saveRecordingToStorage(recording: Recording): Promise<void> {
-  if (!isSanitizedRecording(recording)) throw new Error('UNSAFE_RECORDING');
-  await completedStorage().set(`${COMPLETED_PREFIX}${recording.name}`, recording);
-}
-
 export async function loadRecordingFromStorage(name: string): Promise<Recording | null> {
   const storage = completedStorage();
   const key = `${COMPLETED_PREFIX}${name}`;
@@ -713,6 +758,7 @@ export async function loadRecordingFromStorage(name: string): Promise<Recording 
   if (recording === undefined) return null;
   if (!isSanitizedRecording(recording)) {
     await storage.remove(key);
+    await storage.remove(`${COMPLETED_DIGEST_PREFIX}${name}`);
     return null;
   }
   return recording;
@@ -726,5 +772,7 @@ export async function listRecordingsFromStorage(): Promise<string[]> {
 }
 
 export async function deleteRecordingFromStorage(name: string): Promise<void> {
-  await completedStorage().remove(`${COMPLETED_PREFIX}${name}`);
+  const storage = completedStorage();
+  await storage.remove(`${COMPLETED_PREFIX}${name}`);
+  await storage.remove(`${COMPLETED_DIGEST_PREFIX}${name}`);
 }

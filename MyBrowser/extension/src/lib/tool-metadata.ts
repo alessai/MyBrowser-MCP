@@ -44,7 +44,6 @@ export const TOOL_METADATA = {
   browser_record_start: { tab: 'required', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_stop: { tab: 'none', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_list: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
-  saveRecording: { tab: 'none', queue: 'global', mutatesTab: false, recordable: false },
   loadRecording: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
   browser_replay: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   generatePageModel: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
@@ -61,5 +60,23 @@ export const TOOL_METADATA = {
   browser_unregister_handler: { tab: 'none', queue: 'global', mutatesTab: false, recordable: false },
   browser_list_handlers: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
 } as const satisfies Record<string, ToolMetadata>;
+
+export const RECORDING_NON_STRING_PATHS = {
+  browser_navigate: ['tabId'],
+  browser_go_back: ['tabId'],
+  browser_go_forward: ['tabId'],
+  browser_wait: ['time', 'tabId'],
+  browser_click: ['mark', 'tabId'],
+  browser_type: ['mark', 'submit', 'tabId'],
+  browser_hover: ['mark', 'tabId'],
+  browser_press_key: ['tabId'],
+  browser_drag: ['startMark', 'endMark', 'tabId'],
+  browser_select_option: ['mark', 'tabId'],
+  browser_set_viewport: ['tabId'],
+  browser_reset_viewport: ['tabId'],
+  browser_fill_form: ['submitAfter', 'tabId'],
+  browser_wait_for: ['timeout', 'pollInterval', 'tabId'],
+  browser_clipboard: ['tabId'],
+} as const;
 
 export type ToolName = keyof typeof TOOL_METADATA;

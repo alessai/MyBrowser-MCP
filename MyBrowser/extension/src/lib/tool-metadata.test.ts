@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getRegisteredToolNames } from "./tools";
-import { TOOL_METADATA } from "./tool-metadata";
+import { RECORDING_NON_STRING_PATHS, TOOL_METADATA } from "./tool-metadata";
 
 describe("TOOL_METADATA", () => {
   it("classifies every registered tool exactly once", () => {
@@ -77,6 +77,8 @@ describe("TOOL_METADATA", () => {
     expect(TOOL_METADATA.select_tab.recordable).toBe(false);
     expect(TOOL_METADATA.close_tab.recordable).toBe(false);
     expect(TOOL_METADATA.browser_wait.tab).toBe("optional");
+    expect(Object.keys(RECORDING_NON_STRING_PATHS).sort())
+      .toEqual(recordable.map(([name]) => name).sort());
   });
 
   it("routes global mutations through the global queue", () => {

@@ -1,4 +1,9 @@
-import { TOOL_METADATA, type RecordingStringKind, type ToolName } from './tool-metadata';
+import {
+  RECORDING_NON_STRING_PATHS,
+  TOOL_METADATA,
+  type RecordingStringKind,
+  type ToolName,
+} from './tool-metadata';
 
 export type VariableSource = 'text' | 'form' | 'select' | 'navigation' | 'clipboard';
 
@@ -77,6 +82,11 @@ export function parameterizeArgs(
   }
 
   const classifications = metadata.recordingStrings as Record<string, RecordingStringKind>;
+  const configuredNonStringPaths = (RECORDING_NON_STRING_PATHS as Partial<
+    Record<ToolName, readonly string[]>
+  >)[toolName];
+  if (!configuredNonStringPaths) throw new Error('RECORDING_METADATA_MISMATCH');
+  const nonStringPaths = new Set<string>(configuredNonStringPaths);
   const requiredVariables: RequiredVariable[] = [];
 
   const transform = (value: unknown, path: string): unknown => {
@@ -101,17 +111,25 @@ export function parameterizeArgs(
     }
 
     if (Array.isArray(value)) {
+      if (!Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) {
+        throw new Error('RECORDING_METADATA_MISMATCH');
+      }
       return value.map((entry, index) => transform(entry, path ? `${path}.${index}` : `${index}`));
     }
 
     if (value && typeof value === 'object') {
+      if (path && !Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) {
+        throw new Error('RECORDING_METADATA_MISMATCH');
+      }
       const result: Record<string, unknown> = {};
       for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-        result[key] = transform(entry, path ? `${path}.${key}` : key);
+        const childPath = path === 'fields' ? 'fields.*' : path ? `${path}.${key}` : key;
+        result[key] = transform(entry, childPath);
       }
       return result;
     }
 
+    if (!nonStringPaths.has(path)) throw new Error('RECORDING_METADATA_MISMATCH');
     return value;
   };
 
@@ -130,6 +148,11 @@ export function validateSanitizedArgs(
   const metadata = TOOL_METADATA[toolName as ToolName];
   if (!metadata?.recordable || !('recordingStrings' in metadata)) return false;
   const classifications = metadata.recordingStrings as Record<string, RecordingStringKind>;
+  const configuredNonStringPaths = (RECORDING_NON_STRING_PATHS as Partial<
+    Record<ToolName, readonly string[]>
+  >)[toolName as ToolName];
+  if (!configuredNonStringPaths) return false;
+  const nonStringPaths = new Set<string>(configuredNonStringPaths);
 
   const validate = (value: unknown, path: string): boolean => {
     if (typeof value === 'string') {
@@ -147,14 +170,16 @@ export function validateSanitizedArgs(
       return true;
     }
     if (Array.isArray(value)) {
+      if (!Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) return false;
       return value.every((entry, index) => validate(entry, path ? `${path}.${index}` : `${index}`));
     }
     if (value && typeof value === 'object') {
+      if (path && !Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) return false;
       return Object.entries(value as Record<string, unknown>).every(([key, entry]) => (
-        validate(entry, path ? `${path}.${key}` : key)
+        validate(entry, path === 'fields' ? 'fields.*' : path ? `${path}.${key}` : key)
       ));
     }
-    return true;
+    return nonStringPaths.has(path);
   };
 
   return validate(args, '');

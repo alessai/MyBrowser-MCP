@@ -131,23 +131,45 @@ export type SanitizedRecording = z.infer<typeof RecordingSchema>;
 
 type VariableSource = "text" | "form" | "select" | "navigation" | "clipboard";
 
-const RECORDABLE_ACTIONS = new Set([
-  "browser_navigate",
-  "browser_go_back",
-  "browser_go_forward",
-  "browser_wait",
-  "browser_click",
-  "browser_type",
-  "browser_hover",
-  "browser_press_key",
-  "browser_drag",
-  "browser_select_option",
-  "browser_set_viewport",
-  "browser_reset_viewport",
-  "browser_fill_form",
-  "browser_wait_for",
-  "browser_clipboard",
-]);
+type RecordingStringKind = "safe" | VariableSource;
+
+export const SERVER_RECORDING_STRING_METADATA = {
+  browser_navigate: { url: "navigation" },
+  browser_go_back: {},
+  browser_go_forward: {},
+  browser_wait: {},
+  browser_click: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe" },
+  browser_type: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", text: "text" },
+  browser_hover: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe" },
+  browser_press_key: { key: "safe" },
+  browser_drag: { startElement: "safe", startRef: "safe", startSelector: "safe", endElement: "safe", endRef: "safe", endSelector: "safe" },
+  browser_select_option: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", "values.*": "select" },
+  browser_set_viewport: { preset: "safe", orientation: "safe" },
+  browser_reset_viewport: {},
+  browser_fill_form: { "fields.*": "form", submitText: "safe" },
+  browser_wait_for: { condition: "safe", value: "text", selector: "safe" },
+  browser_clipboard: { action: "safe", text: "clipboard" },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingStringKind>>>>;
+
+export const SERVER_RECORDING_NON_STRING_PATHS = {
+  browser_navigate: ["tabId"],
+  browser_go_back: ["tabId"],
+  browser_go_forward: ["tabId"],
+  browser_wait: ["time", "tabId"],
+  browser_click: ["mark", "tabId"],
+  browser_type: ["mark", "submit", "tabId"],
+  browser_hover: ["mark", "tabId"],
+  browser_press_key: ["tabId"],
+  browser_drag: ["startMark", "endMark", "tabId"],
+  browser_select_option: ["mark", "tabId"],
+  browser_set_viewport: ["tabId"],
+  browser_reset_viewport: ["tabId"],
+  browser_fill_form: ["submitAfter", "tabId"],
+  browser_wait_for: ["timeout", "pollInterval", "tabId"],
+  browser_clipboard: ["tabId"],
+} as const;
+
+const RECORDABLE_ACTIONS = new Set(Object.keys(SERVER_RECORDING_STRING_METADATA));
 
 function isSanitizedPageUrl(value: string): boolean {
   if (value.length > 8_192) return false;
@@ -178,6 +200,46 @@ function validatePlaceholder(
   return true;
 }
 
+function wildcardPath(path: string): string {
+  return path.replace(/\.\d+(?=\.|$)/g, ".*").replace(/^(fields)\.[^.]+$/, "$1.*");
+}
+
+function validateArgumentStrings(
+  value: unknown,
+  path: string,
+  classifications: Readonly<Record<string, RecordingStringKind>>,
+  nonStringPaths: ReadonlySet<string>,
+  variables: ReadonlyMap<string, VariableSource>,
+  used: Set<string>,
+): boolean {
+  if (typeof value === "string") {
+    const kind = classifications[path] ?? classifications[wildcardPath(path)];
+    if (!kind) return false;
+    if (kind === "safe") return true;
+    if (kind === "navigation" && isSanitizedPageUrl(value)) return true;
+    return validatePlaceholder(value, kind, variables, used);
+  }
+  if (Array.isArray(value)) {
+    if (!Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) return false;
+    return value.every((entry, index) => validateArgumentStrings(
+      entry,
+      path ? `${path}.${index}` : `${index}`,
+      classifications,
+      nonStringPaths,
+      variables,
+      used,
+    ));
+  }
+  if (value !== null && typeof value === "object") {
+    if (path && !Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) return false;
+    return Object.entries(value).every(([key, entry]) => {
+      const childPath = path === "fields" ? "fields.*" : path ? `${path}.${key}` : key;
+      return validateArgumentStrings(entry, childPath, classifications, nonStringPaths, variables, used);
+    });
+  }
+  return nonStringPaths.has(path);
+}
+
 function hasSanitizedActionData(recording: SanitizedRecording): boolean {
   if (!isSanitizedPageUrl(recording.url)) return false;
   if (!recording.requiredVariables.every((variable, index) => {
@@ -193,31 +255,26 @@ function hasSanitizedActionData(recording: SanitizedRecording): boolean {
   for (const step of recording.steps) {
     if (!RECORDABLE_ACTIONS.has(step.action) || !isSanitizedPageUrl(step.url)) return false;
     const args = step.args;
-    if (step.action === "browser_type" && !validatePlaceholder(args.text, "text", variables, used)) {
-      return false;
-    }
+    const classifications = SERVER_RECORDING_STRING_METADATA[
+      step.action as keyof typeof SERVER_RECORDING_STRING_METADATA
+    ];
+    const nonStringPaths = new Set<string>(SERVER_RECORDING_NON_STRING_PATHS[
+      step.action as keyof typeof SERVER_RECORDING_NON_STRING_PATHS
+    ]);
+    if (!validateArgumentStrings(args, "", classifications, nonStringPaths, variables, used)) return false;
+    if (step.action === "browser_type" && typeof args.text !== "string") return false;
     if (step.action === "browser_fill_form") {
       if (typeof args.fields !== "object" || args.fields === null || Array.isArray(args.fields)) return false;
-      if (!Object.values(args.fields).every((value) => validatePlaceholder(value, "form", variables, used))) {
-        return false;
-      }
+      if (!Object.values(args.fields).every((value) => typeof value === "string")) return false;
     }
     if (step.action === "browser_select_option") {
-      if (!Array.isArray(args.values)
-        || !args.values.every((value) => validatePlaceholder(value, "select", variables, used))) {
-        return false;
-      }
+      if (!Array.isArray(args.values) || !args.values.every((value) => typeof value === "string")) return false;
     }
     if (step.action === "browser_navigate") {
       const url = args.url;
       if (typeof url !== "string") return false;
-      if (!isSanitizedPageUrl(url)
-        && !validatePlaceholder(url, "navigation", variables, used)) return false;
+      if (!isSanitizedPageUrl(url) && !/^\{\{navigation_\d+\}\}$/.test(url)) return false;
     }
-    if (step.action === "browser_clipboard" && args.text !== undefined
-      && !validatePlaceholder(args.text, "clipboard", variables, used)) return false;
-    if (step.action === "browser_wait_for" && args.value !== undefined
-      && !validatePlaceholder(args.value, "text", variables, used)) return false;
   }
 
   return used.size === variables.size
@@ -449,6 +506,62 @@ export function createRecordingTools(
 
 // --- Server-side persistence (called via acknowledged WS message, not MCP) ---
 
+function verifyExistingRecording(
+  sanitized: SanitizedRecording,
+  filePath: string,
+  ops: RecordingFileOps,
+  mismatchError: unknown,
+): void {
+  const stats = ops.lstatSync(filePath);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`Existing recording artifact must be a regular non-symlink file: ${filePath}`);
+  }
+  if ((stats.mode & 0o777) !== 0o600) {
+    throw new Error(`Existing recording artifact must have exact mode 0600: ${filePath}`);
+  }
+
+  const noFollow = typeof fsConstants.O_NOFOLLOW === "number"
+    ? fsConstants.O_NOFOLLOW
+    : 0;
+  const existingFd = ops.openSync(filePath, fsConstants.O_RDONLY | noFollow);
+  let verificationFailure: unknown;
+  try {
+    const descriptorStats = ops.fstatSync(existingFd);
+    if (!descriptorStats.isFile()) {
+      throw new Error(`Existing recording descriptor must be a regular file: ${filePath}`);
+    }
+    if ((descriptorStats.mode & 0o777) !== 0o600) {
+      throw new Error(`Existing recording descriptor must have exact mode 0600: ${filePath}`);
+    }
+    if (descriptorStats.dev !== stats.dev || descriptorStats.ino !== stats.ino) {
+      throw new Error(`Existing recording artifact changed between lstat and open: ${filePath}`);
+    }
+    const existing = sanitizeRecording(JSON.parse(ops.readFileSync(existingFd, "utf-8")));
+    if (!isDeepStrictEqual(existing, sanitized)) throw mismatchError;
+    ops.fsyncSync(existingFd);
+  } catch (verificationError) {
+    verificationFailure = verificationError;
+  }
+  try {
+    ops.closeSync(existingFd);
+  } catch (closeError) {
+    verificationFailure ??= closeError;
+  }
+  if (verificationFailure) throw verificationFailure;
+}
+
+export function verifyExistingRecordingFile(
+  recording: unknown,
+  recordingsDir = RECORDINGS_DIR,
+  fileOps: Partial<RecordingFileOps> = {},
+): "existing-identical" {
+  const sanitized = sanitizeRecording(recording);
+  const ops = { ...RECORDING_FILE_OPS, ...fileOps };
+  const filePath = join(recordingsDir, `${normalizeRecordingName(sanitized.name)}.json`);
+  verifyExistingRecording(sanitized, filePath, ops, new Error("Recording artifact differs"));
+  return "existing-identical";
+}
+
 export function saveRecordingToFile(
   recording: unknown,
   recordingsDir = RECORDINGS_DIR,
@@ -463,44 +576,7 @@ export function saveRecordingToFile(
     fd = ops.openSync(filePath, "wx", 0o600);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const stats = ops.lstatSync(filePath);
-    if (stats.isSymbolicLink() || !stats.isFile()) {
-      throw new Error(`Existing recording artifact must be a regular non-symlink file: ${filePath}`);
-    }
-    if ((stats.mode & 0o777) !== 0o600) {
-      throw new Error(`Existing recording artifact must have exact mode 0600: ${filePath}`);
-    }
-
-    const noFollow = typeof fsConstants.O_NOFOLLOW === "number"
-      ? fsConstants.O_NOFOLLOW
-      : 0;
-    const existingFd = ops.openSync(filePath, fsConstants.O_RDONLY | noFollow);
-    let verificationFailure: unknown;
-    try {
-      const descriptorStats = ops.fstatSync(existingFd);
-      if (!descriptorStats.isFile()) {
-        throw new Error(`Existing recording descriptor must be a regular file: ${filePath}`);
-      }
-      if ((descriptorStats.mode & 0o777) !== 0o600) {
-        throw new Error(`Existing recording descriptor must have exact mode 0600: ${filePath}`);
-      }
-      if (descriptorStats.dev !== stats.dev || descriptorStats.ino !== stats.ino) {
-        throw new Error(`Existing recording artifact changed between lstat and open: ${filePath}`);
-      }
-      const existing = sanitizeRecording(JSON.parse(ops.readFileSync(existingFd, "utf-8")));
-      if (!isDeepStrictEqual(existing, sanitized)) {
-        throw error;
-      }
-      ops.fsyncSync(existingFd);
-    } catch (verificationError) {
-      verificationFailure = verificationError;
-    }
-    try {
-      ops.closeSync(existingFd);
-    } catch (closeError) {
-      verificationFailure ??= closeError;
-    }
-    if (verificationFailure) throw verificationFailure;
+    verifyExistingRecording(sanitized, filePath, ops, error);
     return "existing-identical";
   }
 

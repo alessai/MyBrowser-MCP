@@ -5,6 +5,7 @@ import {
   sanitizePageUrl,
   type ParameterizationState,
 } from "./recording-parameterizer";
+import { TOOL_METADATA } from "./tool-metadata";
 
 const SECRET_TEXT = "SECRET_ALPHA_9271";
 const SECRET_FORM = "SECRET_BRAVO_4382";
@@ -28,7 +29,7 @@ describe("parameterizeArgs", () => {
       submit: true,
     }, state);
     const form = parameterizeArgs("browser_fill_form", {
-      fields: { Email: SECRET_FORM },
+      fields: { "Email.Address": SECRET_FORM },
       submitText: "Continue",
     }, state);
     const selected = parameterizeArgs("browser_select_option", {
@@ -53,7 +54,7 @@ describe("parameterizeArgs", () => {
       requiredVariables: [{ name: "input_1", source: "text", hint: "text_input_1" }],
     });
     expect(form).toEqual({
-      args: { fields: { Email: "{{form_2}}" }, submitText: "Continue" },
+      args: { fields: { "Email.Address": "{{form_2}}" }, submitText: "Continue" },
       requiredVariables: [{ name: "form_2", source: "form", hint: "form_input_2" }],
     });
     expect(selected).toEqual({
@@ -103,6 +104,34 @@ describe("parameterizeArgs", () => {
       requiredVariables: [],
     });
     expect(state.nextVariable).toBe(1);
+  });
+
+  it("default-denies an unclassified string path for every recordable action", () => {
+    for (const [action, metadata] of Object.entries(TOOL_METADATA)) {
+      if (!metadata.recordable) continue;
+      expect(() => parameterizeArgs(action as keyof typeof TOOL_METADATA, {
+        unclassified: `SECRET_METADATA_DRIFT_${action}`,
+      }, { nextVariable: 1 }), action).toThrow("RECORDING_METADATA_MISMATCH");
+      expect(() => parameterizeArgs(action as keyof typeof TOOL_METADATA, {
+        [`SECRET_METADATA_KEY_${action}`]: 1,
+      }, { nextVariable: 1 }), action).toThrow("RECORDING_METADATA_MISMATCH");
+    }
+  });
+
+  it("documents the accepted URL residual and full-URL sensitivity boundary", () => {
+    const state: ParameterizationState = { nextVariable: 1 };
+    const ordinary = "https://example.test/accounts/42";
+    expect(parameterizeArgs("browser_navigate", { url: ordinary }, state).args.url).toBe(ordinary);
+
+    for (const url of [
+      "https://user:pass@example.test/accounts/42",
+      "https://example.test/accounts/42?token=private",
+      "https://example.test/accounts/42#private",
+    ]) {
+      const result = parameterizeArgs("browser_navigate", { url }, state);
+      expect(result.args.url).toMatch(/^\{\{navigation_\d+\}\}$/);
+      expect(JSON.stringify(result)).not.toContain(url);
+    }
   });
 });
 

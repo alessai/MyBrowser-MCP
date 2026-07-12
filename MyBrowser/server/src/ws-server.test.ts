@@ -1237,6 +1237,24 @@ describe("acknowledged recording reservation messages", () => {
       .toMatchObject({ name: "Checkout_Flow", steps: validRecording.steps });
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(false);
+
+    const original = readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8");
+    await expect(persistRecordingMessage(extension, "persist-cleanup-retry"))
+      .resolves.toEqual({
+        type: "persistRecordingResult",
+        id: "persist-cleanup-retry",
+        ok: true,
+      });
+    await expect(persistRecordingMessage(extension, "persist-cleanup-different", {
+      ...validRecording,
+      url: "https://different.test/",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-cleanup-different",
+      ok: false,
+      error: "reservation unavailable",
+    });
+    expect(readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8")).toBe(original);
   });
 
   it("does not release or acknowledge when new descriptor fchmod fails", async () => {
