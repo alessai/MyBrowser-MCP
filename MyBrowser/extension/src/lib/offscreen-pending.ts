@@ -30,10 +30,14 @@ export class PendingToolRequests {
     this.requestIds.clear();
 
     for (const requestId of requestIds) {
-      send(JSON.stringify({
-        type: "messageResponse",
-        payload: { requestId, error: "EXTENSION_WORKER_RESTARTED" },
-      }));
+      try {
+        send(JSON.stringify({
+          type: "messageResponse",
+          payload: { requestId, error: "EXTENSION_WORKER_RESTARTED" },
+        }));
+      } catch {
+        // A failed send must not skip the remaining correlated failures.
+      }
     }
   }
 }

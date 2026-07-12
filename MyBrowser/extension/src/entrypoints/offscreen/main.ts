@@ -32,11 +32,14 @@ function ensurePort(): chrome.runtime.Port | null {
   }
   portRetryDelay = 200; // Reset backoff on successful connect
   port.onDisconnect.addListener(() => {
-    if (ws.getState() === 'CONNECTED') {
-      pendingToolRequests.failAll((raw) => ws.send(raw));
+    try {
+      if (ws.getState() === 'CONNECTED') {
+        pendingToolRequests.failAll((raw) => ws.send(raw));
+      }
+    } finally {
+      port = null;
+      schedulePortRetry();
     }
-    port = null;
-    schedulePortRetry();
   });
   port.onMessage.addListener(handleBackgroundMessage);
   return port;
@@ -111,7 +114,7 @@ function handleMessage(message: { type: string; payload?: unknown; _replyId?: st
 
   if (message.type === '_os_ws_reconnect') {
     if (lastConfig) {
-      connectWithConfig(lastConfig.url, lastConfig.token, lastConfig.browserName);
+      ws.forceReconnect();
     }
     reply({ ok: true });
     return;
@@ -156,7 +159,6 @@ chrome.runtime.onMessage.addListener(
 
 function connectWithConfig(url: string, token: string, browserName?: string): void {
   lastConfig = { url, token, browserName };
-  ws.disconnect();
   ws.connect(url, token, {
     onConnected() {
       postToBackground({ type: '_os_connected' });

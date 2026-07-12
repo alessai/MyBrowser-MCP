@@ -37,6 +37,7 @@ export class ReconnectingWebSocket {
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private authTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
+  private protocolIncompatible = false;
   private callbacks: ReconnectingWsCallbacks = {};
 
   getState(): WsState {
@@ -44,10 +45,14 @@ export class ReconnectingWebSocket {
   }
 
   connect(url: string, token: string, callbacks?: ReconnectingWsCallbacks, browserName?: string): void {
+    const nextBrowserName = browserName || '';
+    const settingsChanged = this.url !== url || this.token !== token || this.browserName !== nextBrowserName;
     this.url = url;
     this.token = token;
-    this.browserName = browserName || '';
+    this.browserName = nextBrowserName;
     if (callbacks) this.callbacks = callbacks;
+    if (settingsChanged) this.protocolIncompatible = false;
+    if (this.protocolIncompatible) return;
     this.intentionalClose = false;
     this.retryDelay = INITIAL_DELAY_MS;
     this.doConnect();
@@ -67,6 +72,8 @@ export class ReconnectingWebSocket {
   }
 
   forceReconnect(): void {
+    this.protocolIncompatible = false;
+    this.intentionalClose = false;
     this.cleanup();
     this.retryDelay = INITIAL_DELAY_MS;
     this.doConnect();
@@ -131,6 +138,7 @@ export class ReconnectingWebSocket {
               clearTimeout(this.authTimer);
               this.authTimer = null;
             }
+            this.protocolIncompatible = true;
             this.callbacks.onProtocolError?.();
             this.ws?.close(WS_CLOSE.versionMismatch, 'Protocol version mismatch');
           }
@@ -164,7 +172,7 @@ export class ReconnectingWebSocket {
       if (wasConnected) {
         this.callbacks.onDisconnected?.();
       }
-      if (!this.intentionalClose) {
+      if (!this.intentionalClose && !this.protocolIncompatible) {
         this.scheduleRetry();
       }
     };
@@ -192,6 +200,7 @@ export class ReconnectingWebSocket {
   }
 
   private scheduleRetry(): void {
+    if (this.intentionalClose || this.protocolIncompatible) return;
     this.clearRetryTimer();
     const jitter = 1 + (Math.random() * 2 - 1) * JITTER;
     const delay = Math.min(this.retryDelay * jitter, MAX_DELAY_MS);

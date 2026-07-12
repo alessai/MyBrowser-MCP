@@ -86,6 +86,24 @@ describe("PendingToolRequests", () => {
       payload: { requestId: "r1", error: "EXTENSION_WORKER_RESTARTED" },
     });
   });
+
+  it("attempts every pending failure once when a sender throws", () => {
+    const pending = new PendingToolRequests();
+    const attempted: string[] = [];
+
+    pending.trackInbound(toolRequest("r1"));
+    pending.trackInbound(toolRequest("r2"));
+    pending.trackInbound(toolRequest("r3"));
+
+    expect(() => pending.failAll((raw) => {
+      const requestId = JSON.parse(raw).payload.requestId as string;
+      attempted.push(requestId);
+      if (requestId === "r1") throw new Error("socket closed");
+    })).not.toThrow();
+    pending.failAll((raw) => attempted.push(JSON.parse(raw).payload.requestId as string));
+
+    expect(attempted).toEqual(["r1", "r2", "r3"]);
+  });
 });
 
 describe("ReconnectingWebSocket v2 authentication", () => {
@@ -102,7 +120,7 @@ describe("ReconnectingWebSocket v2 authentication", () => {
   });
 
   it.each([undefined, 1])(
-    "closes auth success with protocolVersion %s and retries with v2 auth",
+    "latches auth success with protocolVersion %s without automatic retry",
     (protocolVersion) => {
       const onConnected = vi.fn();
       const onProtocolError = vi.fn();
@@ -132,20 +150,68 @@ describe("ReconnectingWebSocket v2 authentication", () => {
       expect(onProtocolError).toHaveBeenCalledOnce();
       expect(first.closes).toEqual([{ code: 4406, reason: "Protocol version mismatch" }]);
 
-      vi.advanceTimersByTime(1_000);
-      const second = FakeWebSocket.instances[1]!;
-      second.open();
-      expect(JSON.parse(second.sent[0]!)).toMatchObject({
-        type: "auth",
-        role: "extension",
-        protocolVersion: 2,
-      });
-
-      second.receive({ type: "auth", status: "ok", protocolVersion: 2 });
-      expect(client.getState()).toBe("CONNECTED");
-      expect(onConnected).toHaveBeenCalledOnce();
-
-      client.disconnect();
+      vi.advanceTimersByTime(60_000);
+      expect(FakeWebSocket.instances).toHaveLength(1);
     },
   );
+
+  it("suppresses normal reconnect with unchanged settings while latched", () => {
+    const client = new ReconnectingWebSocket();
+
+    client.connect("ws://localhost:1234", "secret", undefined, "browser-a");
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    first.receive({ type: "auth", status: "ok", protocolVersion: 1 });
+
+    client.connect("ws://localhost:1234", "secret", undefined, "browser-a");
+    vi.advanceTimersByTime(60_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("clears the latch when connection settings change", () => {
+    const onConnected = vi.fn();
+    const client = new ReconnectingWebSocket();
+
+    client.connect("ws://localhost:1234", "secret", { onConnected }, "browser-a");
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    first.receive({ type: "auth", status: "ok", protocolVersion: 1 });
+
+    client.connect("ws://localhost:1234", "new-secret", { onConnected }, "browser-a");
+    const second = FakeWebSocket.instances[1]!;
+    second.open();
+    expect(JSON.parse(second.sent[0]!)).toMatchObject({
+      type: "auth",
+      token: "new-secret",
+      role: "extension",
+      protocolVersion: 2,
+    });
+    second.receive({ type: "auth", status: "ok", protocolVersion: 2 });
+
+    expect(client.getState()).toBe("CONNECTED");
+    expect(onConnected).toHaveBeenCalledOnce();
+    client.disconnect();
+  });
+
+  it("clears the latch when an explicit reconnect is requested", () => {
+    const client = new ReconnectingWebSocket();
+
+    client.connect("ws://localhost:1234", "secret", undefined, "browser-a");
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    first.receive({ type: "auth", status: "ok", protocolVersion: 1 });
+
+    client.forceReconnect();
+    const second = FakeWebSocket.instances[1]!;
+    second.open();
+
+    expect(JSON.parse(second.sent[0]!)).toMatchObject({
+      type: "auth",
+      token: "secret",
+      role: "extension",
+      protocolVersion: 2,
+    });
+    client.disconnect();
+  });
 });
