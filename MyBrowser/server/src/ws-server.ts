@@ -6,6 +6,14 @@ import { saveNote, listNotes } from "./notes.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import { HubStateManager } from "./hub-client.js";
 import { recordIssue } from "./logger.js";
+import {
+  PROTOCOL_VERSION,
+  WS_CLOSE,
+  isAuthResultV2,
+  type AuthRequestV2,
+  type ConnectionRole,
+} from "./protocol.js";
+import { SessionConnectionRegistry } from "./session-connections.js";
 import net from "node:net";
 
 // Hard cap on incoming WS frames: notes can carry a base64 PNG, but nothing
@@ -14,7 +22,7 @@ import net from "node:net";
 const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
 
 // Runtime schema for saveNote payloads coming from the extension. We trust
-// the connection (authenticated + isExtension) but not the shape of the data.
+// the authenticated extension role, but not the shape of the data.
 const SaveNotePayloadSchema = z.object({
   url: z.string().max(2000),
   title: z.string().max(500),
@@ -50,6 +58,7 @@ export interface WsServerResult {
   close: () => void;
   stateManager: IStateManager;
   isHub: boolean;
+  boundPort: number;
   /** Register a callback to be called when a client reconnects to the hub */
   onReconnect?: (cb: () => Promise<void>) => void;
 }
@@ -72,6 +81,16 @@ function safeSend(ws: WebSocket, payload: unknown): void {
   } catch (e) {
     console.error("[MyBrowser MCP] ws.send failed:", e);
   }
+}
+
+function sendClientAuth(ws: WebSocket, token: string): void {
+  const auth: AuthRequestV2 = {
+    type: "auth",
+    token,
+    role: "client",
+    protocolVersion: PROTOCOL_VERSION,
+  };
+  ws.send(JSON.stringify(auth));
 }
 
 /**
@@ -333,7 +352,7 @@ async function dispatchHubRpc(
 // Hub mode — multi-browser support
 // =========================================================================
 
-function startServer(options: WsServerOptions): WsServerResult {
+async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
   const stateManager = new LocalStateManager();
 
@@ -369,8 +388,7 @@ function startServer(options: WsServerOptions): WsServerResult {
     }
   }
 
-  // Track sessionId per MCP client WS for cleanup
-  const connectionSessions = new Map<WebSocket, string>();
+  const connectionSessions = new SessionConnectionRegistry<WebSocket>();
   // Track browserId per extension WS for cleanup
   const connectionBrowsers = new Map<WebSocket, string>();
   const pendingSessionCleanup = new Map<string, ReturnType<typeof setTimeout>>();
@@ -383,10 +401,7 @@ function startServer(options: WsServerOptions): WsServerResult {
   }
 
   function isSessionStillConnected(sessionId: string): boolean {
-    for (const connectedSessionId of connectionSessions.values()) {
-      if (connectedSessionId === sessionId) return true;
-    }
-    return false;
+    return connectionSessions.hasLiveSession(sessionId);
   }
 
   function scheduleSessionCleanup(
@@ -432,6 +447,24 @@ function startServer(options: WsServerOptions): WsServerResult {
     perMessageDeflate: { threshold: 1024 },
     maxPayload: MAX_WS_PAYLOAD_BYTES,
   });
+  await new Promise<void>((resolve, reject) => {
+    const onListening = () => {
+      wss.off("error", onError);
+      resolve();
+    };
+    const onError = (error: Error) => {
+      wss.off("listening", onListening);
+      reject(error);
+    };
+    wss.once("listening", onListening);
+    wss.once("error", onError);
+  });
+  const address = wss.address();
+  if (!address || typeof address === "string") {
+    wss.close();
+    throw new Error("WebSocket server did not bind a TCP port");
+  }
+  const boundPort = address.port;
 
   // ----- Hub-side liveness sweep -----
   // Periodically ping all connections via WS protocol-level ping.
@@ -459,10 +492,10 @@ function startServer(options: WsServerOptions): WsServerResult {
     }
 
     // Purge stale entries from tracking maps
-    for (const [ws, sessionId] of connectionSessions) {
+    for (const ws of wss.clients) {
       if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-        connectionSessions.delete(ws);
-        scheduleSessionCleanup(sessionId);
+        const sessionId = connectionSessions.unbind(ws);
+        if (sessionId) scheduleSessionCleanup(sessionId);
       }
     }
     for (const [ws, browserId] of connectionBrowsers) {
@@ -476,8 +509,7 @@ function startServer(options: WsServerOptions): WsServerResult {
   }, LIVENESS_SWEEP_INTERVAL_MS);
 
   wss.on("connection", (ws: WebSocket) => {
-    let authenticated = false;
-    let isExtension = false;
+    let connectionRole: ConnectionRole | undefined;
     let activityTimer: ReturnType<typeof setTimeout>;
     let timeoutMs = CLIENT_TIMEOUT_MS; // Default to client timeout, updated on auth
 
@@ -508,34 +540,52 @@ function startServer(options: WsServerOptions): WsServerResult {
       }
 
       // ---- Auth ----
-      if (!authenticated) {
-        if (msg.type === "auth" && msg.token === token) {
-          authenticated = true;
+      if (!connectionRole) {
+        if (msg.type !== "auth") {
+          ws.close(WS_CLOSE.unauthorized, "Unauthorized");
+          return;
+        }
+        if (msg.protocolVersion !== PROTOCOL_VERSION) {
+          ws.close(WS_CLOSE.versionMismatch, "Protocol version mismatch");
+          return;
+        }
+        if (msg.role !== "client" && msg.role !== "extension") {
+          ws.close(WS_CLOSE.forbiddenRole, "Forbidden role");
+          return;
+        }
+        if (msg.token !== token) {
+          ws.close(WS_CLOSE.unauthorized, "Unauthorized");
+          return;
+        }
 
-          // Backward compat: treat as browser unless explicitly role: "client"
-          const isClient = msg.role === "client";
+        const authRequest = msg as AuthRequestV2;
+        connectionRole = authRequest.role;
 
-          if (!isClient) {
-            const browserId = context.addBrowser(ws, msg.browserName);
-            isExtension = true;
-            timeoutMs = BROWSER_TIMEOUT_MS; // Browsers get longer timeout
-            resetActivityTimer(); // Reset with new timeout
-            connectionBrowsers.set(ws, browserId);
-            ws.send(JSON.stringify({ type: "auth", status: "ok", browserId }));
-            recordIssue({
-              level: "info",
-              area: "extension_connect",
-              message: `Browser "${msg.browserName || browserId}" connected as ${browserId}`,
-              browserId,
-            });
-            console.error(`[MyBrowser MCP] Browser "${msg.browserName || browserId}" connected as ${browserId}`);
-          } else {
-            isExtension = false;
-            ws.send(JSON.stringify({ type: "auth", status: "ok" }));
-            console.error(`[MyBrowser MCP] MCP client connected`);
-          }
+        if (connectionRole === "extension") {
+          const browserId = context.addBrowser(ws, authRequest.browserName);
+          timeoutMs = BROWSER_TIMEOUT_MS; // Browsers get longer timeout
+          resetActivityTimer(); // Reset with new timeout
+          connectionBrowsers.set(ws, browserId);
+          ws.send(JSON.stringify({
+            type: "auth",
+            status: "ok",
+            protocolVersion: PROTOCOL_VERSION,
+            browserId,
+          }));
+          recordIssue({
+            level: "info",
+            area: "extension_connect",
+            message: `Browser "${authRequest.browserName || browserId}" connected as ${browserId}`,
+            browserId,
+          });
+          console.error(`[MyBrowser MCP] Browser "${authRequest.browserName || browserId}" connected as ${browserId}`);
         } else {
-          ws.close(4001, "Unauthorized");
+          ws.send(JSON.stringify({
+            type: "auth",
+            status: "ok",
+            protocolVersion: PROTOCOL_VERSION,
+          }));
+          console.error(`[MyBrowser MCP] MCP client connected`);
         }
         return;
       }
@@ -548,6 +598,30 @@ function startServer(options: WsServerOptions): WsServerResult {
 
       // ---- Hub RPC (from MCP client processes) ----
       if (msg.type === "hub_rpc" && msg.id && msg.method) {
+        if (connectionRole !== "client") {
+          safeSend(ws, {
+            type: "hub_rpc_result",
+            id: msg.id,
+            error: "AUTH_ROLE_VIOLATION",
+          });
+          ws.close(WS_CLOSE.forbiddenRole, "Forbidden role");
+          return;
+        }
+
+        if (msg.method === "registerSession" && typeof msg.params?.sessionId === "string") {
+          const sessionId = msg.params.sessionId;
+          const binding = connectionSessions.bind(ws, sessionId);
+          if (!binding.ok) {
+            safeSend(ws, {
+              type: "hub_rpc_result",
+              id: msg.id,
+              error: binding.code,
+            });
+            return;
+          }
+          cancelSessionCleanup(sessionId);
+        }
+
         dispatchHubRpc(stateManager, msg.method, msg.params ?? {})
           .then((result) => {
             ws.send(JSON.stringify({ type: "hub_rpc_result", id: msg.id, result }));
@@ -560,21 +634,12 @@ function startServer(options: WsServerOptions): WsServerResult {
             }));
           });
 
-        // Track session registration for cleanup
-        if (msg.method === "registerSession" && msg.params?.sessionId) {
-          const newSessionId = msg.params.sessionId as string;
-          cancelSessionCleanup(newSessionId);
-          const prev = connectionSessions.get(ws);
-          if (prev && prev !== newSessionId) {
-            scheduleSessionCleanup(prev, 0);
-          }
-          connectionSessions.set(ws, newSessionId);
-        }
         return;
       }
 
       // ---- SaveRecording from extension ----
       if (msg.type === "saveRecording" && msg.payload) {
+        if (connectionRole !== "extension") return;
         try {
           saveRecordingToFile(msg.payload as { name: string; [key: string]: unknown });
         } catch (e) {
@@ -594,7 +659,7 @@ function startServer(options: WsServerOptions): WsServerResult {
       //      check, any browser could inject events into any
       //      session's waiter queue.
       if (msg.type === "eventEmitted" && msg.payload) {
-        if (!isExtension) return;
+        if (connectionRole !== "extension") return;
         const p = msg.payload as {
           sessionId?: string;
           event?: "dialog" | "beforeunload" | "new_tab" | "network_timeout";
@@ -657,7 +722,7 @@ function startServer(options: WsServerOptions): WsServerResult {
       // Only browser-extension connections may query note counts. Rejects
       // quietly for MCP clients so a misbehaving tool can't probe state.
       if (msg.type === "queryNotesCount" && msg.id) {
-        if (!isExtension) return;
+        if (connectionRole !== "extension") return;
         try {
           const pending = listNotes("pending").length;
           const archived = listNotes("archived").length;
@@ -689,7 +754,7 @@ function startServer(options: WsServerOptions): WsServerResult {
       // ---- SaveNote from extension (draw-and-share annotation) ----
       // Extension-only: any authenticated MCP client is rejected.
       if (msg.type === "saveNote" && msg.payload) {
-        if (!isExtension) return;
+        if (connectionRole !== "extension") return;
         try {
           const parsed = SaveNotePayloadSchema.parse(msg.payload);
           const metadata = saveNote(parsed);
@@ -730,13 +795,13 @@ function startServer(options: WsServerOptions): WsServerResult {
       }
 
       // ---- Tool request proxy (MCP client → browser) ----
-      if (!isExtension && msg.id && msg.type) {
+      if (connectionRole === "client" && msg.id && msg.type) {
         // If the client specified an explicit target via
         // `targetBrowserId` (used by F1 handler push to the correct
         // browser), honor it; otherwise resolve using the same priority
         // as direct hub-mode tools: session selection → persisted
         // default browser name → exactly-one-browser auto target.
-        const clientSessionId = connectionSessions.get(ws);
+        const clientSessionId = connectionSessions.getSession(ws);
         const explicitTarget =
           typeof msg.targetBrowserId === "string"
             ? msg.targetBrowserId
@@ -874,9 +939,8 @@ function startServer(options: WsServerOptions): WsServerResult {
       clearTimeout(activityTimer);
 
       // Clean up MCP client session
-      const closedSessionId = connectionSessions.get(ws);
+      const closedSessionId = connectionSessions.unbind(ws);
       if (closedSessionId) {
-        connectionSessions.delete(ws);
         scheduleSessionCleanup(closedSessionId);
         console.error(
           `[MyBrowser MCP] Client session "${closedSessionId}" disconnected — waiting ${SESSION_RECONNECT_GRACE_MS / 1000}s for reconnect before cleanup`,
@@ -926,6 +990,7 @@ function startServer(options: WsServerOptions): WsServerResult {
     },
     stateManager,
     isHub: true,
+    boundPort,
   };
 }
 
@@ -1012,7 +1077,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     ws = new WebSocket(url);
 
     ws.on("open", () => {
-      ws!.send(JSON.stringify({ type: "auth", token, role: "client" }));
+      sendClientAuth(ws as WebSocket, token);
     });
 
     ws.on("message", (data: Buffer | string) => {
@@ -1021,7 +1086,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
         msg = JSON.parse(data.toString());
       } catch { return; }
 
-      if (msg.type === "auth" && msg.status === "ok") {
+      if (isAuthResultV2(msg)) {
         console.error(`[MyBrowser MCP] Connected to hub as client`);
         context.setClientMode(ws as any);
         startHeartbeat(ws as WebSocket);
@@ -1036,6 +1101,9 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
       }
 
       if (msg.type === "auth") {
+        if (msg.status === "ok") {
+          (ws as WebSocket).close(WS_CLOSE.versionMismatch, "Protocol version mismatch");
+        }
         clearTimeout(timeout);
         reject(new Error("Hub auth failed"));
         return;
@@ -1070,7 +1138,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     ws = new WebSocket(url);
 
     ws.on("open", () => {
-      ws!.send(JSON.stringify({ type: "auth", token, role: "client" }));
+      sendClientAuth(ws as WebSocket, token);
     });
 
     ws.on("message", (data: Buffer | string) => {
@@ -1079,12 +1147,17 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
         msg = JSON.parse(data.toString());
       } catch { return; }
 
-      if (msg.type === "auth" && msg.status === "ok") {
+      if (isAuthResultV2(msg)) {
         console.error(`[MyBrowser MCP] Reconnected to hub as client`);
         context.setClientMode(ws as any);
         startHeartbeat(ws as WebSocket);
         // Re-register session after reconnect
         if (reconnectCb) reconnectCb().catch((e) => console.error("Reconnect callback failed:", e));
+        return;
+      }
+
+      if (msg.type === "auth" && msg.status === "ok") {
+        (ws as WebSocket).close(WS_CLOSE.versionMismatch, "Protocol version mismatch");
         return;
       }
 
@@ -1118,6 +1191,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     },
     stateManager,
     isHub: false,
+    boundPort: port,
     onReconnect: (cb: () => Promise<void>) => { reconnectCb = cb; },
   };
 }
