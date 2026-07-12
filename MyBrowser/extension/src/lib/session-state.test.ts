@@ -49,6 +49,16 @@ describe("SessionStateStore", () => {
     await expect(state.getLastTab("session-a")).resolves.toBe(17);
   });
 
+  it("backfills the persisted index when hydrating legacy session state", async () => {
+    const storage = new MemoryStorage();
+    storage.values.set("session-tab:session-a", 17);
+
+    const state = new SessionStateStore(storage);
+    await state.getLastTab("session-a");
+
+    expect(storage.values.get("session-tab-index")).toEqual(["session-a"]);
+  });
+
   it("awaits tab persistence before setLastTab resolves", async () => {
     const write = deferred();
     const storage = new MemoryStorage();
@@ -71,7 +81,12 @@ describe("SessionStateStore", () => {
   it("does not let delayed hydration overwrite newer request state", async () => {
     const read = deferredValue<number | undefined>();
     const storage = new MemoryStorage();
-    storage.get = vi.fn(() => read.promise) as unknown as SessionStorageAdapter['get'];
+    const get = storage.get.bind(storage);
+    storage.get = vi.fn((key: string) => (
+      key === "session-tab:session-a"
+        ? read.promise
+        : get(key)
+    )) as unknown as SessionStorageAdapter['get'];
     const state = new SessionStateStore(storage);
 
     const hydration = state.getLastTab("session-a");
@@ -118,6 +133,42 @@ describe("SessionStateStore", () => {
     await expect(state.getLastTab("session-c")).resolves.toBe(10);
     expect(storage.values.has("session-tab:session-a")).toBe(false);
     expect(storage.values.has("session-tab:session-b")).toBe(false);
+  });
+
+  it("clears an unhydrated persisted reference after worker restart", async () => {
+    const storage = new MemoryStorage();
+    storage.values.set("session-tab-index", ["session-a", "session-b"]);
+    storage.values.set("session-tab:session-a", 9);
+    storage.values.set("session-tab:session-b", 10);
+
+    const state = new SessionStateStore(storage);
+    await state.clearTab(9);
+
+    expect(storage.values.has("session-tab:session-a")).toBe(false);
+    expect(storage.values.get("session-tab:session-b")).toBe(10);
+    expect(storage.values.get("session-tab-index")).toEqual(["session-b"]);
+    await expect(state.getLastTab("session-a")).resolves.toBeUndefined();
+  });
+
+  it("serializes concurrent index additions and removals", async () => {
+    const storage = new MemoryStorage();
+    const state = new SessionStateStore(storage);
+
+    await Promise.all([
+      state.setLastTab("session-a", 1),
+      state.setLastTab("session-b", 2),
+    ]);
+    expect(new Set(storage.values.get("session-tab-index") as string[])).toEqual(
+      new Set(["session-a", "session-b"]),
+    );
+
+    await Promise.all([
+      state.clearSession("session-a"),
+      state.setLastTab("session-c", 3),
+    ]);
+    expect(new Set(storage.values.get("session-tab-index") as string[])).toEqual(
+      new Set(["session-b", "session-c"]),
+    );
   });
 
   it("awaits an in-flight tab cleanup when clearTab is repeated", async () => {

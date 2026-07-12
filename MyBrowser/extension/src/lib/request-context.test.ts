@@ -131,13 +131,15 @@ describe("RequestToolContext", () => {
   it("awaits state cleanup when its tab closes", async () => {
     const removal = deferred();
     const clearTab = vi.fn(async () => removal.promise);
+    const networkCapture = new NetworkCaptureController();
+    networkCapture.start(12);
     const context = new RequestToolContext({
       sessionId: "session-a",
       requestId: "request-a",
       expiresAt: 100,
       tabId: 12,
       sessionState: { setLastTab: vi.fn(async () => undefined), clearTab },
-      services: createServices(),
+      services: { networkCapture },
     });
     let finished = false;
 
@@ -148,6 +150,7 @@ describe("RequestToolContext", () => {
 
     expect(context.getTabId()).toBe(-1);
     expect(context.input.tabId).toBe(-1);
+    expect(networkCapture.active).toBe(false);
     expect(finished).toBe(false);
     removal.resolve();
     await pending;
@@ -156,6 +159,22 @@ describe("RequestToolContext", () => {
 });
 
 describe("resolveInitialTab", () => {
+  it("performs no tab lookup for tab:none even with an irrelevant tabId", async () => {
+    const resolveTabId = vi.fn(async () => 7);
+    const clearFallback = vi.fn(async () => undefined);
+
+    await expect(resolveInitialTab({
+      requirement: "none",
+      requestedTabId: 99,
+      sessionFallback: 8,
+      resolveTabId,
+      clearFallback,
+    })).resolves.toBe(-1);
+
+    expect(resolveTabId).not.toHaveBeenCalled();
+    expect(clearFallback).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["required", "TAB_CLOSED"],
     ["required", "TAB_NOT_FOUND"],

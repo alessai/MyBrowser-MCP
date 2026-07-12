@@ -27,4 +27,10 @@ export class NetworkCaptureController {
     this.assertCanStop(tabId);
     this.captureTargetTabId = null;
   }
+
+  clearTab(tabId: number): void {
+    if (this.captureTargetTabId === tabId) {
+      this.captureTargetTabId = null;
+    }
+  }
 }

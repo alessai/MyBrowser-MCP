@@ -460,6 +460,7 @@ export default defineBackground(() => {
   initDebuggerCleanup();
   chrome.tabs.onRemoved.addListener((tabId) => {
     scheduler.cancelTab(tabId, 'TAB_CLOSED');
+    networkCapture.clearTab(tabId);
     sessionState.clearTab(tabId).catch((error) => {
       recordExtensionIssue('tab_cleanup', 'Failed to clear closed tab state', { tabId, error });
     });

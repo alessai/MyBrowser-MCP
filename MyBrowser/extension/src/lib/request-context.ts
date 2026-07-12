@@ -18,6 +18,7 @@ export async function resolveInitialTab(options: InitialTabResolutionOptions): P
     clearFallback,
   } = options;
 
+  // Tab-free cleanup/recovery tools must ignore irrelevant stale tab IDs.
   if (requirement === 'none') return -1;
   if (requestedTabId !== undefined) {
     if (
@@ -93,6 +94,7 @@ export class RequestToolContext {
       this.tabId = -1;
       this.input.updateTabId(-1);
     }
+    this.services.networkCapture.clearTab(tabId);
     await this.options.sessionState.clearTab(tabId);
   }
 }
