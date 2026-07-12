@@ -16,6 +16,14 @@ function requireString(params: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function requireNumber(params: Record<string, unknown>, key: string): number {
+  const value = params[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${key} must be a finite number`);
+  }
+  return value;
+}
+
 function deny(): never {
   throw new Error("AUTH_ROLE_VIOLATION");
 }
@@ -59,6 +67,29 @@ export async function dispatchHubRpc(
       return await stateManager.shouldEnforceOwnership();
     case "getSessionName":
       return await stateManager.getSessionName(requireString(params, "sessionId"));
+
+    case "reserveRecording":
+      return await stateManager.reserveRecording(
+        auth.sessionId,
+        requireString(params, "name"),
+        requireNumber(params, "leaseMs"),
+      );
+    case "renewRecordingReservation":
+      return await stateManager.renewRecordingReservation(
+        auth.sessionId,
+        requireString(params, "name"),
+        requireNumber(params, "leaseMs"),
+      );
+    case "releaseRecordingReservation":
+      return await stateManager.releaseRecordingReservation(
+        auth.sessionId,
+        requireString(params, "name"),
+      );
+    case "hasRecordingReservation":
+      return await stateManager.hasRecordingReservation(
+        auth.sessionId,
+        requireString(params, "name"),
+      );
 
     case "selectBrowser":
       await stateManager.selectBrowser(auth.sessionId, requireString(params, "browserId"));

@@ -25,6 +25,7 @@ import type {
   ReleaseLockResult,
   DefaultBrowserInfo,
   BrowserTargetResolution,
+  RecordingReservation,
 } from "./state-manager.js";
 
 const RPC_TIMEOUT_MS = 10_000;
@@ -179,6 +180,35 @@ export class HubStateManager implements IStateManager {
 
   async getSessionName(sessionId: string): Promise<string | undefined> {
     return (await this.sendRpc("getSessionName", { sessionId })) as string | undefined;
+  }
+
+  async reserveRecording(
+    _sessionId: string,
+    name: string,
+    leaseMs: number,
+  ): Promise<
+    | { ok: true; reservation: RecordingReservation }
+    | { ok: false; owner: string }
+  > {
+    return (await this.sendRpc("reserveRecording", { name, leaseMs })) as
+      | { ok: true; reservation: RecordingReservation }
+      | { ok: false; owner: string };
+  }
+
+  async renewRecordingReservation(
+    _sessionId: string,
+    name: string,
+    leaseMs: number,
+  ): Promise<boolean> {
+    return (await this.sendRpc("renewRecordingReservation", { name, leaseMs })) as boolean;
+  }
+
+  async releaseRecordingReservation(_sessionId: string, name: string): Promise<boolean> {
+    return (await this.sendRpc("releaseRecordingReservation", { name })) as boolean;
+  }
+
+  async hasRecordingReservation(_sessionId: string, name: string): Promise<boolean> {
+    return (await this.sendRpc("hasRecordingReservation", { name })) as boolean;
   }
 
   // -- Per-session browser targeting --

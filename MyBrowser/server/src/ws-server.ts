@@ -1,7 +1,11 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import type { Context } from "./context.js";
-import { saveRecordingToFile } from "./tools/record.js";
+import {
+  RECORDING_RESERVATION_LEASE_MS,
+  sanitizeRecording,
+  saveRecordingToFile,
+} from "./tools/record.js";
 import { saveNote, listNotes } from "./notes.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import { HubStateManager } from "./hub-client.js";
@@ -54,6 +58,7 @@ export interface WsServerOptions {
   port: number;
   token: string;
   context: Context;
+  recordingsDir?: string;
 }
 
 export interface WsServerResult {
@@ -78,6 +83,10 @@ const EXPLICIT_BROWSER_ROUTING_TYPES = new Set([
   "browser_register_handler",
   "browser_unregister_handler",
   "browser_list_handlers",
+]);
+const RECORDING_CONTROL_TYPES = new Set([
+  "renewRecordingReservation",
+  "persistRecording",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -394,6 +403,18 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         return;
       }
 
+      if (RECORDING_CONTROL_TYPES.has(msg.type) && connectionRole !== "extension") {
+        if (typeof msg.id === "string" && msg.id.trim().length > 0) {
+          safeSend(ws, {
+            type: `${msg.type}Result`,
+            id: msg.id,
+            ok: false,
+            error: "not authorized",
+          });
+        }
+        return;
+      }
+
       // ---- Ping ----
       if (msg.type === "ping") {
         ws.send(JSON.stringify({ type: "pong" }));
@@ -473,10 +494,10 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           msg.method,
           isRecord(msg.params) ? msg.params : {},
         )
-          .then((result) => {
+          .then((result: unknown) => {
             ws.send(JSON.stringify({ type: "hub_rpc_result", id: msg.id, result }));
           })
-          .catch((err) => {
+          .catch((err: unknown) => {
             ws.send(JSON.stringify({
               type: "hub_rpc_result",
               id: msg.id,
@@ -487,14 +508,123 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         return;
       }
 
-      // ---- SaveRecording from extension ----
-      if (msg.type === "saveRecording" && msg.payload) {
-        if (connectionRole !== "extension") return;
-        try {
-          saveRecordingToFile(msg.payload as { name: string; [key: string]: unknown });
-        } catch (e) {
-          console.error("Failed to save recording:", e);
+      // ---- Recording reservation control from extension ----
+      if (msg.type === "renewRecordingReservation") {
+        const hasUsableId = typeof msg.id === "string" && msg.id.trim().length > 0;
+        if (!hasUsableId) return;
+        const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+        const name = typeof msg.name === "string" ? msg.name : "";
+        if (sessionId.trim().length === 0 || name.trim().length === 0) {
+          safeSend(ws, {
+            type: "renewRecordingReservationResult",
+            id: msg.id,
+            ok: false,
+            error: "invalid request",
+          });
+          return;
         }
+
+        if (!connectionSessions.hasLiveSession(sessionId)) {
+          safeSend(ws, {
+            type: "renewRecordingReservationResult",
+            id: msg.id,
+            ok: false,
+            error: "reservation unavailable",
+          });
+          return;
+        }
+
+        stateManager
+          .renewRecordingReservation(
+            sessionId,
+            name,
+            RECORDING_RESERVATION_LEASE_MS,
+          )
+          .then((ok) => {
+            safeSend(ws, {
+              type: "renewRecordingReservationResult",
+              id: msg.id,
+              ok,
+              ...(ok ? {} : { error: "reservation unavailable" }),
+            });
+          })
+          .catch(() => {
+            safeSend(ws, {
+              type: "renewRecordingReservationResult",
+              id: msg.id,
+              ok: false,
+              error: "invalid request",
+            });
+          });
+        return;
+      }
+
+      if (msg.type === "persistRecording") {
+        const hasUsableId = typeof msg.id === "string" && msg.id.trim().length > 0;
+        if (!hasUsableId) return;
+        const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+        if (sessionId.trim().length === 0 || !isRecord(msg.payload)) {
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: false,
+            error: "invalid request",
+          });
+          return;
+        }
+
+        let recording;
+        try {
+          recording = sanitizeRecording(msg.payload);
+        } catch {
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: false,
+            error: "invalid request",
+          });
+          return;
+        }
+
+        if (!connectionSessions.hasLiveSession(sessionId)) {
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: false,
+            error: "reservation unavailable",
+          });
+          return;
+        }
+
+        stateManager
+          .hasRecordingReservation(sessionId, recording.name)
+          .then(async (hasReservation) => {
+            if (!hasReservation) {
+              safeSend(ws, {
+                type: "persistRecordingResult",
+                id: msg.id,
+                ok: false,
+                error: "reservation unavailable",
+              });
+              return;
+            }
+
+            saveRecordingToFile(recording, options.recordingsDir);
+            await stateManager.releaseRecordingReservation(sessionId, recording.name);
+            safeSend(ws, {
+              type: "persistRecordingResult",
+              id: msg.id,
+              ok: true,
+            });
+          })
+          .catch(() => {
+            safeSend(ws, {
+              type: "persistRecordingResult",
+              id: msg.id,
+              ok: false,
+              error: "persistence failed",
+            });
+          });
         return;
       }
 

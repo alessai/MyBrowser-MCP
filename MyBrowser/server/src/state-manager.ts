@@ -99,6 +99,22 @@ export interface BrowserInfo {
   connectedAt: number;
 }
 
+export interface RecordingReservation {
+  name: string;
+  sessionId: string;
+  expiresAt: number;
+}
+
+export const RECORDING_RESERVATION_LEASE_MS = 1_800_000;
+
+export function normalizeRecordingName(name: string): string {
+  const normalized = name.trim().replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!normalized || normalized === "." || normalized === "..") {
+    throw new Error("Invalid recording name");
+  }
+  return normalized;
+}
+
 export interface DefaultBrowserInfo {
   defaultBrowserName?: string;
   status: "unset" | "connected" | "not_connected" | "duplicate";
@@ -161,6 +177,19 @@ export interface IStateManager {
   getTabOwner(tabKey: string): Promise<string | undefined>;
   shouldEnforceOwnership(): Promise<boolean>;
   getSessionName(sessionId: string): Promise<string | undefined>;
+
+  // Recording name reservations
+  reserveRecording(
+    sessionId: string,
+    name: string,
+    leaseMs: number,
+  ): Promise<
+    | { ok: true; reservation: RecordingReservation }
+    | { ok: false; owner: string }
+  >;
+  renewRecordingReservation(sessionId: string, name: string, leaseMs: number): Promise<boolean>;
+  releaseRecordingReservation(sessionId: string, name: string): Promise<boolean>;
+  hasRecordingReservation(sessionId: string, name: string): Promise<boolean>;
 
   // Per-session browser targeting
   selectBrowser(sessionId: string, browserId: string): Promise<void>;
@@ -286,6 +315,9 @@ export class LocalStateManager implements IStateManager {
   >();
   private lockTtlTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  private recordingReservations = new Map<string, RecordingReservation>();
+  private recordingReservationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   // Browser listing is delegated to the context — set by ws-server
   private _listBrowsersFn: () => BrowserInfo[] = () => [];
 
@@ -322,6 +354,11 @@ export class LocalStateManager implements IStateManager {
   }
 
   async removeSession(sessionId: string): Promise<void> {
+    for (const reservation of this.recordingReservations.values()) {
+      if (reservation.sessionId === sessionId) {
+        this.clearRecordingReservation(reservation.name);
+      }
+    }
     this.sessions.delete(sessionId);
   }
 
@@ -404,6 +441,95 @@ export class LocalStateManager implements IStateManager {
 
   async getSessionName(sessionId: string): Promise<string | undefined> {
     return this.sessions.get(sessionId)?.name;
+  }
+
+  // -- Recording reservations --
+
+  private scheduleRecordingExpiry(reservation: RecordingReservation): void {
+    const timer = setTimeout(() => {
+      const current = this.recordingReservations.get(reservation.name);
+      if (current !== reservation || current.expiresAt !== reservation.expiresAt) return;
+
+      this.recordingReservations.delete(reservation.name);
+      this.recordingReservationTimers.delete(reservation.name);
+      this._broadcastToBrowsersFn("recording_reservation_expired", {
+        sessionId: reservation.sessionId,
+        name: reservation.name,
+      });
+    }, Math.max(0, reservation.expiresAt - Date.now()));
+    this.recordingReservationTimers.set(reservation.name, timer);
+  }
+
+  private clearRecordingReservation(normalizedName: string): void {
+    const timer = this.recordingReservationTimers.get(normalizedName);
+    if (timer) clearTimeout(timer);
+    this.recordingReservationTimers.delete(normalizedName);
+    this.recordingReservations.delete(normalizedName);
+  }
+
+  async reserveRecording(
+    sessionId: string,
+    name: string,
+    leaseMs: number,
+  ): Promise<
+    | { ok: true; reservation: RecordingReservation }
+    | { ok: false; owner: string }
+  > {
+    if (leaseMs !== RECORDING_RESERVATION_LEASE_MS) {
+      throw new Error("Invalid recording reservation lease");
+    }
+    const normalizedName = normalizeRecordingName(name);
+    const existing = this.recordingReservations.get(normalizedName);
+    if (existing) return { ok: false, owner: existing.sessionId };
+
+    const reservation = {
+      name: normalizedName,
+      sessionId,
+      expiresAt: Date.now() + leaseMs,
+    };
+    this.recordingReservations.set(normalizedName, reservation);
+    this.scheduleRecordingExpiry(reservation);
+    return { ok: true, reservation };
+  }
+
+  async renewRecordingReservation(
+    sessionId: string,
+    name: string,
+    leaseMs: number,
+  ): Promise<boolean> {
+    if (leaseMs !== RECORDING_RESERVATION_LEASE_MS) {
+      throw new Error("Invalid recording reservation lease");
+    }
+    const normalizedName = normalizeRecordingName(name);
+    const existing = this.recordingReservations.get(normalizedName);
+    if (!existing || existing.sessionId !== sessionId) return false;
+
+    const oldTimer = this.recordingReservationTimers.get(normalizedName);
+    if (oldTimer) clearTimeout(oldTimer);
+    this.recordingReservationTimers.delete(normalizedName);
+
+    const reservation = {
+      name: normalizedName,
+      sessionId,
+      expiresAt: Date.now() + leaseMs,
+    };
+    this.recordingReservations.set(normalizedName, reservation);
+    this.scheduleRecordingExpiry(reservation);
+    return true;
+  }
+
+  async releaseRecordingReservation(sessionId: string, name: string): Promise<boolean> {
+    const normalizedName = normalizeRecordingName(name);
+    const existing = this.recordingReservations.get(normalizedName);
+    if (!existing || existing.sessionId !== sessionId) return false;
+
+    this.clearRecordingReservation(normalizedName);
+    return true;
+  }
+
+  async hasRecordingReservation(sessionId: string, name: string): Promise<boolean> {
+    const reservation = this.recordingReservations.get(normalizeRecordingName(name));
+    return reservation?.sessionId === sessionId;
   }
 
   // -- Per-session browser targeting --

@@ -39,7 +39,7 @@ import { learn, siteInfo } from "./tools/learn.js";
 import { ensureDirectories } from "./site-knowledge.js";
 
 // ULTRA Phase 3: Recording tools
-import { recordStart, recordStop, recordList } from "./tools/record.js";
+import { createRecordingTools } from "./tools/record.js";
 
 // ULTRA Phase 3: Replay tools
 import { replay } from "./tools/replay.js";
@@ -98,7 +98,7 @@ const MUTATING_TOOLS = new Set([
   "browser_drag", "browser_select_option",
   "select_tab", "close_tab",
   "browser_fill_form", "browser_action",
-  "browser_record_start", "browser_record_stop", "browser_replay",
+  "browser_record_start", "browser_replay",
   "browser_eval", "browser_storage", "browser_upload", "browser_clipboard",
   "browser_set_viewport", "browser_reset_viewport",
 ]);
@@ -160,6 +160,10 @@ export async function createServerWithTools(options: ServerOptions) {
   const { notesList, notesGet, notesArchive, notesUnarchive, notesDelete } = createNotesTools(stateManager);
   const { browserOn, browserOff, browserEventsList, browserWaitForEvent } = createEventsTools(stateManager, () => sessionId, getActiveBrowser);
   const { browserLock, browserUnlock, browserLocksList } = createLockTools(stateManager, () => sessionId);
+  const { recordStart, recordStop, recordList } = createRecordingTools(
+    stateManager,
+    () => sessionId,
+  );
   const { browserDiagnostics, browserSupportBundle } = createDiagnosticsTools({
     stateManager,
     context,

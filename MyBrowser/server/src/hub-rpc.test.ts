@@ -103,6 +103,13 @@ function createState() {
     claimTab: vi.fn().mockResolvedValue({ ok: true }),
     transferTab: vi.fn().mockResolvedValue(true),
     removeSession: vi.fn().mockResolvedValue(undefined),
+    reserveRecording: vi.fn().mockResolvedValue({
+      ok: true,
+      reservation: { name: "demo", sessionId: "actual", expiresAt: 123 },
+    }),
+    renewRecordingReservation: vi.fn().mockResolvedValue(true),
+    releaseRecordingReservation: vi.fn().mockResolvedValue(true),
+    hasRecordingReservation: vi.fn().mockResolvedValue(true),
     clearEventHandlersForBrowser: vi.fn().mockResolvedValue(undefined),
     pushEvent: vi.fn().mockResolvedValue(undefined),
     releaseLocksForSession: vi.fn().mockResolvedValue(undefined),
@@ -184,6 +191,22 @@ describe("dispatchHubRpc", () => {
     expect(state.releaseLocksForSession).toHaveBeenCalledWith("actual");
   });
 
+  it.each([
+    ["reserveRecording", "reserveRecording", { name: "demo", leaseMs: 1_800_000 }],
+    ["renewRecordingReservation", "renewRecordingReservation", { name: "demo", leaseMs: 1_800_000 }],
+    ["releaseRecordingReservation", "releaseRecordingReservation", { name: "demo" }],
+    ["hasRecordingReservation", "hasRecordingReservation", { name: "demo" }],
+  ] as const)("derives %s identity from the authenticated session", async (method, stateMethod, params) => {
+    const state = createState();
+
+    await dispatchHubRpc(state, AUTH, method, { ...params, sessionId: "spoofed" });
+
+    const expectedArgs = "leaseMs" in params
+      ? ["actual", params.name, params.leaseMs]
+      : ["actual", params.name];
+    expect(state[stateMethod]).toHaveBeenCalledWith(...expectedArgs);
+  });
+
   it.each(["clearEventHandlersForBrowser", "pushEvent"])(
     "rejects internal-only client RPC %s without mutating state",
     async (method) => {
@@ -236,6 +259,26 @@ describe("HubStateManager subject identity", () => {
     ],
     ["getSessionBrowser", (state: HubStateManager) => state.getSessionBrowser("local"), {}],
     ["resolveBrowserTarget", (state: HubStateManager) => state.resolveBrowserTarget("local"), {}],
+    [
+      "reserveRecording",
+      (state: HubStateManager) => state.reserveRecording("local", "demo", 1_800_000),
+      { name: "demo", leaseMs: 1_800_000 },
+    ],
+    [
+      "renewRecordingReservation",
+      (state: HubStateManager) => state.renewRecordingReservation("local", "demo", 1_800_000),
+      { name: "demo", leaseMs: 1_800_000 },
+    ],
+    [
+      "releaseRecordingReservation",
+      (state: HubStateManager) => state.releaseRecordingReservation("local", "demo"),
+      { name: "demo" },
+    ],
+    [
+      "hasRecordingReservation",
+      (state: HubStateManager) => state.hasRecordingReservation("local", "demo"),
+      { name: "demo" },
+    ],
     [
       "registerEventHandler",
       (state: HubStateManager) =>
