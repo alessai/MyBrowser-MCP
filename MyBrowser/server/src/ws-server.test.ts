@@ -1,11 +1,19 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { Context } from "./context.js";
 import { PROTOCOL_VERSION, WS_CLOSE } from "./protocol.js";
-import type { IStateManager } from "./state-manager.js";
+import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import * as recordingTools from "./tools/record.js";
 import type { Tool } from "./tools/types.js";
 import { createWebSocketServer, type WsServerResult } from "./ws-server.js";
@@ -44,7 +52,15 @@ function getRecordingApi() {
       stateManager: IStateManager,
       getSessionId: () => string,
     ) => { recordStart: Tool; recordStop: Tool; recordList: Tool };
-    saveRecordingToFile: (recording: unknown, recordingsDir?: string) => void;
+    saveRecordingToFile: (
+      recording: unknown,
+      recordingsDir?: string,
+      directoryOps?: {
+        mkdirSync: typeof mkdirSync;
+        chmodSync: typeof chmodSync;
+        statSync: typeof statSync;
+      },
+    ) => void;
   };
 }
 
@@ -285,6 +301,109 @@ describe("recording tools and persistence", () => {
     expect(state.releaseRecordingReservation).toHaveBeenCalledWith("session-a", "Checkout_Flow");
   });
 
+  it("retains a live reservation after release rejection and retries with the original stop payload", async () => {
+    const localState = new LocalStateManager();
+    const releaseRecordingReservation = vi.fn()
+      .mockRejectedValueOnce(new Error("release RPC failed"))
+      .mockImplementationOnce((sessionId: string, name: string) =>
+        localState.releaseRecordingReservation(sessionId, name));
+    const state = {
+      reserveRecording: localState.reserveRecording.bind(localState),
+      hasRecordingReservation: localState.hasRecordingReservation.bind(localState),
+      releaseRecordingReservation,
+    } as unknown as IStateManager;
+    const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+    await recordStart.handle(
+      { sendSocketMessage: vi.fn().mockResolvedValue({ status: "recording" }) } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    const stopContext = {
+      sendSocketMessage: vi.fn()
+        .mockResolvedValueOnce({
+          name: validRecording.name,
+          steps: validRecording.steps.length,
+          durationMs: 100,
+          recording: { ...validRecording, ignored: "drop-me" },
+        })
+        .mockRejectedValueOnce(new Error("No recording in progress")),
+    } as unknown as Context;
+
+    await expect(recordStop.handle(stopContext, {})).rejects.toThrow("release RPC failed");
+    await expect(localState.hasRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(true);
+
+    const retried = await recordStop.handle(stopContext, {});
+
+    expect(releaseRecordingReservation).toHaveBeenCalledTimes(2);
+    await expect(localState.hasRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(false);
+    const [summary, payload] = retried.content;
+    expect(summary?.type === "text" ? summary.text : "").toContain("partial");
+    expect(payload?.type === "text" ? JSON.parse(payload.text) : null).toEqual({
+      ...validRecording,
+      name: "Checkout_Flow",
+    });
+  });
+
+  it("retains the reservation when release returns false while it is still live", async () => {
+    const state = createRecordingState();
+    state.releaseRecordingReservation
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    state.hasRecordingReservation.mockResolvedValue(true);
+    const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+    await recordStart.handle(
+      { sendSocketMessage: vi.fn().mockResolvedValue({ status: "recording" }) } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    const stopContext = {
+      sendSocketMessage: vi.fn()
+        .mockResolvedValueOnce({ recording: validRecording })
+        .mockRejectedValueOnce(new Error("No recording in progress")),
+    } as unknown as Context;
+
+    await expect(recordStop.handle(stopContext, {})).rejects.toThrow("release failed");
+    const retried = await recordStop.handle(stopContext, {});
+    const summary = retried.content[0];
+    expect(summary?.type === "text" ? summary.text : "").toContain("partial");
+    expect(state.releaseRecordingReservation).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["successful", true, [true]],
+    ["already expired", false, [true, false]],
+  ] as const)("clears retry state exactly once after a %s release", async (_label, released, liveResults) => {
+    const state = createRecordingState();
+    state.releaseRecordingReservation.mockResolvedValue(released);
+    state.hasRecordingReservation.mockReset();
+    for (const live of liveResults) state.hasRecordingReservation.mockResolvedValueOnce(live);
+    const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+    await recordStart.handle(
+      { sendSocketMessage: vi.fn().mockResolvedValue({ status: "recording" }) } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    const stopContext = {
+      sendSocketMessage: vi.fn()
+        .mockResolvedValueOnce({ recording: validRecording })
+        .mockRejectedValueOnce(new Error("No recording in progress")),
+    } as unknown as Context;
+
+    const stopped = await recordStop.handle(stopContext, {});
+    const summary = stopped.content[0];
+    expect(summary?.type === "text" ? summary.text : "").toContain("partial");
+    await expect(recordStop.handle(stopContext, {})).rejects.toThrow("No recording in progress");
+    expect(state.releaseRecordingReservation).toHaveBeenCalledTimes(1);
+  });
+
   it("releases the active reservation when the stop payload is malformed", async () => {
     const state = createRecordingState();
     const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
@@ -361,6 +480,42 @@ describe("recording tools and persistence", () => {
       recordingsDir,
     )).toThrow(/EEXIST/);
     expect(readFileSync(filePath, "utf8")).toBe(original);
+  });
+
+  it("corrects an existing permissive recordings directory to 0700", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-permissions-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    chmodSync(base, 0o777);
+    mkdirSync(recordingsDir, { mode: 0o777 });
+    chmodSync(recordingsDir, 0o777);
+
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+
+    expect(statSync(base).mode & 0o777).toBe(0o700);
+    expect(statSync(recordingsDir).mode & 0o777).toBe(0o700);
+  });
+
+  it("fails closed before file creation when directory chmod fails", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-chmod-failure-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    let chmodCalls = 0;
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      {
+        mkdirSync,
+        chmodSync(path, mode) {
+          chmodCalls += 1;
+          if (chmodCalls === 2) throw new Error("injected chmod failure");
+          chmodSync(path, mode);
+        },
+        statSync,
+      },
+    )).toThrow("injected chmod failure");
+    expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
   });
 });
 

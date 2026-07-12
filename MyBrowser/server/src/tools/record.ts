@@ -9,6 +9,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,18 +24,39 @@ import type { Tool } from "./types.js";
 const RECORDINGS_DIR = join(homedir(), ".mybrowser", "recordings");
 export { RECORDING_RESERVATION_LEASE_MS } from "../state-manager.js";
 
-function ensureRecordingsDir(recordingsDir = RECORDINGS_DIR): void {
-  mkdirSync(recordingsDir, { recursive: true, mode: 0o700 });
-  safeChmod(dirname(recordingsDir), 0o700);
-  safeChmod(recordingsDir, 0o700);
+interface PrivateDirectoryOps {
+  mkdirSync: typeof mkdirSync;
+  chmodSync: typeof chmodSync;
+  statSync: typeof statSync;
 }
 
-function safeChmod(path: string, mode: number): void {
-  try {
-    chmodSync(path, mode);
-  } catch {
-    // Best-effort hardening only.
+const PRIVATE_DIRECTORY_OPS: PrivateDirectoryOps = {
+  mkdirSync,
+  chmodSync,
+  statSync,
+};
+
+function ensurePrivateDirectory(
+  path: string,
+  ops: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
+): void {
+  ops.mkdirSync(path, { recursive: true, mode: 0o700 });
+  ops.chmodSync(path, 0o700);
+  const stats = ops.statSync(path);
+  if (!stats.isDirectory()) {
+    throw new Error(`Private recording path is not a directory: ${path}`);
   }
+  if ((stats.mode & 0o077) !== 0) {
+    throw new Error(`Private recording directory has group/other permissions: ${path}`);
+  }
+}
+
+function ensureRecordingsDir(
+  recordingsDir = RECORDINGS_DIR,
+  ops: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
+): void {
+  ensurePrivateDirectory(dirname(recordingsDir), ops);
+  ensurePrivateDirectory(recordingsDir, ops);
 }
 
 // --- MCP Tools ---
@@ -85,13 +107,47 @@ export function createRecordingTools(
   getSessionId: () => string,
 ): { recordStart: Tool; recordStop: Tool; recordList: Tool } {
   let activeRecordingName: string | undefined;
+  let pendingStop: {
+    recording: SanitizedRecording;
+    serverPersisted: boolean;
+  } | undefined;
 
   const releaseActiveRecording = async (): Promise<void> => {
     const name = activeRecordingName;
-    activeRecordingName = undefined;
-    if (name) {
-      await stateManager.releaseRecordingReservation(getSessionId(), name);
+    if (!name) return;
+
+    const released = await stateManager.releaseRecordingReservation(getSessionId(), name);
+    if (released) {
+      if (activeRecordingName === name) activeRecordingName = undefined;
+      return;
     }
+
+    const stillLive = await stateManager.hasRecordingReservation(getSessionId(), name);
+    if (stillLive) throw new Error("Recording reservation release failed");
+    if (activeRecordingName === name) activeRecordingName = undefined;
+  };
+
+  const finishPendingStop = () => {
+    if (!pendingStop) throw new Error("No completed recording is pending cleanup");
+    const { recording, serverPersisted } = pendingStop;
+    const persistenceStatus = serverPersisted
+      ? "Server persistence acknowledged."
+      : "Server persistence partial: no durable write was acknowledged.";
+    const durationMs = Math.max(0, recording.stoppedAt - recording.startedAt);
+    pendingStop = undefined;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Recording "${recording.name}" stopped. ${recording.steps.length} steps captured over ${Math.round(durationMs / 1000)}s. ${persistenceStatus}`,
+        },
+        {
+          type: "text" as const,
+          text: JSON.stringify(recording, null, 2),
+        },
+      ],
+    };
   };
 
   const recordStart: Tool = {
@@ -136,43 +192,41 @@ export function createRecordingTools(
     handle: async (context, params) => {
       RecordStopArgs.parse(params);
       const sessionId = getSessionId();
+      let rawResult: unknown;
       try {
-        const rawResult: unknown = await context.sendSocketMessage("browser_record_stop", {});
+        rawResult = await context.sendSocketMessage("browser_record_stop", {});
+      } catch (error) {
+        await releaseActiveRecording();
+        if (pendingStop) return finishPendingStop();
+        throw error;
+      }
+
+      if (pendingStop) {
+        await releaseActiveRecording();
+        return finishPendingStop();
+      }
+
+      try {
         const result = RecordStopResultSchema.parse(rawResult);
         const recording = sanitizeRecording(result.recording);
         if (activeRecordingName && recording.name !== activeRecordingName) {
           throw new Error("Recording result does not match the active reservation");
         }
 
+        pendingStop = { recording, serverPersisted: false };
         const reservationStillActive = activeRecordingName
           ? await stateManager.hasRecordingReservation(sessionId, activeRecordingName)
           : false;
-        const serverPersisted = result.serverSaved === true && !reservationStillActive;
-        const persistenceStatus = serverPersisted
-          ? "Server persistence acknowledged."
-          : "Server persistence partial: no durable write was acknowledged.";
+        pendingStop.serverPersisted = result.serverSaved === true && !reservationStillActive;
         if (reservationStillActive) {
           await releaseActiveRecording();
         } else {
           activeRecordingName = undefined;
         }
 
-        const durationMs = Math.max(0, recording.stoppedAt - recording.startedAt);
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Recording "${recording.name}" stopped. ${recording.steps.length} steps captured over ${Math.round(durationMs / 1000)}s. ${persistenceStatus}`,
-            },
-            {
-              type: "text",
-              text: JSON.stringify(recording, null, 2),
-            },
-          ],
-        };
+        return finishPendingStop();
       } catch (error) {
-        await releaseActiveRecording();
+        if (!pendingStop) await releaseActiveRecording();
         throw error;
       }
     },
@@ -227,9 +281,10 @@ export function createRecordingTools(
 export function saveRecordingToFile(
   recording: unknown,
   recordingsDir = RECORDINGS_DIR,
+  directoryOps: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
 ): void {
   const sanitized = sanitizeRecording(recording);
-  ensureRecordingsDir(recordingsDir);
+  ensureRecordingsDir(recordingsDir, directoryOps);
   const filePath = join(recordingsDir, `${normalizeRecordingName(sanitized.name)}.json`);
   const fd = openSync(filePath, "wx", 0o600);
   try {
