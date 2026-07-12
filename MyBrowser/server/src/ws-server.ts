@@ -401,7 +401,19 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       }
 
       // ---- Hub RPC (from MCP client processes) ----
-      if (msg.type === "hub_rpc" && msg.id && msg.method) {
+      if (msg.type === "hub_rpc") {
+        const hasUsableId = typeof msg.id === "string" && msg.id.length > 0;
+        if (!hasUsableId || typeof msg.method !== "string" || msg.method.length === 0) {
+          if (hasUsableId) {
+            safeSend(ws, {
+              type: "hub_rpc_result",
+              id: msg.id,
+              error: "AUTH_ROLE_VIOLATION",
+            });
+          }
+          return;
+        }
+
         if (msg.method === "registerSession") {
           const sessionId = msg.params?.sessionId;
           if (typeof sessionId !== "string" || sessionId.trim().length === 0) {

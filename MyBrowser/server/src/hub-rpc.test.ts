@@ -63,6 +63,25 @@ function sendAndWait(ws: WebSocket, message: Record<string, unknown>) {
   return response;
 }
 
+function captureAndRespondToBrowser(ws: WebSocket) {
+  const messages: Array<Record<string, unknown>> = [];
+  ws.on("message", (data) => {
+    const message = JSON.parse(data.toString()) as Record<string, unknown>;
+    messages.push(message);
+    if (typeof message.id === "string") {
+      ws.send(JSON.stringify({
+        type: "messageResponse",
+        payload: { requestId: message.id, result: { leaked: true } },
+      }));
+    }
+  });
+  return messages;
+}
+
+function waitForTurn(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 25));
+}
+
 async function registerSession(ws: WebSocket, sessionId: string) {
   return await sendAndWait(ws, {
     type: "hub_rpc",
@@ -324,6 +343,76 @@ describe("authenticated hub routing", () => {
         requestId: "tool-unregistered",
         error: "SESSION_NOT_REGISTERED",
       },
+    });
+  });
+
+  it.each([
+    ["missing method", { type: "hub_rpc", id: "rpc-missing-method", params: {} }],
+    ["empty method", { type: "hub_rpc", id: "rpc-empty-method", method: "", params: {} }],
+  ])("default-denies a client RPC with %s before browser routing", async (_label, frame) => {
+    const server = await startHub();
+    const browser = await connect(server);
+    await authenticate(browser, "extension");
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await registerSession(client, "actual");
+    const sessionsBefore = await server.stateManager.listSessions();
+    const browserMessages = captureAndRespondToBrowser(browser);
+
+    await expect(sendAndWait(client, frame)).resolves.toEqual({
+      type: "hub_rpc_result",
+      id: frame.id,
+      error: "AUTH_ROLE_VIOLATION",
+    });
+    await waitForTurn();
+
+    expect(browserMessages).toEqual([]);
+    expect(await server.stateManager.listSessions()).toEqual(sessionsBefore);
+    await expect(sendAndWait(client, {
+      type: "hub_rpc",
+      id: `valid-after-${frame.id}`,
+      method: "listSessions",
+      params: {},
+    })).resolves.toMatchObject({
+      type: "hub_rpc_result",
+      id: `valid-after-${frame.id}`,
+      result: [{ id: "actual" }],
+    });
+  });
+
+  it("consumes a client RPC with no correlation ID without routing or mutation", async () => {
+    const server = await startHub();
+    const browser = await connect(server);
+    await authenticate(browser, "extension");
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await registerSession(client, "actual");
+    const sessionsBefore = await server.stateManager.listSessions();
+    const browserMessages = captureAndRespondToBrowser(browser);
+    const clientMessages: Array<Record<string, unknown>> = [];
+    client.on("message", (data) => {
+      clientMessages.push(JSON.parse(data.toString()) as Record<string, unknown>);
+    });
+
+    client.send(JSON.stringify({
+      type: "hub_rpc",
+      method: "listSessions",
+      params: {},
+    }));
+    await waitForTurn();
+
+    expect(browserMessages).toEqual([]);
+    expect(clientMessages).toEqual([]);
+    expect(await server.stateManager.listSessions()).toEqual(sessionsBefore);
+    await expect(sendAndWait(client, {
+      type: "hub_rpc",
+      id: "valid-after-missing-id",
+      method: "listSessions",
+      params: {},
+    })).resolves.toMatchObject({
+      type: "hub_rpc_result",
+      id: "valid-after-missing-id",
+      result: [{ id: "actual" }],
     });
   });
 
