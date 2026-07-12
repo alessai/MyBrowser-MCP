@@ -7,9 +7,11 @@
 // Falls back to one-shot sendMessage if the port is unavailable.
 
 import { ReconnectingWebSocket } from '../../lib/reconnecting-ws';
+import { PendingToolRequests } from '../../lib/offscreen-pending';
 import type { WsStatusResponse } from '../../lib/protocol';
 
 const ws = new ReconnectingWebSocket();
+const pendingToolRequests = new PendingToolRequests();
 let lastConfig: { url: string; token: string; browserName?: string } | null = null;
 
 // ---------------------------------------------------------------------------
@@ -30,6 +32,9 @@ function ensurePort(): chrome.runtime.Port | null {
   }
   portRetryDelay = 200; // Reset backoff on successful connect
   port.onDisconnect.addListener(() => {
+    if (ws.getState() === 'CONNECTED') {
+      pendingToolRequests.failAll((raw) => ws.send(raw));
+    }
     port = null;
     schedulePortRetry();
   });
@@ -89,7 +94,9 @@ function handleMessage(message: { type: string; payload?: unknown; _replyId?: st
 
   if (message.type === '_os_ws_send') {
     try {
-      ws.send(message.payload as string);
+      const raw = message.payload as string;
+      pendingToolRequests.completeOutbound(raw);
+      ws.send(raw);
       reply({ ok: true });
     } catch (e) {
       reply({ ok: false, error: (e as Error).message });
@@ -158,6 +165,7 @@ function connectWithConfig(url: string, token: string, browserName?: string): vo
       postToBackground({ type: '_os_disconnected' });
     },
     onMessage(data: string) {
+      pendingToolRequests.trackInbound(data);
       postToBackground({ type: '_os_ws_receive', payload: data });
     },
   }, browserName);

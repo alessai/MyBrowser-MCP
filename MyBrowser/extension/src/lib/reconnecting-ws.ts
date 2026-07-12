@@ -1,6 +1,12 @@
 // ReconnectingWebSocket with auth, heartbeat, and exponential backoff
 
-import type { AuthMessage, PingMessage } from './protocol';
+import {
+  PROTOCOL_VERSION,
+  WS_CLOSE,
+  isAuthResultV2,
+  type AuthRequestV2,
+  type PingMessage,
+} from './protocol';
 
 export type WsState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'CONNECTED';
 
@@ -8,6 +14,7 @@ export interface ReconnectingWsCallbacks {
   onConnected?: () => void;
   onDisconnected?: () => void;
   onMessage?: (data: string) => void;
+  onProtocolError?: () => void;
 }
 
 const INITIAL_DELAY_MS = 1000;
@@ -81,10 +88,11 @@ export class ReconnectingWebSocket {
 
     this.ws.onopen = () => {
       this.setState('AUTHENTICATING');
-      const auth: AuthMessage = {
+      const auth: AuthRequestV2 = {
         type: 'auth',
         token: this.token,
         role: 'extension',
+        protocolVersion: PROTOCOL_VERSION,
         browserName: this.browserName || undefined,
       };
       this.ws!.send(JSON.stringify(auth));
@@ -100,26 +108,38 @@ export class ReconnectingWebSocket {
     this.ws.onmessage = (event: MessageEvent) => {
       const raw = typeof event.data === 'string' ? event.data : '';
       try {
-        const parsed = JSON.parse(raw);
+        const parsed: unknown = JSON.parse(raw);
 
         // Handle auth confirmation from server
-        if (parsed.type === 'auth') {
-          if (this.authTimer) {
-            clearTimeout(this.authTimer);
-            this.authTimer = null;
-          }
-          if (parsed.status === 'ok' && this.state === 'AUTHENTICATING') {
+        if (typeof parsed === 'object' && parsed !== null && 'type' in parsed && parsed.type === 'auth') {
+          if (isAuthResultV2(parsed) && this.state === 'AUTHENTICATING') {
+            if (this.authTimer) {
+              clearTimeout(this.authTimer);
+              this.authTimer = null;
+            }
             this.setState('CONNECTED');
             this.retryDelay = INITIAL_DELAY_MS;
             this.startHeartbeat();
             this.callbacks.onConnected?.();
+          } else if (
+            this.state === 'AUTHENTICATING' &&
+            'status' in parsed &&
+            parsed.status === 'ok' &&
+            (!('protocolVersion' in parsed) || parsed.protocolVersion !== PROTOCOL_VERSION)
+          ) {
+            if (this.authTimer) {
+              clearTimeout(this.authTimer);
+              this.authTimer = null;
+            }
+            this.callbacks.onProtocolError?.();
+            this.ws?.close(WS_CLOSE.versionMismatch, 'Protocol version mismatch');
           }
           // Don't pass auth messages through to onMessage
           return;
         }
 
         // Handle pong
-        if (parsed.type === 'pong') {
+        if (typeof parsed === 'object' && parsed !== null && 'type' in parsed && parsed.type === 'pong') {
           this.clearPongTimer();
           return;
         }
