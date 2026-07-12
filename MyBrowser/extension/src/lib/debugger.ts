@@ -176,9 +176,7 @@ export async function sendCommand<T = unknown>(
   } catch (e) {
     if (!(e instanceof Error)) throw e;
     await handleError(e, target);
-    if (classifyError(e.message) !== 'debuggerDetached') {
-      return (await chrome.debugger.sendCommand(target, method, params)) as T;
-    }
+    return (await chrome.debugger.sendCommand(target, method, params)) as T;
   }
 }
 

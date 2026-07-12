@@ -2,6 +2,7 @@
 
 import type { InputDevice } from './input-device';
 import type { RequestToolServices } from './request-context';
+import { activateNetworkCapture } from './network-capture-controller';
 import {
   listTabs as listTabsImpl,
   ensureContentScript,
@@ -1109,13 +1110,14 @@ const handlers: Record<string, ToolHandler> = {
     const tabId = ctx.getTabId();
 
     if (action === 'start_capture') {
-      try {
-        await ensureAttached(tabId);
-      } catch {
-        throw new Error('Network capture requires Chrome debugger access which is currently unavailable. Close DevTools and conflicting extensions, then retry.');
-      }
-      await sendCommand(tabId, 'Network.enable');
-      ctx.services.networkCapture.start(tabId);
+      await activateNetworkCapture(ctx.services.networkCapture, tabId, async () => {
+        try {
+          await ensureAttached(tabId);
+        } catch {
+          throw new Error('Network capture requires Chrome debugger access which is currently unavailable. Close DevTools and conflicting extensions, then retry.');
+        }
+        await sendCommand(tabId, 'Network.enable');
+      });
       return { status: 'capturing', message: 'Network capture started.' };
     }
 

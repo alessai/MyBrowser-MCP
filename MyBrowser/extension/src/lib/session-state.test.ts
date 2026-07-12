@@ -69,16 +69,22 @@ describe("SessionStateStore", () => {
     const pending = state.setLastTab("session-a", 22).then(() => {
       finished = true;
     });
+    let readFinished = false;
+    const read = state.getLastTab("session-a").then((tabId) => {
+      readFinished = true;
+      return tabId;
+    });
     await Promise.resolve();
 
     expect(finished).toBe(false);
-    expect(await state.getLastTab("session-a")).toBe(22);
+    expect(readFinished).toBe(false);
     write.resolve();
     await pending;
+    await expect(read).resolves.toBe(22);
     expect(storage.set).toHaveBeenCalledWith("session-tab:session-a", 22);
   });
 
-  it("does not let delayed hydration overwrite newer request state", async () => {
+  it("orders a later set after in-flight hydration", async () => {
     const read = deferredValue<number | undefined>();
     const storage = new MemoryStorage();
     const get = storage.get.bind(storage);
@@ -90,10 +96,11 @@ describe("SessionStateStore", () => {
     const state = new SessionStateStore(storage);
 
     const hydration = state.getLastTab("session-a");
-    await state.setLastTab("session-a", 22);
+    const update = state.setLastTab("session-a", 22);
     read.resolve(7);
 
-    await expect(hydration).resolves.toBe(22);
+    await expect(hydration).resolves.toBe(7);
+    await update;
     await expect(state.getLastTab("session-a")).resolves.toBe(22);
   });
 
@@ -148,6 +155,66 @@ describe("SessionStateStore", () => {
     expect(storage.values.get("session-tab:session-b")).toBe(10);
     expect(storage.values.get("session-tab-index")).toEqual(["session-b"]);
     await expect(state.getLastTab("session-a")).resolves.toBeUndefined();
+  });
+
+  it("orders hydration after an earlier clearTab", async () => {
+    const removalStarted = deferred();
+    const releaseRemoval = deferred();
+    const storage = new MemoryStorage();
+    storage.values.set("session-tab-index", ["session-a"]);
+    storage.values.set("session-tab:session-a", 9);
+    const remove = storage.remove.bind(storage);
+    storage.remove = vi.fn(async (key: string) => {
+      if (key === "session-tab:session-a") {
+        removalStarted.resolve();
+        await releaseRemoval.promise;
+      }
+      await remove(key);
+    });
+    const state = new SessionStateStore(storage);
+
+    const clearing = state.clearTab(9);
+    await removalStarted.promise;
+    let hydrationFinished = false;
+    const hydration = state.getLastTab("session-a").then((tabId) => {
+      hydrationFinished = true;
+      return tabId;
+    });
+    await Promise.resolve();
+
+    expect(hydrationFinished).toBe(false);
+    releaseRemoval.resolve();
+    await clearing;
+    await expect(hydration).resolves.toBeUndefined();
+  });
+
+  it("lets an earlier hydration finish before clearTab removes it", async () => {
+    const hydrationRead = deferredValue<number | undefined>();
+    const storage = new MemoryStorage();
+    storage.values.set("session-tab-index", ["session-a"]);
+    storage.values.set("session-tab:session-a", 9);
+    const get = storage.get.bind(storage);
+    let sessionReads = 0;
+    let cleanupReadStarted = false;
+    storage.get = vi.fn((key: string) => {
+      if (key !== "session-tab:session-a") return get(key);
+      sessionReads += 1;
+      if (sessionReads === 1) return hydrationRead.promise;
+      cleanupReadStarted = true;
+      return get(key);
+    }) as unknown as SessionStorageAdapter['get'];
+    const state = new SessionStateStore(storage);
+
+    const hydration = state.getLastTab("session-a");
+    const clearing = state.clearTab(9);
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+    expect(cleanupReadStarted).toBe(false);
+    hydrationRead.resolve(9);
+    await expect(hydration).resolves.toBe(9);
+    await clearing;
+    await expect(state.getLastTab("session-a")).resolves.toBeUndefined();
+    expect(storage.values.has("session-tab:session-a")).toBe(false);
   });
 
   it("serializes concurrent index additions and removals", async () => {

@@ -35,7 +35,7 @@ export class RequestScheduler {
 
   constructor(options: RequestSchedulerOptions = {}) {
     this.maxPendingPerTab = options.maxPendingPerTab ?? 100;
-    this.maxPendingGlobal = options.maxPendingGlobal ?? 1000;
+    this.maxPendingGlobal = options.maxPendingGlobal ?? 500;
     this.now = options.now ?? Date.now;
   }
 

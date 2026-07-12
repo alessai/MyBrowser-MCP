@@ -125,22 +125,45 @@ describe("RequestScheduler", () => {
     await Promise.allSettled([tabQueued, sessionQueued]);
   });
 
-  it("rejects the 1001st globally pending request by default", async () => {
+  it("rejects request 501 across mixed queue types by default", async () => {
     const scheduler = new RequestScheduler({ now: () => 0 });
-    const running = deferred<void>();
-    const active = scheduler.runGlobal(meta(), () => running.promise);
-    const queued = Array.from({ length: 1000 }, (_, index) =>
-      scheduler.runGlobal(meta({ requestId: `global-${index}` }), async () => undefined),
+    const tabRunning = deferred<void>();
+    const sessionRunning = deferred<void>();
+    const globalRunning = deferred<void>();
+    const active = [
+      scheduler.runTab(1, meta({ sessionId: "tab-session" }), () => tabRunning.promise),
+      scheduler.runSession("session-b", meta({ sessionId: "session-b" }), () => sessionRunning.promise),
+      scheduler.runGlobal(meta({ sessionId: "global-session" }), () => globalRunning.promise),
+    ];
+    const queued = [
+      ...Array.from({ length: 100 }, (_, index) =>
+        scheduler.runTab(1, meta({ requestId: `tab-${index}`, sessionId: "tab-session" }), async () => undefined),
+      ),
+      ...Array.from({ length: 200 }, (_, index) =>
+        scheduler.runSession("session-b", meta({ requestId: `session-${index}`, sessionId: "session-b" }), async () => undefined),
+      ),
+      ...Array.from({ length: 200 }, (_, index) =>
+        scheduler.runGlobal(meta({ requestId: `global-${index}`, sessionId: "global-session" }), async () => undefined),
+      ),
+    ];
+    const settled = Promise.allSettled(queued);
+
+    const overloaded = scheduler.runGlobal(
+      meta({ requestId: "global-over-limit", sessionId: "over-limit" }),
+      async () => undefined,
     );
 
-    await expect(
-      scheduler.runGlobal(meta({ requestId: "global-over-limit" }), async () => undefined),
-    ).rejects.toThrow("QUEUE_OVERLOADED");
+    expect(scheduler.pendingCount).toBe(500);
+    await expect(overloaded).rejects.toThrow("QUEUE_OVERLOADED");
 
-    scheduler.cancelSession("session-a", "SESSION_NOT_REGISTERED");
-    running.resolve();
-    await active;
-    const results = await Promise.allSettled(queued);
+    scheduler.cancelTab(1, "TAB_CLOSED");
+    scheduler.cancelSession("session-b", "SESSION_NOT_REGISTERED");
+    scheduler.cancelSession("global-session", "SESSION_NOT_REGISTERED");
+    tabRunning.resolve();
+    sessionRunning.resolve();
+    globalRunning.resolve();
+    await Promise.all(active);
+    const results = await settled;
     expect(results.every((result) => result.status === "rejected")).toBe(true);
   });
 

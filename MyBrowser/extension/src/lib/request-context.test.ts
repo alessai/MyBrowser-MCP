@@ -47,7 +47,7 @@ describe("RequestToolContext", () => {
     await first.setTabId(3);
     expect(networkCapture.targetTabId).toBeNull();
 
-    first.services.networkCapture.start(first.getTabId());
+    networkCapture.commitStart(networkCapture.beginStart(first.getTabId()));
     expect(networkCapture.targetTabId).toBe(3);
     expect(second.getTabId()).toBe(2);
 
@@ -132,7 +132,7 @@ describe("RequestToolContext", () => {
     const removal = deferred();
     const clearTab = vi.fn(async () => removal.promise);
     const networkCapture = new NetworkCaptureController();
-    networkCapture.start(12);
+    networkCapture.commitStart(networkCapture.beginStart(12));
     const context = new RequestToolContext({
       sessionId: "session-a",
       requestId: "request-a",
