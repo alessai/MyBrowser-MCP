@@ -141,6 +141,36 @@ describe("WebSocket v2 authentication", () => {
     expect((await closed).code).toBe(WS_CLOSE.forbiddenRole);
   });
 
+  it("closes an auth request with the wrong protocol version with 4406", async () => {
+    const server = await startHub();
+    const ws = await connect(server);
+    const closed = waitForClose(ws);
+
+    ws.send(JSON.stringify({
+      type: "auth",
+      token: TOKEN,
+      role: "extension",
+      protocolVersion: PROTOCOL_VERSION - 1,
+    }));
+
+    expect((await closed).code).toBe(WS_CLOSE.versionMismatch);
+  });
+
+  it("closes an auth request with an invalid role with 4403", async () => {
+    const server = await startHub();
+    const ws = await connect(server);
+    const closed = waitForClose(ws);
+
+    ws.send(JSON.stringify({
+      type: "auth",
+      token: TOKEN,
+      role: "admin",
+      protocolVersion: PROTOCOL_VERSION,
+    }));
+
+    expect((await closed).code).toBe(WS_CLOSE.forbiddenRole);
+  });
+
   it("returns a versioned auth result and browser ID to an extension", async () => {
     const server = await startHub();
     const ws = await connect(server);
@@ -254,6 +284,56 @@ describe("WebSocket connection roles and session binding", () => {
       error: "AUTH_ROLE_VIOLATION",
     });
     expect((await closed).code).toBe(WS_CLOSE.forbiddenRole);
+  });
+
+  it("rejects extension hub RPC before validating the method", async () => {
+    const server = await startHub();
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const response = waitForMessage(extension);
+    const closed = waitForClose(extension);
+
+    extension.send(JSON.stringify({ type: "hub_rpc", id: "rpc-malformed" }));
+
+    await expect(response).resolves.toEqual({
+      type: "hub_rpc_result",
+      id: "rpc-malformed",
+      error: "AUTH_ROLE_VIOLATION",
+    });
+    expect((await closed).code).toBe(WS_CLOSE.forbiddenRole);
+  });
+
+  it("closes extension hub RPC without fabricating a missing correlation ID", async () => {
+    const server = await startHub();
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const receivedMessages: unknown[] = [];
+    extension.on("message", (data) => receivedMessages.push(JSON.parse(data.toString())));
+    const closed = waitForClose(extension);
+
+    extension.send(JSON.stringify({ type: "hub_rpc", method: "listSessions" }));
+
+    expect((await closed).code).toBe(WS_CLOSE.forbiddenRole);
+    expect(receivedMessages).toEqual([]);
+  });
+
+  it.each(["", "   "])("rejects blank session ID %j without binding the socket", async (sessionId) => {
+    const server = await startHub();
+    const client = await connect(server);
+    await authenticate(client, "client");
+
+    await expect(callHubRpc(client, "rpc-invalid", "registerSession", { sessionId }))
+      .resolves.toEqual({
+        type: "hub_rpc_result",
+        id: "rpc-invalid",
+        error: "SESSION_IDENTITY_MISMATCH",
+      });
+    await expect(callHubRpc(client, "rpc-valid", "registerSession", { sessionId: "s1" }))
+      .resolves.toEqual({
+        type: "hub_rpc_result",
+        id: "rpc-valid",
+        result: { ok: true },
+      });
   });
 
   it("keeps one immutable session owner and allows reclaim after close", async () => {

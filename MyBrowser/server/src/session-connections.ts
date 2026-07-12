@@ -3,11 +3,14 @@ export class SessionConnectionRegistry<TSocket extends object> {
   private readonly sessionToSocket = new Map<string, TSocket>();
 
   bind(socket: TSocket, sessionId: string) {
+    if (sessionId.trim().length === 0) {
+      return { ok: false as const, code: "SESSION_IDENTITY_MISMATCH" as const };
+    }
     const existingSession = this.socketToSession.get(socket);
     const existingSocket = this.sessionToSocket.get(sessionId);
     if (
-      (existingSession && existingSession !== sessionId) ||
-      (existingSocket && existingSocket !== socket)
+      (existingSession !== undefined && existingSession !== sessionId) ||
+      (existingSocket !== undefined && existingSocket !== socket)
     ) {
       return { ok: false as const, code: "SESSION_IDENTITY_MISMATCH" as const };
     }
@@ -26,7 +29,7 @@ export class SessionConnectionRegistry<TSocket extends object> {
 
   unbind(socket: TSocket) {
     const sessionId = this.socketToSession.get(socket);
-    if (!sessionId) return undefined;
+    if (sessionId === undefined) return undefined;
     this.socketToSession.delete(socket);
     if (this.sessionToSocket.get(sessionId) === socket) {
       this.sessionToSocket.delete(sessionId);

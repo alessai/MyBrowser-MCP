@@ -590,6 +590,18 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         return;
       }
 
+      if (msg.type === "hub_rpc" && connectionRole === "extension") {
+        if (typeof msg.id === "string" && msg.id.length > 0) {
+          safeSend(ws, {
+            type: "hub_rpc_result",
+            id: msg.id,
+            error: "AUTH_ROLE_VIOLATION",
+          });
+        }
+        ws.close(WS_CLOSE.forbiddenRole, "Forbidden role");
+        return;
+      }
+
       // ---- Ping ----
       if (msg.type === "ping") {
         ws.send(JSON.stringify({ type: "pong" }));
@@ -598,18 +610,16 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
       // ---- Hub RPC (from MCP client processes) ----
       if (msg.type === "hub_rpc" && msg.id && msg.method) {
-        if (connectionRole !== "client") {
-          safeSend(ws, {
-            type: "hub_rpc_result",
-            id: msg.id,
-            error: "AUTH_ROLE_VIOLATION",
-          });
-          ws.close(WS_CLOSE.forbiddenRole, "Forbidden role");
-          return;
-        }
-
         if (msg.method === "registerSession" && typeof msg.params?.sessionId === "string") {
           const sessionId = msg.params.sessionId;
+          if (sessionId.trim().length === 0) {
+            safeSend(ws, {
+              type: "hub_rpc_result",
+              id: msg.id,
+              error: "SESSION_IDENTITY_MISMATCH",
+            });
+            return;
+          }
           const binding = connectionSessions.bind(ws, sessionId);
           if (!binding.ok) {
             safeSend(ws, {

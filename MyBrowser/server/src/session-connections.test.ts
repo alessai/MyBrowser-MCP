@@ -29,4 +29,30 @@ describe("SessionConnectionRegistry", () => {
     expect(registry.getSession(socket)).toBeUndefined();
     expect(registry.hasLiveSession("s1")).toBe(false);
   });
+
+  it.each(["", "   "])("rejects a blank session ID %j without creating a binding", (sessionId) => {
+    const registry = new SessionConnectionRegistry<object>();
+    const socket = {};
+
+    expect(registry.bind(socket, sessionId)).toEqual({
+      ok: false,
+      code: "SESSION_IDENTITY_MISMATCH",
+    });
+    expect(registry.getSession(socket)).toBeUndefined();
+    expect(registry.hasLiveSession(sessionId)).toBe(false);
+  });
+
+  it("does not let a stale unbind remove a replacement socket", () => {
+    const registry = new SessionConnectionRegistry<object>();
+    const oldSocket = {};
+    const replacementSocket = {};
+
+    expect(registry.bind(oldSocket, "s1")).toEqual({ ok: true });
+    expect(registry.unbind(oldSocket)).toBe("s1");
+    expect(registry.bind(replacementSocket, "s1")).toEqual({ ok: true });
+
+    expect(registry.unbind(oldSocket)).toBeUndefined();
+    expect(registry.getSession(replacementSocket)).toBe("s1");
+    expect(registry.hasLiveSession("s1")).toBe(true);
+  });
 });
