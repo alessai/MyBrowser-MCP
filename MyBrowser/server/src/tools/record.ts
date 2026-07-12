@@ -5,11 +5,13 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,21 +27,35 @@ import type { Tool } from "./types.js";
 const RECORDINGS_DIR = join(homedir(), ".mybrowser", "recordings");
 export { RECORDING_RESERVATION_LEASE_MS } from "../state-manager.js";
 
-interface PrivateDirectoryOps {
+interface RecordingFileOps {
   mkdirSync: typeof mkdirSync;
   chmodSync: typeof chmodSync;
   statSync: typeof statSync;
+  lstatSync: typeof lstatSync;
+  openSync: typeof openSync;
+  readFileSync: typeof readFileSync;
+  writeFileSync: typeof writeFileSync;
+  fsyncSync: typeof fsyncSync;
+  closeSync: typeof closeSync;
+  unlinkSync: typeof unlinkSync;
 }
 
-const PRIVATE_DIRECTORY_OPS: PrivateDirectoryOps = {
+const RECORDING_FILE_OPS: RecordingFileOps = {
   mkdirSync,
   chmodSync,
   statSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+  fsyncSync,
+  closeSync,
+  unlinkSync,
 };
 
 function ensurePrivateDirectory(
   path: string,
-  ops: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
+  ops: RecordingFileOps = RECORDING_FILE_OPS,
 ): void {
   ops.mkdirSync(path, { recursive: true, mode: 0o700 });
   ops.chmodSync(path, 0o700);
@@ -54,7 +70,7 @@ function ensurePrivateDirectory(
 
 function ensureRecordingsDir(
   recordingsDir = RECORDINGS_DIR,
-  ops: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
+  ops: RecordingFileOps = RECORDING_FILE_OPS,
 ): void {
   ensurePrivateDirectory(dirname(recordingsDir), ops);
   ensurePrivateDirectory(recordingsDir, ops);
@@ -113,6 +129,16 @@ export function createRecordingTools(
     recording: SanitizedRecording;
     serverPersisted: boolean;
   } | undefined;
+  let lifecycleTail: Promise<void> = Promise.resolve();
+
+  const runLifecycleOperation = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = lifecycleTail.then(operation);
+    lifecycleTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
 
   const releaseActiveRecording = async (): Promise<void> => {
     const name = activeRecordingName;
@@ -167,32 +193,34 @@ export function createRecordingTools(
     },
     handle: async (context, params) => {
       const { name, tabId } = RecordStartArgs.parse(params);
-      if (failedStartCleanupPending) await releaseActiveRecording();
-      if (activeRecordingName) {
-        throw new Error("A recording reservation is already active for this session");
-      }
-      const sessionId = getSessionId();
-      const reserved = await stateManager.reserveRecording(
-        sessionId,
-        name,
-        RECORDING_RESERVATION_LEASE_MS,
-      );
-      if (!reserved.ok) {
-        throw new Error(`RECORDING_NAME_CONFLICT: recording name is reserved by session ${reserved.owner}`);
-      }
-      activeRecordingName = reserved.reservation.name;
-      failedStartCleanupPending = true;
+      return runLifecycleOperation(async () => {
+        if (failedStartCleanupPending) await releaseActiveRecording();
+        if (activeRecordingName) {
+          throw new Error("A recording reservation is already active for this session");
+        }
+        const sessionId = getSessionId();
+        const reserved = await stateManager.reserveRecording(
+          sessionId,
+          name,
+          RECORDING_RESERVATION_LEASE_MS,
+        );
+        if (!reserved.ok) {
+          throw new Error(`RECORDING_NAME_CONFLICT: recording name is reserved by session ${reserved.owner}`);
+        }
+        activeRecordingName = reserved.reservation.name;
+        failedStartCleanupPending = true;
 
-      try {
-        await context.sendSocketMessage("browser_record_start", { name, tabId });
-        failedStartCleanupPending = false;
-      } catch (error) {
-        await releaseActiveRecording();
-        throw error;
-      }
-      return {
-        content: [{ type: "text", text: `Recording started: "${reserved.reservation.name}"` }],
-      };
+        try {
+          await context.sendSocketMessage("browser_record_start", { name, tabId });
+          failedStartCleanupPending = false;
+        } catch (error) {
+          await releaseActiveRecording();
+          throw error;
+        }
+        return {
+          content: [{ type: "text" as const, text: `Recording started: "${reserved.reservation.name}"` }],
+        };
+      });
     },
   };
 
@@ -205,45 +233,47 @@ export function createRecordingTools(
     },
     handle: async (context, params) => {
       RecordStopArgs.parse(params);
-      if (failedStartCleanupPending) await releaseActiveRecording();
-      const sessionId = getSessionId();
-      let rawResult: unknown;
-      try {
-        rawResult = await context.sendSocketMessage("browser_record_stop", {});
-      } catch (error) {
-        await releaseActiveRecording();
-        if (pendingStop) return finishPendingStop();
-        throw error;
-      }
-
-      if (pendingStop) {
-        await releaseActiveRecording();
-        return finishPendingStop();
-      }
-
-      try {
-        const result = RecordStopResultSchema.parse(rawResult);
-        const recording = sanitizeRecording(result.recording);
-        if (activeRecordingName && recording.name !== activeRecordingName) {
-          throw new Error("Recording result does not match the active reservation");
-        }
-
-        pendingStop = { recording, serverPersisted: false };
-        const reservationStillActive = activeRecordingName
-          ? await stateManager.hasRecordingReservation(sessionId, activeRecordingName)
-          : false;
-        pendingStop.serverPersisted = result.serverSaved === true && !reservationStillActive;
-        if (reservationStillActive) {
+      return runLifecycleOperation(async () => {
+        if (failedStartCleanupPending) await releaseActiveRecording();
+        const sessionId = getSessionId();
+        let rawResult: unknown;
+        try {
+          rawResult = await context.sendSocketMessage("browser_record_stop", {});
+        } catch (error) {
           await releaseActiveRecording();
-        } else {
-          activeRecordingName = undefined;
+          if (pendingStop) return finishPendingStop();
+          throw error;
         }
 
-        return finishPendingStop();
-      } catch (error) {
-        if (!pendingStop) await releaseActiveRecording();
-        throw error;
-      }
+        if (pendingStop) {
+          await releaseActiveRecording();
+          return finishPendingStop();
+        }
+
+        try {
+          const result = RecordStopResultSchema.parse(rawResult);
+          const recording = sanitizeRecording(result.recording);
+          if (activeRecordingName && recording.name !== activeRecordingName) {
+            throw new Error("Recording result does not match the active reservation");
+          }
+
+          pendingStop = { recording, serverPersisted: false };
+          const reservationStillActive = activeRecordingName
+            ? await stateManager.hasRecordingReservation(sessionId, activeRecordingName)
+            : false;
+          pendingStop.serverPersisted = result.serverSaved === true && !reservationStillActive;
+          if (reservationStillActive) {
+            await releaseActiveRecording();
+          } else {
+            activeRecordingName = undefined;
+          }
+
+          return finishPendingStop();
+        } catch (error) {
+          if (!pendingStop) await releaseActiveRecording();
+          throw error;
+        }
+      });
     },
   };
 
@@ -296,29 +326,64 @@ export function createRecordingTools(
 export function saveRecordingToFile(
   recording: unknown,
   recordingsDir = RECORDINGS_DIR,
-  directoryOps: PrivateDirectoryOps = PRIVATE_DIRECTORY_OPS,
+  fileOps: Partial<RecordingFileOps> = {},
 ): "created" | "existing-identical" {
   const sanitized = sanitizeRecording(recording);
-  ensureRecordingsDir(recordingsDir, directoryOps);
+  const ops = { ...RECORDING_FILE_OPS, ...fileOps };
+  ensureRecordingsDir(recordingsDir, ops);
   const filePath = join(recordingsDir, `${normalizeRecordingName(sanitized.name)}.json`);
   let fd: number;
   try {
-    fd = openSync(filePath, "wx", 0o600);
+    fd = ops.openSync(filePath, "wx", 0o600);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    try {
-      const existing = sanitizeRecording(JSON.parse(readFileSync(filePath, "utf-8")));
-      if (isDeepStrictEqual(existing, sanitized)) return "existing-identical";
-    } catch {
-      // Preserve the exclusive-create error for corrupt or invalid existing data.
+    const stats = ops.lstatSync(filePath);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error(`Existing recording artifact must be a regular non-symlink file: ${filePath}`);
     }
-    throw error;
+    if ((stats.mode & 0o777) !== 0o600) {
+      throw new Error(`Existing recording artifact must have exact mode 0600: ${filePath}`);
+    }
+
+    const existingFd = ops.openSync(filePath, "r");
+    let verificationFailure: unknown;
+    try {
+      const existing = sanitizeRecording(JSON.parse(ops.readFileSync(existingFd, "utf-8")));
+      if (!isDeepStrictEqual(existing, sanitized)) {
+        throw error;
+      }
+      ops.fsyncSync(existingFd);
+    } catch (verificationError) {
+      verificationFailure = verificationError;
+    }
+    try {
+      ops.closeSync(existingFd);
+    } catch (closeError) {
+      verificationFailure ??= closeError;
+    }
+    if (verificationFailure) throw verificationFailure;
+    return "existing-identical";
+  }
+
+  let persistenceFailure: unknown;
+  try {
+    ops.writeFileSync(fd, JSON.stringify(sanitized, null, 2) + "\n");
+    ops.fsyncSync(fd);
+  } catch (writeError) {
+    persistenceFailure = writeError;
   }
   try {
-    writeFileSync(fd, JSON.stringify(sanitized, null, 2) + "\n");
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    ops.closeSync(fd);
+  } catch (closeError) {
+    persistenceFailure ??= closeError;
+  }
+  if (persistenceFailure) {
+    try {
+      ops.unlinkSync(filePath);
+    } catch {
+      // Best effort: preserve the original persistence failure.
+    }
+    throw persistenceFailure;
   }
   return "created";
 }

@@ -1,11 +1,16 @@
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,13 +60,35 @@ function getRecordingApi() {
     saveRecordingToFile: (
       recording: unknown,
       recordingsDir?: string,
-      directoryOps?: {
-        mkdirSync: typeof mkdirSync;
-        chmodSync: typeof chmodSync;
-        statSync: typeof statSync;
+      fileOps?: {
+        mkdirSync?: typeof mkdirSync;
+        chmodSync?: typeof chmodSync;
+        statSync?: typeof statSync;
+        closeSync?: typeof closeSync;
+        fsyncSync?: typeof fsyncSync;
+        unlinkSync?: typeof unlinkSync;
       },
-    ) => void;
+    ) => "created" | "existing-identical";
   };
+}
+
+function recordingFileOps(overrides: Record<string, unknown> = {}) {
+  return {
+    mkdirSync,
+    chmodSync,
+    statSync,
+    ...overrides,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function createRecordingState() {
@@ -346,6 +373,148 @@ describe("recording tools and persistence", () => {
     );
   });
 
+  it("serializes concurrent starts so only the first can reserve", async () => {
+    const state = createRecordingState();
+    const reservation = deferred<Awaited<ReturnType<IStateManager["reserveRecording"]>>>();
+    state.reserveRecording.mockImplementation(() => reservation.promise);
+    const sendSocketMessage = vi.fn().mockResolvedValue({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+
+    const first = recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "First", tabId: 7 },
+    );
+    await vi.waitFor(() => expect(state.reserveRecording).toHaveBeenCalledTimes(1));
+    const second = recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Second", tabId: 8 },
+    );
+    const secondResult = expect(second).rejects.toThrow("already active");
+    await Promise.resolve();
+    expect(state.reserveRecording).toHaveBeenCalledTimes(1);
+
+    reservation.resolve({
+      ok: true,
+      reservation: {
+        name: "First",
+        sessionId: "session-a",
+        expiresAt: Date.now() + 1_800_000,
+      },
+    });
+    await first;
+    await secondResult;
+    expect(state.reserveRecording).toHaveBeenCalledTimes(1);
+    expect(sendSocketMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let stop race an in-flight start", async () => {
+    const state = createRecordingState();
+    const startGate = deferred<{ status: string }>();
+    const startSend = vi.fn(() => startGate.promise);
+    const stopSend = vi.fn().mockResolvedValue({
+      serverSaved: false,
+      recording: validRecording,
+    });
+    const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+
+    const start = recordStart.handle(
+      { sendSocketMessage: startSend } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    await vi.waitFor(() => expect(startSend).toHaveBeenCalledTimes(1));
+    const stop = recordStop.handle(
+      { sendSocketMessage: stopSend } as unknown as Context,
+      {},
+    );
+    await Promise.resolve();
+    expect(state.releaseRecordingReservation).not.toHaveBeenCalled();
+    expect(stopSend).not.toHaveBeenCalled();
+
+    startGate.resolve({ status: "recording" });
+    await start;
+    await stop;
+    expect(stopSend).toHaveBeenCalledTimes(1);
+    expect(startSend.mock.invocationCallOrder[0]).toBeLessThan(stopSend.mock.invocationCallOrder[0]!);
+  });
+
+  it("retries failed-start release identity before the queued start reserves", async () => {
+    const state = createRecordingState();
+    state.releaseRecordingReservation
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    state.hasRecordingReservation.mockResolvedValue(true);
+    const startGate = deferred<never>();
+    const sendSocketMessage = vi.fn()
+      .mockImplementationOnce(() => startGate.promise)
+      .mockResolvedValueOnce({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+
+    const first = recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "First", tabId: 7 },
+    );
+    const firstResult = expect(first).rejects.toThrow("release failed");
+    await vi.waitFor(() => expect(sendSocketMessage).toHaveBeenCalledTimes(1));
+    const second = recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Second", tabId: 8 },
+    );
+    const secondOutcome = second.then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    );
+    startGate.reject(new Error("extension start failed"));
+
+    await firstResult;
+    const outcome = await secondOutcome;
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.value).toBeDefined();
+    expect(state.releaseRecordingReservation).toHaveBeenCalledTimes(2);
+    expect(state.reserveRecording).toHaveBeenCalledTimes(2);
+    expect(state.releaseRecordingReservation.mock.invocationCallOrder[1]).toBeLessThan(
+      state.reserveRecording.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it("continues the lifecycle queue after a reservation conflict rejection", async () => {
+    const state = createRecordingState();
+    const firstReservation = deferred<Awaited<ReturnType<IStateManager["reserveRecording"]>>>();
+    state.reserveRecording
+      .mockImplementationOnce(() => firstReservation.promise)
+      .mockResolvedValueOnce({
+        ok: true,
+        reservation: {
+          name: "Second",
+          sessionId: "session-a",
+          expiresAt: Date.now() + 1_800_000,
+        },
+      });
+    const sendSocketMessage = vi.fn().mockResolvedValue({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+
+    const first = recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "First", tabId: 7 },
+    );
+    const firstResult = expect(first).rejects.toThrow("RECORDING_NAME_CONFLICT");
+    await vi.waitFor(() => expect(state.reserveRecording).toHaveBeenCalledTimes(1));
+    const second = recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Second", tabId: 8 },
+    );
+    await Promise.resolve();
+    expect(state.reserveRecording).toHaveBeenCalledTimes(1);
+
+    firstReservation.resolve({ ok: false, owner: "session-other" });
+    await firstResult;
+    await second;
+    expect(state.reserveRecording).toHaveBeenCalledTimes(2);
+    expect(sendSocketMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("stops without a tab and releases a partial recording after sanitizing it", async () => {
     const state = createRecordingState();
     const context = {
@@ -575,6 +744,132 @@ describe("recording tools and persistence", () => {
       recordingsDir,
     )).toThrow(/EEXIST/);
     expect(readFileSync(filePath, "utf8")).toBe(original);
+  });
+
+  it("removes an incomplete file after initial fsync failure and allows retry", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-new-fsync-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const fsync = vi.fn()
+      .mockImplementationOnce(() => {
+        throw new Error("injected initial fsync failure");
+      })
+      .mockImplementation(fsyncSync);
+    const unlink = vi.fn(unlinkSync);
+    const close = vi.fn(closeSync);
+    const ops = recordingFileOps({
+      closeSync: close,
+      fsyncSync: fsync,
+      unlinkSync: unlink,
+    });
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      ops,
+    )).toThrow("injected initial fsync failure");
+    expect(existsSync(filePath)).toBe(false);
+    expect(unlink).toHaveBeenCalledWith(filePath);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(unlink.mock.invocationCallOrder[0]!);
+
+    expect(getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      ops,
+    )).toBe("created");
+    expect(existsSync(filePath)).toBe(true);
+  });
+
+  it("rejects an existing identical artifact whose file mode is not exactly 0600", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-file-mode-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+    chmodSync(filePath, 0o640);
+
+    expect(() => getRecordingApi().saveRecordingToFile(validRecording, recordingsDir))
+      .toThrow("exact mode 0600");
+    expect(statSync(filePath).mode & 0o777).toBe(0o640);
+  });
+
+  it("rejects symlink and non-regular existing artifact paths", () => {
+    const symlinkBase = mkdtempSync(join(tmpdir(), "mybrowser-recording-symlink-"));
+    const nonRegularBase = mkdtempSync(join(tmpdir(), "mybrowser-recording-nonregular-"));
+    tempDirs.push(symlinkBase, nonRegularBase);
+
+    const symlinkDir = join(symlinkBase, "recordings");
+    mkdirSync(symlinkDir, { recursive: true, mode: 0o700 });
+    const target = join(symlinkBase, "target.json");
+    writeFileSync(target, JSON.stringify(validRecording));
+    chmodSync(target, 0o600);
+    symlinkSync(target, join(symlinkDir, "Checkout_Flow.json"));
+    expect(() => getRecordingApi().saveRecordingToFile(validRecording, symlinkDir))
+      .toThrow("regular non-symlink");
+
+    const nonRegularDir = join(nonRegularBase, "recordings");
+    mkdirSync(join(nonRegularDir, "Checkout_Flow.json"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    expect(() => getRecordingApi().saveRecordingToFile(validRecording, nonRegularDir))
+      .toThrow("regular non-symlink");
+  });
+
+  it("rejects an identical existing artifact when descriptor fsync fails", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-existing-fsync-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+    const fsync = vi.fn(() => {
+      throw new Error("injected existing fsync failure");
+    });
+    const close = vi.fn(closeSync);
+
+    expect(() => getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({ closeSync: close, fsyncSync: fsync }),
+    )).toThrow("injected existing fsync failure");
+    expect(fsync).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(fsync.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
+  });
+
+  it("fsyncs and closes an identical existing artifact before durable retry succeeds", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-existing-durable-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    getRecordingApi().saveRecordingToFile(validRecording, recordingsDir);
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    writeFileSync(filePath, JSON.stringify({
+      variables: validRecording.variables,
+      steps: validRecording.steps.map((step) => ({
+        result: step.result,
+        url: step.url,
+        durationMs: step.durationMs,
+        timestamp: step.timestamp,
+        args: step.args,
+        action: step.action,
+      })),
+      url: validRecording.url,
+      stoppedAt: validRecording.stoppedAt,
+      startedAt: validRecording.startedAt,
+      name: validRecording.name,
+    }));
+    chmodSync(filePath, 0o600);
+    const fsync = vi.fn(fsyncSync);
+    const close = vi.fn(closeSync);
+
+    expect(getRecordingApi().saveRecordingToFile(
+      validRecording,
+      recordingsDir,
+      recordingFileOps({ closeSync: close, fsyncSync: fsync }),
+    )).toBe("existing-identical");
+    expect(fsync).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(fsync.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
   });
 
   it("corrects an existing permissive recordings directory to 0700", () => {
