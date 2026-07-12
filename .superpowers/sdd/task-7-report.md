@@ -68,6 +68,44 @@ Implemented and verified. Active recordings are isolated by authenticated sessio
 - Extension full: 12 files, 115 tests passed; `npm run check` and `npm run build` passed.
 - Server full: 6 files, 143 tests passed; `npm run check` and `npm run build` passed.
 - Canary scans: all `SECRET_*` matches are test-only; no unbounded retry map or legacy non-string allowlist remains.
+
+## Correlation, Port Ownership, Cleanup Retry, And Schema Follow-Up
+
+### Correlation And Port Generations
+
+- Recording transport request IDs now use UUIDv4 values from `crypto.randomUUID`, with a cryptographically secure `crypto.getRandomValues` UUIDv4 fallback and fail-closed behavior when neither source exists.
+- Correlation still requires the exact expected response type and ID; delayed pre-restart responses cannot resolve post-restart requests.
+- Background offscreen ownership now carries a monotonic port generation. Messages and disconnects from superseded ports are ignored, while the current generation rejects pending broker requests.
+- Focused tests cover delayed old responses across broker restart, UUID shape/non-reuse, port replacement, stale disconnect, and current disconnect.
+
+### Durable Session Cleanup
+
+- Persisted recording state and per-session markers now have an explicit `cleanup` status in addition to `active` and `stopping`.
+- Session close and active expiry first atomically persist sanitized cleanup state, clear renewal, schedule `active-recordings-cleanup`, then attempt one atomic snapshot-plus-marker removal.
+- Failed removal preserves cleanup state across worker restart. Startup, restore-all, renewal ticks, and the cleanup alarm retry removal until both keys are gone, then clear the cleanup alarm best-effort.
+- Cleanup state is excluded from snapshots and `isRecording`, cannot record, renew, expose recovery via stop, or permit a start in the request that encountered it.
+- Tests cover active and stopping cleanup failures, worker restart, alarm retry, atomic success, start rejection, no renewal/transport, and no orphan state/marker.
+
+### Prepare Privacy And Minor Correctness
+
+- Every prepare/restore/storage failure now becomes `RECORDED_STATE_FAILED` before background reporting. Diagnostics contain only stable category and request metadata; dependency messages and stacks are never returned or logged.
+- Canary tests exercise both marker-read and key-enumeration failures through response, diagnostic, console, storage, and snapshot sinks.
+- Sanitized argument reconstruction uses null-prototype objects, preserving `__proto__`, `constructor`, and `prototype` form keys as parameterized own data through JSON round-trip.
+- Required-variable `hint` is optional on extension and server restore; when present it must match the generic counter-derived format.
+- Extension and server validators now require all persisted timestamps and durations to be finite and nonnegative, while existing integer bounds remain enforced.
+
+### Verification
+
+- Extension focused: `npm test -- src/lib/recording-transport.test.ts src/lib/recorder.test.ts src/lib/recording-parameterizer.test.ts src/lib/background-privacy.test.ts` passed.
+- Server focused: `npm test -- src/tools/record-privacy.test.ts` passed.
+- Extension full: 12 files, 122 tests passed.
+- Extension `npm run check`: passed.
+- Extension `npm run build`: passed.
+- Server full: 6 files, 144 tests passed.
+- Server `npm run check`: passed.
+- Server `npm run build`: passed.
+- `git diff --check`: passed.
+- Canary scans: all `SECRET_*` matches are test-only; no sequential recording request IDs, raw prepare errors, or orphan cleanup paths remain.
 - Repository: `git diff --check` passed.
 
 ## Lifecycle and Schema Follow-Up (2026-07-12)

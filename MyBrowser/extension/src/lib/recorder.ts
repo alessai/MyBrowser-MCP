@@ -43,6 +43,8 @@ export interface RecordingTransport {
 export interface RecordingAlarmScheduler {
   ensureRenewal(): Promise<void>;
   clearRenewal(): Promise<void>;
+  ensureCleanup(): Promise<void>;
+  clearCleanup(): Promise<void>;
 }
 
 export interface PreparedStep {
@@ -62,8 +64,19 @@ export class RecordedActionFailure extends Error {
   }
 }
 
+export class RecordedStateFailure extends Error {
+  constructor() {
+    super('RECORDED_STATE_FAILED');
+    this.name = 'RecordedStateFailure';
+  }
+}
+
 export function isRecordedActionFailure(error: unknown): error is RecordedActionFailure {
   return error instanceof RecordedActionFailure;
+}
+
+export function isRecordedStateFailure(error: unknown): error is RecordedStateFailure {
+  return error instanceof RecordedStateFailure;
 }
 
 export interface RecordingStopResult {
@@ -77,7 +90,7 @@ export interface RecordingStopResult {
     | 'ACTIVE_STATE_CLEANUP_FAILED';
 }
 
-type RecordingStateStatus = 'active' | 'stopping';
+type RecordingStateStatus = 'active' | 'stopping' | 'cleanup';
 type CachedStopStatus = Omit<RecordingStopResult, 'recording'>;
 
 interface ActiveRecording {
@@ -113,6 +126,8 @@ export const MAX_ACTIVE_RECORDING_BYTES = 2 * 1024 * 1024;
 export const MAX_AGGREGATE_RECORDING_BYTES = 8 * 1024 * 1024;
 export const RECORDING_RENEWAL_ALARM = 'active-recordings-renewal';
 export const RECORDING_RENEWAL_MINUTES = 5;
+export const RECORDING_CLEANUP_ALARM = 'active-recordings-cleanup';
+export const RECORDING_CLEANUP_MINUTES = 1;
 
 const ACTIVE_PREFIX = 'active-recording:';
 const ACTIVE_MARKER_PREFIX = 'active-recording-index:';
@@ -165,6 +180,16 @@ export class ChromeRecordingAlarmScheduler implements RecordingAlarmScheduler {
   async clearRenewal(): Promise<void> {
     await chrome.alarms.clear(RECORDING_RENEWAL_ALARM);
   }
+
+  async ensureCleanup(): Promise<void> {
+    chrome.alarms.create(RECORDING_CLEANUP_ALARM, {
+      periodInMinutes: RECORDING_CLEANUP_MINUTES,
+    });
+  }
+
+  async clearCleanup(): Promise<void> {
+    await chrome.alarms.clear(RECORDING_CLEANUP_ALARM);
+  }
 }
 
 function byteLength(value: unknown): number {
@@ -196,9 +221,9 @@ function isActiveRecording(
   if (!hasExactKeys(value, stateKeys)) return false;
   if (!Number.isInteger(value.tabId) || (value.tabId as number) < 0) return false;
   if (!Number.isInteger(value.nextVariable) || (value.nextVariable as number) < 1) return false;
-  if (value.status !== 'active' && value.status !== 'stopping') return false;
+  if (value.status !== 'active' && value.status !== 'stopping' && value.status !== 'cleanup') return false;
   if ('stopStatus' in value) {
-    if (value.status !== 'stopping' || !isRecord(value.stopStatus)) return false;
+    if ((value.status !== 'stopping' && value.status !== 'cleanup') || !isRecord(value.stopStatus)) return false;
     const stopStatusKeys = ['extensionSaved', 'serverSaved'];
     if ('error' in value.stopStatus) stopStatusKeys.push('error');
     if (!hasExactKeys(value.stopStatus, stopStatusKeys)) return false;
@@ -219,11 +244,20 @@ function isActiveRecording(
   const hasStoppedAt = 'stoppedAt' in recording;
   if (hasStoppedAt) recordingKeys.push('stoppedAt');
   if (!hasExactKeys(recording, recordingKeys)) return false;
-  if (typeof recording.startedAt !== 'number' || typeof recording.url !== 'string') return false;
+  if (typeof recording.startedAt !== 'number'
+    || !Number.isFinite(recording.startedAt)
+    || recording.startedAt < 0
+    || typeof recording.url !== 'string') return false;
   if (value.status === 'active' && (hasStoppedAt || 'stopStatus' in value)) return false;
   if (value.status === 'stopping' && (!hasStoppedAt
     || typeof recording.stoppedAt !== 'number'
-    || !Number.isFinite(recording.stoppedAt))) return false;
+    || !Number.isFinite(recording.stoppedAt)
+    || recording.stoppedAt < 0)) return false;
+  if (value.status === 'cleanup' && hasStoppedAt && (
+    typeof recording.stoppedAt !== 'number'
+    || !Number.isFinite(recording.stoppedAt)
+    || recording.stoppedAt < 0
+  )) return false;
   if (!Array.isArray(recording.steps) || !Array.isArray(recording.requiredVariables)) return false;
   if (recording.steps.length > MAX_ACTIVE_RECORDING_STEPS
     || byteLength(recording) + COMMIT_OVERHEAD_BYTES > MAX_ACTIVE_RECORDING_BYTES) return false;
@@ -232,15 +266,18 @@ function isActiveRecording(
   const variables = new Map<string, VariableSource>();
   for (const [index, variable] of recording.requiredVariables.entries()) {
     if (!isRecord(variable)) return false;
-    if (!hasExactKeys(variable, ['name', 'source', 'hint'])) return false;
+    const variableKeys = ['name', 'source'];
+    if ('hint' in variable) variableKeys.push('hint');
+    if (!hasExactKeys(variable, variableKeys)) return false;
     const { name, source, hint } = variable;
-    if (typeof name !== 'string' || typeof source !== 'string' || typeof hint !== 'string') return false;
+    if (typeof name !== 'string' || typeof source !== 'string') return false;
     if (!['text', 'form', 'select', 'navigation', 'clipboard'].includes(source)) return false;
     const match = /^(input|form|select|navigation|clipboard)_(\d+)$/.exec(name);
     if (!match) return false;
     if (Number(match[2]) !== index + 1) return false;
     const expectedSource = match[1] === 'input' ? 'text' : match[1];
-    if (source !== expectedSource || hint !== `${source}_input_${match[2]}`) return false;
+    if (source !== expectedSource
+      || (hint !== undefined && hint !== `${source}_input_${match[2]}`)) return false;
     if (variables.has(name)) return false;
     variables.set(name, source as VariableSource);
   }
@@ -250,7 +287,7 @@ function isActiveRecording(
   for (const step of recording.steps) {
     if (!isRecord(step) || typeof step.action !== 'string' || !isRecord(step.args)) return false;
     if (!hasExactKeys(step, ['action', 'args', 'timestamp', 'durationMs', 'url'])) return false;
-    if (typeof step.timestamp !== 'number' || !Number.isFinite(step.timestamp)) return false;
+    if (typeof step.timestamp !== 'number' || !Number.isFinite(step.timestamp) || step.timestamp < 0) return false;
     if (typeof step.durationMs !== 'number' || !Number.isFinite(step.durationMs) || step.durationMs < 0) return false;
     if (typeof step.url !== 'string' || sanitizePageUrl(step.url) !== step.url) return false;
     if (!validateSanitizedArgs(step.action, step.args, variables, usedVariables)) return false;
@@ -263,13 +300,16 @@ function isRecordingMarker(value: unknown, sessionId: string): value is Recordin
   return isRecord(value)
     && hasExactKeys(value, ['sessionId', 'status'])
     && value.sessionId === sessionId
-    && (value.status === 'active' || value.status === 'stopping');
+    && (value.status === 'active' || value.status === 'stopping' || value.status === 'cleanup');
 }
 
 export function isSanitizedRecording(
   value: unknown,
 ): value is Recording & { stoppedAt: number } {
-  if (!isRecord(value) || typeof value.stoppedAt !== 'number' || !Number.isFinite(value.stoppedAt)) {
+  if (!isRecord(value)
+    || typeof value.stoppedAt !== 'number'
+    || !Number.isFinite(value.stoppedAt)
+    || value.stoppedAt < 0) {
     return false;
   }
   return isActiveRecording({
@@ -318,8 +358,10 @@ export class RecordingManager {
 
   start(sessionId: string, name: string, tabId: number, url: string): Promise<void> {
     return this.enqueue(async () => {
-      await this.restoreAllUnlocked();
-      if (this.active.has(sessionId)) throw new Error('ACTIVE_RECORDING_EXISTS');
+      const cleanupSessions = await this.restoreAllUnlocked();
+      if (cleanupSessions.has(sessionId) || this.active.has(sessionId)) {
+        throw new Error('ACTIVE_RECORDING_EXISTS');
+      }
       const sanitizedUrl = sanitizePageUrl(url);
       url = '';
       const state: ActiveRecording = {
@@ -504,6 +546,7 @@ export class RecordingManager {
       await this.restoreSessionUnlocked(sessionId);
       let state = this.active.get(sessionId);
       if (!state) throw new Error('NO_ACTIVE_RECORDING');
+      if (state.status === 'cleanup') throw new Error('RECORDING_CLEANUP_PENDING');
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
       }
@@ -661,6 +704,10 @@ export class RecordingManager {
         const restored = await this.restoreSessionUnlocked(sessionId);
         if (!restored) continue;
         const active = this.active.get(sessionId)!;
+        if (active.status === 'cleanup') {
+          await this.finishStopUnlocked(sessionId);
+          continue;
+        }
         if (active.status !== 'active') continue;
         try {
           const response = await this.transport.request('renewRecordingReservation', {
@@ -677,13 +724,27 @@ export class RecordingManager {
     });
   }
 
+  retryCleanupStates(): Promise<void> {
+    return this.enqueue(async () => {
+      const sessionIds = new Set(await this.persistedSessionIdsUnlocked());
+      for (const sessionId of this.active.keys()) sessionIds.add(sessionId);
+      for (const sessionId of sessionIds) {
+        await this.restoreSessionUnlocked(sessionId);
+        if (this.active.get(sessionId)?.status === 'cleanup') {
+          await this.finishStopUnlocked(sessionId);
+        }
+      }
+      await this.refreshCleanupAlarmUnlocked();
+    });
+  }
+
   snapshot(): {
     active: ActiveRecording[];
     replayingSessions: string[];
     prepared: Array<{ id: string; sessionId: string }>;
   } {
     return clone({
-      active: [...this.active.values()],
+      active: [...this.active.values()].filter((state) => state.status !== 'cleanup'),
       replayingSessions: [...this.replaying].sort(),
       prepared: [...this.pending].map(([id, reservation]) => ({
         id,
@@ -693,13 +754,22 @@ export class RecordingManager {
   }
 
   isRecording(sessionId: string): boolean {
-    return this.active.has(sessionId);
+    const status = this.active.get(sessionId)?.status;
+    return status === 'active' || status === 'stopping';
   }
 
-  private async restoreAllUnlocked(): Promise<void> {
+  private async restoreAllUnlocked(): Promise<Set<string>> {
     const sessionIds = new Set(await this.persistedSessionIdsUnlocked());
     for (const sessionId of this.active.keys()) sessionIds.add(sessionId);
-    for (const sessionId of sessionIds) await this.restoreSessionUnlocked(sessionId);
+    const cleanupSessions = new Set<string>();
+    for (const sessionId of sessionIds) {
+      await this.restoreSessionUnlocked(sessionId);
+      if (this.active.get(sessionId)?.status === 'cleanup') {
+        cleanupSessions.add(sessionId);
+        await this.finishStopUnlocked(sessionId);
+      }
+    }
+    return cleanupSessions;
   }
 
   private async restoreSessionUnlocked(sessionId: string): Promise<boolean> {
@@ -733,7 +803,10 @@ export class RecordingManager {
       return false;
     }
     if (stored.status === 'active') await this.scheduler.ensureRenewal();
-    else await this.refreshRenewalAlarmUnlocked();
+    else if (stored.status === 'cleanup') {
+      await this.scheduler.ensureCleanup();
+      await this.refreshRenewalAlarmUnlocked();
+    } else await this.refreshRenewalAlarmUnlocked();
     return true;
   }
 
@@ -818,12 +891,29 @@ export class RecordingManager {
   }
 
   private async finishStopUnlocked(sessionId: string): Promise<boolean> {
+    const current = this.active.get(sessionId);
+    if (!current) return true;
+    if (current.status !== 'cleanup') {
+      const cleanupState: ActiveRecording = { ...current, status: 'cleanup' };
+      this.active.set(sessionId, cleanupState);
+      try {
+        await this.persistActiveUnlocked(cleanupState);
+      } catch {
+        try { await this.scheduler.ensureCleanup(); } catch { /* retried on restore/startup */ }
+        await this.refreshRenewalAlarmUnlocked();
+        return false;
+      }
+    }
+    try { await this.scheduler.ensureCleanup(); } catch { /* removal can still complete */ }
+    await this.refreshRenewalAlarmUnlocked();
     try {
       await this.removeActiveStateUnlocked(sessionId);
     } catch {
+      try { await this.scheduler.ensureCleanup(); } catch { /* retried on restore/startup */ }
       return false;
     }
     await this.refreshRenewalAlarmUnlocked();
+    await this.refreshCleanupAlarmUnlocked();
     return true;
   }
 
@@ -844,7 +934,25 @@ export class RecordingManager {
     }
   }
 
+  private async refreshCleanupAlarmUnlocked(): Promise<void> {
+    try {
+      const keys = await this.sessionStorage.getKeys();
+      let hasCleanup = [...this.active.values()].some((state) => state.status === 'cleanup');
+      for (const key of keys) {
+        if (hasCleanup || !key.startsWith(ACTIVE_MARKER_PREFIX)) continue;
+        const sessionId = key.slice(ACTIVE_MARKER_PREFIX.length);
+        const marker = await this.sessionStorage.get<unknown>(key);
+        if (isRecordingMarker(marker, sessionId) && marker.status === 'cleanup') hasCleanup = true;
+      }
+      if (hasCleanup) await this.scheduler.ensureCleanup();
+      else await this.scheduler.clearCleanup();
+    } catch {
+      // Startup and the persisted cleanup marker retry this best-effort alarm update.
+    }
+  }
+
   private async abortSessionUnlocked(sessionId: string): Promise<void> {
+    await this.restoreSessionUnlocked(sessionId);
     await this.finishStopUnlocked(sessionId);
   }
 
@@ -864,12 +972,18 @@ export async function runRecordedAction<T>(options: {
   run: () => Promise<T>;
   currentUrl: () => Promise<string>;
 }): Promise<T> {
-  const prepared = await options.manager.prepareStep(
-    options.sessionId,
-    options.toolName,
-    options.args,
-    options.tabId,
-  );
+  let prepared: PreparedStep | null;
+  try {
+    prepared = await options.manager.prepareStep(
+      options.sessionId,
+      options.toolName,
+      options.args,
+      options.tabId,
+    );
+  } catch {
+    options.args = {};
+    throw new RecordedStateFailure();
+  }
   options.args = {};
   const startedAt = performance.now();
   let result: T;

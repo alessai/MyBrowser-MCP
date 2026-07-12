@@ -76,6 +76,30 @@ describe("parameterizeArgs", () => {
     );
   });
 
+  it("round-trips prototype-like dynamic form keys as parameterized own data", () => {
+    const fields = Object.create(null) as Record<string, string>;
+    fields.__proto__ = SECRET_FORM;
+    fields.constructor = SECRET_TEXT;
+    fields.prototype = SECRET_SELECT;
+
+    const result = parameterizeArgs("browser_fill_form", { fields }, { nextVariable: 1 });
+    const sanitizedFields = result.args.fields as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(sanitizedFields)).toBeNull();
+    expect(Object.keys(sanitizedFields).sort()).toEqual(["__proto__", "constructor", "prototype"]);
+    expect(Object.hasOwn(sanitizedFields, "__proto__")).toBe(true);
+    expect(sanitizedFields.__proto__).toBe("{{form_1}}");
+    expect(sanitizedFields.constructor).toBe("{{form_2}}");
+    expect(sanitizedFields.prototype).toBe("{{form_3}}");
+    expect(Object.entries(JSON.parse(JSON.stringify(sanitizedFields)) as Record<string, string>)
+      .sort(([left], [right]) => left.localeCompare(right))).toEqual([
+        ["__proto__", "{{form_1}}"],
+        ["constructor", "{{form_2}}"],
+        ["prototype", "{{form_3}}"],
+      ]);
+    expectAbsent(result, [SECRET_FORM, SECRET_TEXT, SECRET_SELECT]);
+  });
+
   it("parameterizes content strings while retaining explicitly safe target structure", () => {
     const state: ParameterizationState = { nextVariable: 1 };
     const result = parameterizeArgs("browser_wait_for", {

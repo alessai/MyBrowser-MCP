@@ -11,7 +11,12 @@ import { RequestScheduler } from '../../lib/request-scheduler';
 import { SessionStateStore } from '../../lib/session-state';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
-import { RECORDING_RENEWAL_ALARM, runRecordedAction } from '../../lib/recorder';
+import {
+  RECORDING_CLEANUP_ALARM,
+  RECORDING_RENEWAL_ALARM,
+  runRecordedAction,
+} from '../../lib/recorder';
+import { RecordingPortGeneration } from '../../lib/recording-transport';
 import {
   acceptRecordingServerMessage,
   configureRecordingTransport,
@@ -107,6 +112,7 @@ export default defineBackground(() => {
   // =====================================================================
 
   let offscreenPort: chrome.runtime.Port | null = null;
+  const recordingPortGeneration = new RecordingPortGeneration(disconnectRecordingTransport);
 
   /** Pending reply callbacks for request/response over port */
   const pendingReplies = new Map<string, (data: unknown) => void>();
@@ -370,8 +376,10 @@ export default defineBackground(() => {
   chrome.runtime.onConnect.addListener((p) => {
     if (p.name !== 'offscreen') return;
     offscreenPort = p;
+    const portGeneration = recordingPortGeneration.replace();
 
     p.onMessage.addListener((msg: { type: string; payload?: unknown; _replyId?: string }) => {
+      if (offscreenPort !== p) return;
       // Handle reply from offscreen (response to our request)
       if (msg.type === '_os_reply' && msg._replyId) {
         const cb = pendingReplies.get(msg._replyId);
@@ -394,7 +402,7 @@ export default defineBackground(() => {
       }
 
       if (msg.type === '_os_disconnected') {
-        disconnectRecordingTransport();
+        recordingPortGeneration.disconnect(portGeneration);
         recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
         setBadge('disconnected');
         return;
@@ -410,8 +418,9 @@ export default defineBackground(() => {
     });
 
     p.onDisconnect.addListener(() => {
-      if (offscreenPort === p) offscreenPort = null;
-      disconnectRecordingTransport();
+      if (offscreenPort !== p) return;
+      offscreenPort = null;
+      recordingPortGeneration.disconnect(portGeneration);
     });
   });
 
@@ -887,6 +896,11 @@ export default defineBackground(() => {
 
   chrome.runtime.onStartup.addListener(async () => {
     await ensureAlive();
+    try {
+      await getRecordingManager().retryCleanupStates();
+    } catch {
+      recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
+    }
   });
 
   // Alarm every 25 seconds to:
@@ -899,6 +913,12 @@ export default defineBackground(() => {
       await ensureAlive();
     } else if (alarm.name === RECORDING_RENEWAL_ALARM) {
       await getRecordingManager().renewPersistedSessions();
+    } else if (alarm.name === RECORDING_CLEANUP_ALARM) {
+      try {
+        await getRecordingManager().retryCleanupStates();
+      } catch {
+        recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
+      }
     }
   });
 

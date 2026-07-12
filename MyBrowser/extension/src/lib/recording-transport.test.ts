@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RecordingRequestBroker } from "./recording-transport";
+import { RecordingPortGeneration, RecordingRequestBroker } from "./recording-transport";
 import { getRecordingTermination } from "./recording-runtime";
 
 const SECRET = "SECRET_TRANSPORT_ALPHA_8107";
@@ -101,6 +101,74 @@ describe("RecordingRequestBroker", () => {
       sessionId: "session-a",
       payload: { name: "flow" },
     }, 10_000)).rejects.toThrow("RECORDING_TRANSPORT_DISCONNECTED");
+  });
+
+  it("cannot reuse a pre-restart id or accept its delayed response", async () => {
+    const oldSent: Array<Record<string, unknown>> = [];
+    const oldBroker = new RecordingRequestBroker((message) => {
+      oldSent.push(message);
+      return true;
+    });
+    const oldRequest = oldBroker.request("renewRecordingReservation", {
+      sessionId: "session-a",
+      name: "flow",
+    }, 10_000);
+    const oldId = oldSent[0]!.id as string;
+    oldBroker.disconnect();
+    await expect(oldRequest).rejects.toThrow("RECORDING_TRANSPORT_DISCONNECTED");
+
+    const newSent: Array<Record<string, unknown>> = [];
+    const restartedBroker = new RecordingRequestBroker((message) => {
+      newSent.push(message);
+      return true;
+    });
+    const newRequest = restartedBroker.request("renewRecordingReservation", {
+      sessionId: "session-a",
+      name: "flow",
+    }, 10_000);
+    const newId = newSent[0]!.id as string;
+
+    expect(oldId).not.toBe(newId);
+    expect(oldId).toMatch(/^recording_request_[0-9a-f-]{36}$/);
+    expect(newId).toMatch(/^recording_request_[0-9a-f-]{36}$/);
+    expect(restartedBroker.accept({
+      type: "renewRecordingReservationResult",
+      id: oldId,
+      ok: true,
+    })).toBe(false);
+    expect(restartedBroker.accept({
+      type: "renewRecordingReservationResult",
+      id: newId,
+      ok: true,
+    })).toBe(true);
+    await expect(newRequest).resolves.toEqual({ ok: true });
+  });
+
+  it("ignores a stale superseded port disconnect and rejects the current generation", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const broker = new RecordingRequestBroker((message) => {
+      sent.push(message);
+      return true;
+    });
+    const ports = new RecordingPortGeneration(() => broker.disconnect());
+    const oldPort = ports.replace();
+    const request = broker.request("persistRecording", {
+      sessionId: "session-a",
+      payload: { name: "flow" },
+    }, 10_000);
+    const id = sent[0]!.id as string;
+    const replacement = ports.replace();
+
+    expect(ports.disconnect(oldPort)).toBe(false);
+    expect(broker.accept({ type: "persistRecordingResult", id, ok: true })).toBe(true);
+    await expect(request).resolves.toEqual({ ok: true });
+
+    const currentRequest = broker.request("persistRecording", {
+      sessionId: "session-a",
+      payload: { name: "next" },
+    }, 10_000);
+    expect(ports.disconnect(replacement)).toBe(true);
+    await expect(currentRequest).rejects.toThrow("RECORDING_TRANSPORT_DISCONNECTED");
   });
 });
 

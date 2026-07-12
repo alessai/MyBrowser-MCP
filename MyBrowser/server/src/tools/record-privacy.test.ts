@@ -279,6 +279,34 @@ describe("recording argument privacy", () => {
     }
   });
 
+  it("accepts omitted generic hints and rejects invalid hints or persisted numeric bounds", () => {
+    const withoutHints = recording();
+    for (const variable of withoutHints.requiredVariables) delete (variable as { hint?: string }).hint;
+    expect(sanitizeRecording(withoutHints).requiredVariables.every((variable) => (
+      variable.hint === undefined
+    ))).toBe(true);
+
+    const invalidHint = recording();
+    (invalidHint.requiredVariables[0]! as { hint?: string }).hint = "Account field";
+    expect(() => sanitizeRecording(invalidHint)).toThrow();
+
+    const mutations: Array<(candidate: ReturnType<typeof recording>) => void> = [
+      (candidate) => { candidate.startedAt = -1; },
+      (candidate) => { candidate.startedAt = Number.POSITIVE_INFINITY; },
+      (candidate) => { candidate.stoppedAt = -1; },
+      (candidate) => { candidate.stoppedAt = Number.NaN; },
+      (candidate) => { candidate.steps[0]!.timestamp = -1; },
+      (candidate) => { candidate.steps[0]!.timestamp = Number.POSITIVE_INFINITY; },
+      (candidate) => { candidate.steps[0]!.durationMs = -1; },
+      (candidate) => { candidate.steps[0]!.durationMs = Number.NaN; },
+    ];
+    for (const mutate of mutations) {
+      const candidate = recording();
+      mutate(candidate);
+      expect(() => sanitizeRecording(candidate)).toThrow();
+    }
+  });
+
   it("never passes an unclassified canary to disk operations", () => {
     const candidate = recording();
     candidate.steps[0]!.args.extra = SECRET_EXTRA;

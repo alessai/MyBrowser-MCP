@@ -100,12 +100,13 @@ const MAX_RECORDING_BYTES = 2 * 1024 * 1024;
 const RequiredVariableSchema = z.object({
   name: z.string().regex(/^(input|form|select|navigation|clipboard)_\d+$/),
   source: z.enum(["text", "form", "select", "navigation", "clipboard"]),
-  hint: z.string().regex(/^(text|form|select|navigation|clipboard)_input_\d+$/),
+  hint: z.string().regex(/^(text|form|select|navigation|clipboard)_input_\d+$/).optional(),
 }).strict().superRefine((variable, context) => {
   const match = /^(input|form|select|navigation|clipboard)_(\d+)$/.exec(variable.name);
   if (!match) return;
   const expectedSource = match[1] === "input" ? "text" : match[1];
-  if (variable.source !== expectedSource || variable.hint !== `${expectedSource}_input_${match[2]}`) {
+  if (variable.source !== expectedSource
+    || (variable.hint !== undefined && variable.hint !== `${expectedSource}_input_${match[2]}`)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid generic variable metadata" });
   }
 });
@@ -113,15 +114,15 @@ const RequiredVariableSchema = z.object({
 const RecordedStepSchema = z.object({
   action: z.string().min(1),
   args: z.record(z.unknown()),
-  timestamp: z.number().finite(),
+  timestamp: z.number().finite().nonnegative(),
   durationMs: z.number().finite().nonnegative(),
   url: z.string(),
 }).strict();
 
 export const RecordingSchema = z.object({
   name: z.string().min(1),
-  startedAt: z.number().finite(),
-  stoppedAt: z.number().finite(),
+  startedAt: z.number().finite().nonnegative(),
+  stoppedAt: z.number().finite().nonnegative(),
   url: z.string(),
   steps: z.array(RecordedStepSchema).max(MAX_RECORDING_STEPS),
   requiredVariables: z.array(RequiredVariableSchema),

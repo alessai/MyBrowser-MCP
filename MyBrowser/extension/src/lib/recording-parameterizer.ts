@@ -132,7 +132,7 @@ export function parameterizeArgs(
     }
 
     if (isPlainRecord(value)) {
-      const result: Record<string, unknown> = {};
+      const result = Object.create(null) as Record<string, unknown>;
       for (const [key, entry] of Object.entries(value)) {
         const childPath = path === 'fields' ? 'fields.*' : path ? `${path}.${key}` : key;
         result[key] = transform(entry, childPath);

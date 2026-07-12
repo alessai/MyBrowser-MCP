@@ -1,5 +1,5 @@
 import { recordExtensionIssue } from './diagnostics';
-import { isRecordedActionFailure } from './recorder';
+import { isRecordedActionFailure, isRecordedStateFailure } from './recorder';
 
 export interface ToolFailureMetadata {
   requestId: string;
@@ -30,18 +30,21 @@ export function reportToolFailure(
   metadata: ToolFailureMetadata,
 ): { responseError: string; category: string; recorded: boolean } {
   const recorded = isRecordedActionFailure(error);
-  const category = recorded ? 'RECORDED_TOOL_ACTION_FAILED' : 'TOOL_REQUEST_FAILED';
+  const recordedState = isRecordedStateFailure(error);
+  const category = recorded
+    ? 'RECORDED_TOOL_ACTION_FAILED'
+    : recordedState ? 'RECORDED_STATE_FAILED' : 'TOOL_REQUEST_FAILED';
   recordExtensionIssue('tool_failure', category, {
     requestId: metadata.requestId,
     toolType: metadata.toolType,
     category,
-    recorded,
+    recorded: recorded || recordedState,
   });
   return {
-    responseError: recorded
-      ? 'RECORDED_TOOL_ACTION_FAILED'
+    responseError: recorded || recordedState
+      ? category
       : error instanceof Error ? error.message : String(error),
     category,
-    recorded,
+    recorded: recorded || recordedState,
   };
 }

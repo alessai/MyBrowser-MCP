@@ -41,6 +41,7 @@ class MemoryStorage implements RecordingStorage {
   readonly events: string[];
   failSet: Error | undefined;
   failGet: Error | undefined;
+  failGetKeys: Error | undefined;
   failHas: Error | undefined;
   failSetKey: string | undefined;
   failSetKeyOnCall: number | undefined;
@@ -66,6 +67,7 @@ class MemoryStorage implements RecordingStorage {
   }
 
   async getKeys(): Promise<string[]> {
+    if (this.failGetKeys) throw this.failGetKeys;
     return [...this.values.keys()];
   }
 
@@ -116,6 +118,8 @@ class MemoryStorage implements RecordingStorage {
 class FakeScheduler implements RecordingAlarmScheduler {
   ensured = 0;
   cleared = 0;
+  cleanupEnsured = 0;
+  cleanupCleared = 0;
   failClear = false;
 
   async ensureRenewal(): Promise<void> {
@@ -125,6 +129,14 @@ class FakeScheduler implements RecordingAlarmScheduler {
   async clearRenewal(): Promise<void> {
     this.cleared += 1;
     if (this.failClear) throw new Error("ALARM_CLEAR_FAILED");
+  }
+
+  async ensureCleanup(): Promise<void> {
+    this.cleanupEnsured += 1;
+  }
+
+  async clearCleanup(): Promise<void> {
+    this.cleanupCleared += 1;
   }
 }
 
@@ -402,7 +414,7 @@ describe("runRecordedAction", () => {
         return "unexpected";
       },
       currentUrl: async () => "https://example.test",
-    })).rejects.toThrow("RECORDING_STATE_LIMIT");
+    })).rejects.toThrow("RECORDED_STATE_FAILED");
 
     expect(actionRan).toBe(false);
   });
@@ -486,6 +498,54 @@ describe("runRecordedAction", () => {
     expectAbsent(evidence);
   });
 
+  it("wraps prepare restore and storage failures in a stable private envelope", async () => {
+    for (const failurePoint of ["getKeys", "get"] as const) {
+      const sessionStorage = new MemoryStorage();
+      if (failurePoint === "get") {
+        const first = createManager({ sessionStorage });
+        await first.manager.start("session-a", "prepare-private", 11, "https://example.test");
+        sessionStorage.failGet = new Error(`RESTORE_EXPOSED_${SECRET_TEXT}`);
+      } else {
+        sessionStorage.failGetKeys = new Error(`STORAGE_EXPOSED_${SECRET_FORM}`);
+      }
+      const { manager } = createManager({ sessionStorage });
+      const run = vi.fn(async () => "must-not-run");
+      const error = await runRecordedAction({
+        manager,
+        sessionId: "session-a",
+        toolName: "browser_click",
+        args: { element: "Account" },
+        tabId: 11,
+        run,
+        currentUrl: async () => "https://example.test",
+      }).catch((caught: unknown) => caught);
+      const issueCount = getRecentExtensionIssues(100).length;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const failure = reportToolFailure(error, {
+        requestId: `prepare-${failurePoint}`,
+        toolType: "browser_click",
+      });
+      const evidence = {
+        response: failure.responseError,
+        diagnostics: getRecentExtensionIssues(100).slice(issueCount),
+        console: [...consoleError.mock.calls, ...consoleWarn.mock.calls],
+        storage: sessionStorage.writes,
+        snapshot: manager.snapshot(),
+      };
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+
+      expect(run).not.toHaveBeenCalled();
+      expect(failure).toEqual({
+        responseError: "RECORDED_STATE_FAILED",
+        category: "RECORDED_STATE_FAILED",
+        recorded: true,
+      });
+      expectAbsent(evidence);
+    }
+  });
+
   it("reserves worst-case UTF-8 page metadata before browser effects", async () => {
     const { manager } = createManager({
       limits: { maxSteps: 1_000, maxRecordingBytes: 15_000, maxAggregateBytes: 50_000 },
@@ -503,7 +563,7 @@ describe("runRecordedAction", () => {
         actionRan = true;
       },
       currentUrl: async () => `https://example.test/${"界".repeat(8_192)}`,
-    })).rejects.toThrow("RECORDING_STATE_LIMIT");
+    })).rejects.toThrow("RECORDED_STATE_FAILED");
     expect(actionRan).toBe(false);
   });
 });
@@ -776,7 +836,7 @@ describe("RecordingManager restart and stop persistence", () => {
     const recording = snapshot.recording as Record<string, unknown>;
     mismatchedStorage.values.set("active-recording:session-a", {
       ...snapshot,
-      status: "stopping",
+      status: "cleanup",
       recording: { ...recording, stoppedAt: 1_700_000_000_001 },
     });
     mismatchedStorage.reads.length = 0;
@@ -839,6 +899,73 @@ describe("RecordingManager restart and stop persistence", () => {
       "active-recording-index:session-b",
     ]);
     expect(scheduler.cleared).toBeGreaterThan(0);
+  });
+
+  it("persists cleanup state when active session closure removal fails and retries after restart", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "cleanup-active", 11, "https://example.test");
+    sessionStorage.failRemoveMany = new Error(`REMOVE_FAILED_${SECRET_TEXT}`);
+
+    await first.manager.abortSession("session-a");
+
+    expect(sessionStorage.values.get("active-recording-index:session-a")).toEqual({
+      sessionId: "session-a",
+      status: "cleanup",
+    });
+    expect(sessionStorage.values.get("active-recording:session-a")).toMatchObject({
+      sessionId: "session-a",
+      status: "cleanup",
+    });
+    expect(first.manager.snapshot().active).toEqual([]);
+    expect(first.scheduler.cleanupEnsured).toBeGreaterThan(0);
+    await expect(first.manager.start(
+      "session-a",
+      "must-not-resurrect",
+      11,
+      "https://example.test",
+    )).rejects.toThrow("ACTIVE_RECORDING_EXISTS");
+
+    const restarted = createManager({ sessionStorage });
+    await restarted.manager.renewPersistedSessions();
+    expect(restarted.transport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(restarted.scheduler.cleanupEnsured).toBeGreaterThan(0);
+
+    sessionStorage.failRemoveMany = undefined;
+    await restarted.manager.retryCleanupStates();
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(restarted.scheduler.cleanupCleared).toBeGreaterThan(0);
+    expectAbsent({ writes: sessionStorage.writes, snapshot: restarted.manager.snapshot() });
+  });
+
+  it("converts stopping recovery to cleanup on session closure without exposing it", async () => {
+    const sessionStorage = new MemoryStorage();
+    const transport = new FakeTransport();
+    transport.responses.push(new Error("SERVER_UNAVAILABLE"));
+    const first = createManager({ sessionStorage, transport });
+    await first.manager.start("session-a", "cleanup-stopping", 11, "https://example.test");
+    const partial = await first.manager.stop("session-a");
+    sessionStorage.failRemoveMany = new Error(`REMOVE_FAILED_${SECRET_FORM}`);
+
+    await first.manager.abortSession("session-a");
+
+    expect(sessionStorage.values.get("active-recording:session-a")).toMatchObject({
+      status: "cleanup",
+      stopStatus: { extensionSaved: false, serverSaved: false, error: "SERVER_PERSIST_FAILED" },
+    });
+    expect(first.manager.snapshot().active).toEqual([]);
+    await expect(first.manager.stop("session-a")).rejects.toThrow("RECORDING_CLEANUP_PENDING");
+    expect(first.manager.isRecording("session-a")).toBe(false);
+
+    sessionStorage.failRemoveMany = undefined;
+    const restarted = createManager({ sessionStorage });
+    await restarted.manager.retryCleanupStates();
+    expect(restarted.transport.requests).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expectAbsent({ partial, writes: sessionStorage.writes, snapshot: restarted.manager.snapshot() });
   });
 
   it("persists to the server before creating the local completed copy", async () => {
@@ -914,11 +1041,11 @@ describe("RecordingManager restart and stop persistence", () => {
       serverSaved: true,
       error: "ACTIVE_STATE_CLEANUP_FAILED",
     });
-    expect(manager.snapshot().active).toHaveLength(1);
+    expect(manager.snapshot().active).toHaveLength(0);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
     expect(sessionStorage.values.get("active-recording-index:session-a")).toEqual({
       sessionId: "session-a",
-      status: "stopping",
+      status: "cleanup",
     });
     expect(sessionStorage.removeManyCalls.at(-1)).toEqual([
       "active-recording:session-a",
@@ -928,21 +1055,19 @@ describe("RecordingManager restart and stop persistence", () => {
     await manager.renewPersistedSessions();
     await manager.expireReservation("session-a");
     expect(transport.requests).toHaveLength(requestsBeforeTick);
-    expect(manager.snapshot().active).toHaveLength(1);
+    expect(manager.snapshot().active).toHaveLength(0);
 
     sessionStorage.failRemoveMany = undefined;
     const restarted = createManager({ sessionStorage, localStorage });
-    const retried = await restarted.manager.stop("session-a");
-    expect(retried).toMatchObject({ extensionSaved: true, serverSaved: true });
+    await restarted.manager.retryCleanupStates();
     expect(restarted.transport.requests).toEqual([]);
-    expect(retried).not.toHaveProperty("error");
-    expect(retried.recording).toEqual(partial.recording);
     expect(restarted.manager.snapshot().active).toEqual([]);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expect(localStorage.writes.filter((entry) => JSON.stringify(entry).includes("recording:cleanup-key")))
       .toHaveLength(1);
-    expectAbsent({ partial, retried, storage: sessionStorage.writes, local: localStorage.writes });
+    expect(localStorage.values.get("recording:cleanup-key")).toEqual(partial.recording);
+    expectAbsent({ partial, storage: sessionStorage.writes, local: localStorage.writes });
   });
 
   it("treats alarm clearing as best effort after atomic state removal", async () => {
@@ -1018,5 +1143,42 @@ describe("RecordingManager restart and stop persistence", () => {
       error: "LOCAL_PERSIST_FAILED",
     });
     expectAbsent(result);
+  });
+
+  it("accepts omitted generic hints and rejects invalid or non-finite persisted numerics", async () => {
+    const { manager } = createManager();
+    await manager.start("session-a", "schema-bounds", 11, "https://example.test");
+    await runRecordedAction({
+      manager,
+      sessionId: "session-a",
+      toolName: "browser_type",
+      args: { element: "Account", text: SECRET_TEXT },
+      tabId: 11,
+      run: async () => "ok",
+      currentUrl: async () => "https://example.test/current",
+    });
+    const stopped = await manager.stop("session-a");
+    const withoutHint = structuredClone(stopped.recording);
+    delete withoutHint.requiredVariables[0]!.hint;
+    expect(isSanitizedRecording(withoutHint)).toBe(true);
+    const invalidHint = structuredClone(withoutHint);
+    invalidHint.requiredVariables[0]!.hint = "Account field";
+    expect(isSanitizedRecording(invalidHint)).toBe(false);
+
+    const numericMutations: Array<(recording: typeof stopped.recording) => void> = [
+      (recording) => { recording.startedAt = -1; },
+      (recording) => { recording.startedAt = Number.POSITIVE_INFINITY; },
+      (recording) => { recording.stoppedAt = -1; },
+      (recording) => { recording.stoppedAt = Number.NaN; },
+      (recording) => { recording.steps[0]!.timestamp = -1; },
+      (recording) => { recording.steps[0]!.timestamp = Number.POSITIVE_INFINITY; },
+      (recording) => { recording.steps[0]!.durationMs = -1; },
+      (recording) => { recording.steps[0]!.durationMs = Number.NaN; },
+    ];
+    for (const mutate of numericMutations) {
+      const candidate = structuredClone(stopped.recording);
+      mutate(candidate);
+      expect(isSanitizedRecording(candidate)).toBe(false);
+    }
   });
 });
