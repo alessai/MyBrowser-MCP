@@ -56,6 +56,47 @@ export interface WsServerOptions {
   context: Context;
   recordingsDir?: string;
   recordingFileOps?: Partial<RecordingFileOps>;
+  recordingRetryRegistry?: RecordingRetryRegistry;
+}
+
+interface RecordingRetryPayload {
+  readonly name: string;
+  readonly canonical: string;
+}
+
+export const MAX_UNRESOLVED_RECORDING_RETRIES_PER_SESSION = 1;
+
+export class RecordingRetryRegistry {
+  private readonly bySession = new Map<string, RecordingRetryPayload>();
+
+  canRetain(sessionId: string, name: string, canonical: string): boolean {
+    const existing = this.bySession.get(sessionId);
+    if (existing) return existing.name === name && existing.canonical === canonical;
+    return MAX_UNRESOLVED_RECORDING_RETRIES_PER_SESSION > 0;
+  }
+
+  retain(sessionId: string, name: string, canonical: string): boolean {
+    if (!this.canRetain(sessionId, name, canonical)) return false;
+    this.bySession.set(sessionId, { name, canonical });
+    return true;
+  }
+
+  match(sessionId: string, name: string, canonical: string): boolean {
+    const existing = this.bySession.get(sessionId);
+    return existing?.name === name && existing.canonical === canonical;
+  }
+
+  clearSession(sessionId: string): void {
+    this.bySession.delete(sessionId);
+  }
+
+  clearExpired(sessionId: string, name: string): void {
+    if (this.bySession.get(sessionId)?.name === name) this.bySession.delete(sessionId);
+  }
+
+  count(sessionId?: string): number {
+    return sessionId === undefined ? this.bySession.size : Number(this.bySession.has(sessionId));
+  }
 }
 
 export interface WsServerResult {
@@ -153,7 +194,7 @@ function isPortInUse(port: number): Promise<boolean> {
 async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
   const stateManager = new LocalStateManager();
-  const persistedRecordingRetries = new Map<string, Map<string, string>>();
+  const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
 
   // Wire up browser listing to context
   stateManager.setListBrowsersFn(() => context.listBrowsers());
@@ -182,7 +223,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     await step(() => stateManager.releaseLocksForSession(sessionId));
     await step(() => stateManager.clearEventHandlersForSession(sessionId));
     await step(() => stateManager.removeSession(sessionId));
-    persistedRecordingRetries.delete(sessionId);
+    recordingRetryRegistry.clearSession(sessionId);
     if (errors.length > 0) {
       throw new AggregateError(errors, `cleanupSession(${sessionId})`);
     }
@@ -227,6 +268,11 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   // for sessions that registered handlers via implicit single-browser
   // resolution.
   stateManager.setBroadcastToBrowsersFn((type, payload) => {
+    if (type === "recording_reservation_expired" && isRecord(payload)) {
+      const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+      const name = typeof payload.name === "string" ? payload.name : "";
+      if (sessionId && name) recordingRetryRegistry.clearExpired(sessionId, name);
+    }
     const msg = JSON.stringify({
       id: `bcast_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
       type,
@@ -600,8 +646,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           .hasRecordingReservation(sessionId, recording.name)
           .then(async (hasReservation) => {
             if (!hasReservation) {
-              const retryRecordings = persistedRecordingRetries.get(sessionId);
-              if (retryRecordings?.get(recording.name) === canonicalRecording) {
+              if (recordingRetryRegistry.match(sessionId, recording.name, canonicalRecording)) {
+                recordingRetryRegistry.clearSession(sessionId);
                 try {
                   saveRecordingToFile(
                     recording,
@@ -627,24 +673,31 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
               return;
             }
 
-            const retryRecordings = persistedRecordingRetries.get(sessionId) ?? new Map<string, string>();
-            const expectedRecording = retryRecordings.get(recording.name);
-            if (expectedRecording !== undefined && expectedRecording !== canonicalRecording) {
+            if (!recordingRetryRegistry.canRetain(sessionId, recording.name, canonicalRecording)) {
               throw new Error("Recording recovery payload changed");
             }
-            retryRecordings.set(recording.name, canonicalRecording);
-            persistedRecordingRetries.set(sessionId, retryRecordings);
-            saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
-            const released = await stateManager.releaseRecordingReservation(
-              sessionId,
-              recording.name,
-            );
-            if (!released) {
-              const stillLive = await stateManager.hasRecordingReservation(
+            let durableWriteSucceeded = false;
+            try {
+              saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
+              durableWriteSucceeded = true;
+              recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
+              const released = await stateManager.releaseRecordingReservation(
                 sessionId,
                 recording.name,
               );
-              if (stillLive) throw new Error("Recording reservation release failed");
+              if (released) {
+                recordingRetryRegistry.clearSession(sessionId);
+              } else {
+                const stillLive = await stateManager.hasRecordingReservation(
+                  sessionId,
+                  recording.name,
+                );
+                if (stillLive) throw new Error("Recording reservation release failed");
+                recordingRetryRegistry.clearSession(sessionId);
+              }
+            } catch (error) {
+              if (!durableWriteSucceeded) recordingRetryRegistry.clearSession(sessionId);
+              throw error;
             }
             safeSend(ws, {
               type: "persistRecordingResult",

@@ -29,6 +29,7 @@ import * as recordingTools from "./tools/record.js";
 import type { Tool } from "./tools/types.js";
 import {
   createWebSocketServer,
+  RecordingRetryRegistry,
   type WsServerOptions,
   type WsServerResult,
 } from "./ws-server.js";
@@ -163,6 +164,7 @@ function waitForClose(ws: WebSocket): Promise<CloseEvent> {
 async function startHub(
   recordingsDir?: string,
   recordingFileOps?: WsServerOptions["recordingFileOps"],
+  recordingRetryRegistry?: RecordingRetryRegistry,
 ): Promise<WsServerResult> {
   const result = await createWebSocketServer({
     host: "127.0.0.1",
@@ -171,6 +173,7 @@ async function startHub(
     context: new Context(),
     recordingsDir,
     recordingFileOps,
+    recordingRetryRegistry,
   });
   servers.push(result);
   expect(result.isHub).toBe(true);
@@ -233,11 +236,12 @@ async function callHubRpc(
 async function setupReservedRecording(
   recordingsDir: string,
   recordingFileOps?: WsServerOptions["recordingFileOps"],
+  recordingRetryRegistry?: RecordingRetryRegistry,
 ): Promise<{
   server: WsServerResult;
   extension: WebSocket;
 }> {
-  const server = await startHub(recordingsDir, recordingFileOps);
+  const server = await startHub(recordingsDir, recordingFileOps, recordingRetryRegistry);
   const extension = await connect(server);
   await authenticate(extension, "extension");
   const client = await connect(server);
@@ -1223,6 +1227,22 @@ describe("recording tools and persistence", () => {
 });
 
 describe("acknowledged recording reservation messages", () => {
+  it("bounds unresolved canonical retry state to one payload per session and clears cleanup state", () => {
+    const registry = new RecordingRetryRegistry();
+    expect(registry.retain("session-a", "flow-a", "canonical-a")).toBe(true);
+    expect(registry.retain("session-a", "flow-b", "canonical-b")).toBe(false);
+    expect(registry.count("session-a")).toBe(1);
+    expect(registry.match("session-a", "flow-a", "canonical-a")).toBe(true);
+    registry.clearExpired("session-a", "other");
+    expect(registry.count("session-a")).toBe(1);
+    registry.clearExpired("session-a", "flow-a");
+    expect(registry.count("session-a")).toBe(0);
+    expect(registry.retain("session-a", "flow-a", "canonical-a")).toBe(true);
+    registry.clearSession("session-a");
+    expect(registry.count("session-a")).toBe(0);
+    expect(registry.count()).toBe(0);
+  });
+
   it("renews a live matching reservation with a correlated acknowledgement", async () => {
     const server = await startHub();
     const extension = await connect(server);
@@ -1256,7 +1276,8 @@ describe("acknowledged recording reservation messages", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-ws-"));
     tempDirs.push(base);
     const recordingsDir = join(base, "recordings");
-    const server = await startHub(recordingsDir);
+    const retryRegistry = new RecordingRetryRegistry();
+    const server = await startHub(recordingsDir, undefined, retryRegistry);
     const extension = await connect(server);
     await authenticate(extension, "extension");
     const client = await connect(server);
@@ -1284,13 +1305,15 @@ describe("acknowledged recording reservation messages", () => {
       .toMatchObject({ name: "Checkout_Flow", steps: validRecording.steps });
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(false);
+    expect(retryRegistry.count("session-a")).toBe(0);
 
     const original = readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8");
     await expect(persistRecordingMessage(extension, "persist-cleanup-retry"))
       .resolves.toEqual({
         type: "persistRecordingResult",
         id: "persist-cleanup-retry",
-        ok: true,
+        ok: false,
+        error: "reservation unavailable",
       });
     await expect(persistRecordingMessage(extension, "persist-cleanup-different", {
       ...validRecording,
@@ -1302,6 +1325,37 @@ describe("acknowledged recording reservation messages", () => {
       error: "reservation unavailable",
     });
     expect(readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8")).toBe(original);
+  });
+
+  it("keeps canonical retry retention at zero across many successful recordings", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-long-session-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const retryRegistry = new RecordingRetryRegistry();
+    const server = await startHub(recordingsDir, undefined, retryRegistry);
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "register-long", "registerSession", { sessionId: "session-a" });
+
+    for (let index = 0; index < 20; index += 1) {
+      const name = `long-session-${index}`;
+      await callHubRpc(client, `reserve-${index}`, "reserveRecording", {
+        name,
+        leaseMs: 1_800_000,
+      });
+      await expect(persistRecordingMessage(extension, `persist-${index}`, {
+        ...validRecording,
+        name,
+      })).resolves.toEqual({
+        type: "persistRecordingResult",
+        id: `persist-${index}`,
+        ok: true,
+      });
+      expect(retryRegistry.count("session-a")).toBe(0);
+    }
+    expect(retryRegistry.count()).toBe(0);
   });
 
   it("does not release or acknowledge when new descriptor fchmod fails", async () => {
@@ -1327,17 +1381,18 @@ describe("acknowledged recording reservation messages", () => {
       .resolves.toBe(true);
   });
 
-  it("recovers the exact sanitized payload after a failed persist and wrapper release", async () => {
+  it("does not retain a canonical payload after a failed persist and wrapper release", async () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-recovery-"));
     tempDirs.push(base);
     const recordingsDir = join(base, "recordings");
     let failWrite = true;
+    const retryRegistry = new RecordingRetryRegistry();
     const { server, extension } = await setupReservedRecording(recordingsDir, {
       fchmodSync: (fd, mode) => {
         if (failWrite) throw new Error("injected recovery failure");
         fchmodSync(fd, mode);
       },
-    });
+    }, retryRegistry);
 
     await expect(persistRecordingMessage(extension, "persist-recovery-first")).resolves.toEqual({
       type: "persistRecordingResult",
@@ -1347,6 +1402,7 @@ describe("acknowledged recording reservation messages", () => {
     });
     await expect(server.stateManager.releaseRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(true);
+    expect(retryRegistry.count("session-a")).toBe(0);
     failWrite = false;
 
     await expect(persistRecordingMessage(extension, "persist-recovery-changed", {
@@ -1361,17 +1417,18 @@ describe("acknowledged recording reservation messages", () => {
     await expect(persistRecordingMessage(extension, "persist-recovery-retry")).resolves.toEqual({
       type: "persistRecordingResult",
       id: "persist-recovery-retry",
-      ok: true,
+      ok: false,
+      error: "reservation unavailable",
     });
-    expect(JSON.parse(readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8")))
-      .toMatchObject({ name: "Checkout_Flow", steps: validRecording.steps });
+    expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
   });
 
   it("does not acknowledge false live release and retries only an identical artifact", async () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-release-live-"));
     tempDirs.push(base);
     const recordingsDir = join(base, "recordings");
-    const { server, extension } = await setupReservedRecording(recordingsDir);
+    const retryRegistry = new RecordingRetryRegistry();
+    const { server, extension } = await setupReservedRecording(recordingsDir, undefined, retryRegistry);
     const releaseOriginal = server.stateManager.releaseRecordingReservation.bind(server.stateManager);
     const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
       .mockResolvedValueOnce(false)
@@ -1383,6 +1440,7 @@ describe("acknowledged recording reservation messages", () => {
       ok: false,
       error: "persistence failed",
     });
+    expect(retryRegistry.count("session-a")).toBe(1);
     const filePath = join(recordingsDir, "Checkout_Flow.json");
     const original = readFileSync(filePath, "utf8");
     await expect(persistRecordingMessage(extension, "persist-different", {
@@ -1396,6 +1454,7 @@ describe("acknowledged recording reservation messages", () => {
     });
     expect(readFileSync(filePath, "utf8")).toBe(original);
     expect(release).toHaveBeenCalledTimes(1);
+    expect(retryRegistry.count("session-a")).toBe(1);
 
     await expect(persistRecordingMessage(extension, "persist-identical-retry")).resolves.toEqual({
       type: "persistRecordingResult",
@@ -1406,6 +1465,7 @@ describe("acknowledged recording reservation messages", () => {
     expect(release).toHaveBeenCalledTimes(2);
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(false);
+    expect(retryRegistry.count("session-a")).toBe(0);
   });
 
   it("acknowledges false release only after confirming the reservation expired", async () => {

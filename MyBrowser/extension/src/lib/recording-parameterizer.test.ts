@@ -118,6 +118,37 @@ describe("parameterizeArgs", () => {
     }
   });
 
+  it("rejects wrong primitive and container types for every recordable action", () => {
+    const probes: Array<[keyof typeof TOOL_METADATA, Record<string, unknown>]> = [
+      ["browser_navigate", { tabId: true }],
+      ["browser_go_back", { tabId: true }],
+      ["browser_go_forward", { tabId: null }],
+      ["browser_wait", { time: null }],
+      ["browser_click", { mark: true }],
+      ["browser_type", { submit: 1 }],
+      ["browser_hover", { mark: false }],
+      ["browser_press_key", { tabId: false }],
+      ["browser_drag", { startMark: true }],
+      ["browser_select_option", { mark: false }],
+      ["browser_set_viewport", { tabId: false }],
+      ["browser_reset_viewport", { tabId: false }],
+      ["browser_fill_form", { submitAfter: 1 }],
+      ["browser_wait_for", { timeout: null }],
+      ["browser_clipboard", { tabId: false }],
+    ];
+
+    for (const [action, args] of probes) {
+      expect(() => parameterizeArgs(action, args, { nextVariable: 1 }), action)
+        .toThrow("RECORDING_METADATA_MISMATCH");
+    }
+    expect(() => parameterizeArgs("browser_wait", { time: Number.NaN }, { nextVariable: 1 }))
+      .toThrow("RECORDING_METADATA_MISMATCH");
+    expect(() => parameterizeArgs("browser_fill_form", { fields: [] }, { nextVariable: 1 }))
+      .toThrow("RECORDING_METADATA_MISMATCH");
+    expect(() => parameterizeArgs("browser_select_option", { values: [1] }, { nextVariable: 1 }))
+      .toThrow("RECORDING_METADATA_MISMATCH");
+  });
+
   it("documents the accepted URL residual and full-URL sensitivity boundary", () => {
     const state: ParameterizationState = { nextVariable: 1 };
     const ordinary = "https://example.test/accounts/42";

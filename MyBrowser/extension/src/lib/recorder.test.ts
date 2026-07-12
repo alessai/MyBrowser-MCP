@@ -573,11 +573,59 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(recoveryTransport.requests).toEqual([]);
     expect(restarted.manager.snapshot().active[0]).toMatchObject({ status: "stopping" });
 
-    const recovered = await restarted.manager.stop("session-a");
-    expect(recovered).toMatchObject({ extensionSaved: true, serverSaved: true });
-    expect(recovered.recording).toEqual(partial.recording);
+    const surfaced = await restarted.manager.stop("session-a");
+    expect(surfaced).toEqual(partial);
+    expect(recoveryTransport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active).toHaveLength(1);
+    await restarted.manager.abortSession("session-a");
     expect(restarted.manager.snapshot().active).toEqual([]);
-    expectAbsent({ partial, recovered, storage: sessionStorage.writes, local: localStorage.writes });
+    expectAbsent({ partial, surfaced, storage: sessionStorage.writes, local: localStorage.writes });
+  });
+
+  it("runs click, type, and navigation unrecorded while cached recovery blocks start", async () => {
+    const transport = new FakeTransport();
+    transport.responses.push(new Error(`persist failed ${SECRET_TEXT}`));
+    const { manager, sessionStorage } = createManager({ transport });
+    await manager.start("session-a", "browse-during-recovery", 11, "https://example.test");
+    const partial = await manager.stop("session-a");
+    const executed: string[] = [];
+
+    for (const [toolName, args] of [
+      ["browser_click", { element: "Continue" }],
+      ["browser_type", { element: "Search", text: SECRET_FORM }],
+      ["browser_navigate", { url: `https://example.test/?secret=${SECRET_URL}` }],
+    ] as const) {
+      const result = await runRecordedAction({
+        manager,
+        sessionId: "session-a",
+        toolName,
+        args,
+        tabId: 11,
+        run: async () => {
+          executed.push(toolName);
+          return { success: true };
+        },
+        currentUrl: async () => {
+          throw new Error("recovery actions must not capture metadata");
+        },
+      });
+      expect(result).toEqual({ success: true });
+    }
+
+    expect(executed).toEqual(["browser_click", "browser_type", "browser_navigate"]);
+    expect(manager.snapshot().active[0]).toMatchObject({
+      status: "stopping",
+      recording: { steps: [] },
+    });
+    await expect(manager.start("session-a", "replacement", 11, "https://example.test"))
+      .rejects.toThrow("ACTIVE_RECORDING_EXISTS");
+
+    const requestCount = transport.requests.length;
+    const surfaced = await manager.stop("session-a");
+    expect(surfaced).toEqual(partial);
+    expect(transport.requests).toHaveLength(requestCount);
+    expect(manager.snapshot().active).toHaveLength(1);
+    expectAbsent({ partial, surfaced, storage: sessionStorage.writes, snapshot: manager.snapshot() });
   });
 
   it("cleans recovery after durable server success even when local persistence fails", async () => {

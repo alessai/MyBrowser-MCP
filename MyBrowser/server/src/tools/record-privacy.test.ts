@@ -5,8 +5,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
+  SERVER_RECORDING_ARGUMENT_TYPES,
   SERVER_RECORDING_STRING_METADATA,
-  SERVER_RECORDING_NON_STRING_PATHS,
   sanitizeRecording,
   saveRecordingToFile,
 } from "./record.js";
@@ -61,7 +61,7 @@ function recording() {
 
 function extensionRecordingMetadata(): {
   strings: Record<string, Record<string, string>>;
-  nonStrings: Record<string, string[]>;
+  types: Record<string, Record<string, string>>;
 } {
   const source = readFileSync(
     resolve(process.cwd(), "../extension/src/lib/tool-metadata.ts"),
@@ -80,7 +80,7 @@ function extensionRecordingMetadata(): {
     strings: Object.fromEntries(Object.entries(metadata)
     .filter(([, value]) => value.recordable)
     .map(([action, value]) => [action, value.recordingStrings ?? {}])),
-    nonStrings: exports.RECORDING_NON_STRING_PATHS as Record<string, string[]>,
+    types: exports.RECORDING_ARGUMENT_TYPES as Record<string, Record<string, string>>,
   };
 }
 
@@ -88,7 +88,7 @@ describe("recording argument privacy", () => {
   it("keeps the server action map conformant with extension metadata", () => {
     const extension = extensionRecordingMetadata();
     expect(SERVER_RECORDING_STRING_METADATA).toEqual(extension.strings);
-    expect(SERVER_RECORDING_NON_STRING_PATHS).toEqual(extension.nonStrings);
+    expect(SERVER_RECORDING_ARGUMENT_TYPES).toEqual(extension.types);
   });
 
   it("default-denies unclassified top-level and nested strings for every recordable action", () => {
@@ -108,6 +108,49 @@ describe("recording argument privacy", () => {
       const nestedStep = nested.steps.find((candidate) => candidate.action === action)!;
       nestedStep.args.extra = { deep: `${SECRET_NESTED}_${action}` };
       expect(() => sanitizeRecording(nested), action).toThrow("unsanitized action data");
+    }
+  });
+
+  it("default-denies wrong primitive and container types for every recordable action", () => {
+    const probes: Record<string, (args: Record<string, unknown>) => void> = {
+      browser_navigate: (args) => { args.tabId = true; },
+      browser_go_back: (args) => { args.tabId = true; },
+      browser_go_forward: (args) => { args.tabId = null; },
+      browser_wait: (args) => { args.time = null; },
+      browser_click: (args) => { args.mark = true; },
+      browser_type: (args) => { args.submit = 1; },
+      browser_hover: (args) => { args.mark = false; },
+      browser_press_key: (args) => { args.tabId = false; },
+      browser_drag: (args) => { args.startMark = true; },
+      browser_select_option: (args) => { args.mark = false; },
+      browser_set_viewport: (args) => { args.tabId = false; },
+      browser_reset_viewport: (args) => { args.tabId = false; },
+      browser_fill_form: (args) => { args.submitAfter = 1; },
+      browser_wait_for: (args) => { args.timeout = null; },
+      browser_clipboard: (args) => { args.tabId = false; },
+    };
+    expect(Object.keys(probes).sort()).toEqual(Object.keys(actionArgs).sort());
+
+    for (const [action, mutate] of Object.entries(probes)) {
+      const candidate = recording();
+      mutate(candidate.steps.find((step) => step.action === action)!.args);
+      expect(() => sanitizeRecording(candidate), action).toThrow("unsanitized action data");
+    }
+
+    for (const invalidTime of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const candidate = recording();
+      candidate.steps.find((step) => step.action === "browser_wait")!.args.time = invalidTime;
+      expect(() => sanitizeRecording(candidate)).toThrow("unsanitized action data");
+    }
+    for (const invalidValues of [[1], ["{{select_3}}", null], {}]) {
+      const candidate = recording();
+      candidate.steps.find((step) => step.action === "browser_select_option")!.args.values = invalidValues;
+      expect(() => sanitizeRecording(candidate)).toThrow("unsanitized action data");
+    }
+    for (const invalidFields of [[], { Account: null }, null]) {
+      const candidate = recording();
+      candidate.steps.find((step) => step.action === "browser_fill_form")!.args.fields = invalidFields;
+      expect(() => sanitizeRecording(candidate)).toThrow("unsanitized action data");
     }
   });
 

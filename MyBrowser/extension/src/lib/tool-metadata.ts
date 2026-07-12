@@ -61,22 +61,50 @@ export const TOOL_METADATA = {
   browser_list_handlers: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
 } as const satisfies Record<string, ToolMetadata>;
 
-export const RECORDING_NON_STRING_PATHS = {
-  browser_navigate: ['tabId'],
-  browser_go_back: ['tabId'],
-  browser_go_forward: ['tabId'],
-  browser_wait: ['time', 'tabId'],
-  browser_click: ['mark', 'tabId'],
-  browser_type: ['mark', 'submit', 'tabId'],
-  browser_hover: ['mark', 'tabId'],
-  browser_press_key: ['tabId'],
-  browser_drag: ['startMark', 'endMark', 'tabId'],
-  browser_select_option: ['mark', 'tabId'],
-  browser_set_viewport: ['tabId'],
-  browser_reset_viewport: ['tabId'],
-  browser_fill_form: ['submitAfter', 'tabId'],
-  browser_wait_for: ['timeout', 'pollInterval', 'tabId'],
-  browser_clipboard: ['tabId'],
-} as const;
+export type RecordingArgumentType = 'array' | 'boolean' | 'number' | 'object' | 'string';
+
+export const RECORDING_ARGUMENT_TYPES = {
+  browser_navigate: { '': 'object', url: 'string', tabId: 'number' },
+  browser_go_back: { '': 'object', tabId: 'number' },
+  browser_go_forward: { '': 'object', tabId: 'number' },
+  browser_wait: { '': 'object', time: 'number', tabId: 'number' },
+  browser_click: {
+    '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
+    name: 'string', matchText: 'string', label: 'string', mark: 'number', tabId: 'number',
+  },
+  browser_type: {
+    '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
+    name: 'string', matchText: 'string', label: 'string', text: 'string', mark: 'number',
+    submit: 'boolean', tabId: 'number',
+  },
+  browser_hover: {
+    '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
+    name: 'string', matchText: 'string', label: 'string', mark: 'number', tabId: 'number',
+  },
+  browser_press_key: { '': 'object', key: 'string', tabId: 'number' },
+  browser_drag: {
+    '': 'object', startElement: 'string', startRef: 'string', startSelector: 'string',
+    endElement: 'string', endRef: 'string', endSelector: 'string', startMark: 'number',
+    endMark: 'number', tabId: 'number',
+  },
+  browser_select_option: {
+    '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
+    name: 'string', matchText: 'string', label: 'string', values: 'array', 'values.*': 'string',
+    mark: 'number', tabId: 'number',
+  },
+  browser_set_viewport: {
+    '': 'object', preset: 'string', orientation: 'string', tabId: 'number',
+  },
+  browser_reset_viewport: { '': 'object', tabId: 'number' },
+  browser_fill_form: {
+    '': 'object', fields: 'object', 'fields.*': 'string', submitAfter: 'boolean',
+    submitText: 'string', tabId: 'number',
+  },
+  browser_wait_for: {
+    '': 'object', condition: 'string', value: 'string', selector: 'string', timeout: 'number',
+    pollInterval: 'number', tabId: 'number',
+  },
+  browser_clipboard: { '': 'object', action: 'string', text: 'string', tabId: 'number' },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingArgumentType>>>>;
 
 export type ToolName = keyof typeof TOOL_METADATA;

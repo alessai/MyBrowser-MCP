@@ -132,6 +132,7 @@ export type SanitizedRecording = z.infer<typeof RecordingSchema>;
 type VariableSource = "text" | "form" | "select" | "navigation" | "clipboard";
 
 type RecordingStringKind = "safe" | VariableSource;
+type RecordingArgumentType = "array" | "boolean" | "number" | "object" | "string";
 
 export const SERVER_RECORDING_STRING_METADATA = {
   browser_navigate: { url: "navigation" },
@@ -151,23 +152,49 @@ export const SERVER_RECORDING_STRING_METADATA = {
   browser_clipboard: { action: "safe", text: "clipboard" },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingStringKind>>>>;
 
-export const SERVER_RECORDING_NON_STRING_PATHS = {
-  browser_navigate: ["tabId"],
-  browser_go_back: ["tabId"],
-  browser_go_forward: ["tabId"],
-  browser_wait: ["time", "tabId"],
-  browser_click: ["mark", "tabId"],
-  browser_type: ["mark", "submit", "tabId"],
-  browser_hover: ["mark", "tabId"],
-  browser_press_key: ["tabId"],
-  browser_drag: ["startMark", "endMark", "tabId"],
-  browser_select_option: ["mark", "tabId"],
-  browser_set_viewport: ["tabId"],
-  browser_reset_viewport: ["tabId"],
-  browser_fill_form: ["submitAfter", "tabId"],
-  browser_wait_for: ["timeout", "pollInterval", "tabId"],
-  browser_clipboard: ["tabId"],
-} as const;
+export const SERVER_RECORDING_ARGUMENT_TYPES = {
+  browser_navigate: { "": "object", url: "string", tabId: "number" },
+  browser_go_back: { "": "object", tabId: "number" },
+  browser_go_forward: { "": "object", tabId: "number" },
+  browser_wait: { "": "object", time: "number", tabId: "number" },
+  browser_click: {
+    "": "object", element: "string", ref: "string", selector: "string", role: "string",
+    name: "string", matchText: "string", label: "string", mark: "number", tabId: "number",
+  },
+  browser_type: {
+    "": "object", element: "string", ref: "string", selector: "string", role: "string",
+    name: "string", matchText: "string", label: "string", text: "string", mark: "number",
+    submit: "boolean", tabId: "number",
+  },
+  browser_hover: {
+    "": "object", element: "string", ref: "string", selector: "string", role: "string",
+    name: "string", matchText: "string", label: "string", mark: "number", tabId: "number",
+  },
+  browser_press_key: { "": "object", key: "string", tabId: "number" },
+  browser_drag: {
+    "": "object", startElement: "string", startRef: "string", startSelector: "string",
+    endElement: "string", endRef: "string", endSelector: "string", startMark: "number",
+    endMark: "number", tabId: "number",
+  },
+  browser_select_option: {
+    "": "object", element: "string", ref: "string", selector: "string", role: "string",
+    name: "string", matchText: "string", label: "string", values: "array", "values.*": "string",
+    mark: "number", tabId: "number",
+  },
+  browser_set_viewport: {
+    "": "object", preset: "string", orientation: "string", tabId: "number",
+  },
+  browser_reset_viewport: { "": "object", tabId: "number" },
+  browser_fill_form: {
+    "": "object", fields: "object", "fields.*": "string", submitAfter: "boolean",
+    submitText: "string", tabId: "number",
+  },
+  browser_wait_for: {
+    "": "object", condition: "string", value: "string", selector: "string", timeout: "number",
+    pollInterval: "number", tabId: "number",
+  },
+  browser_clipboard: { "": "object", action: "string", text: "string", tabId: "number" },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingArgumentType>>>>;
 
 const RECORDABLE_ACTIONS = new Set(Object.keys(SERVER_RECORDING_STRING_METADATA));
 
@@ -207,40 +234,55 @@ function wildcardPath(path: string): string {
   return path.replace(/\.\d+(?=\.|$)/g, ".*").replace(/^(fields)\.[^.]+$/, "$1.*");
 }
 
-function validateArgumentStrings(
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function matchesArgumentType(value: unknown, type: RecordingArgumentType): boolean {
+  if (type === "string") return typeof value === "string";
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "array") return Array.isArray(value);
+  return isPlainRecord(value);
+}
+
+function validateArgumentValues(
   value: unknown,
   path: string,
   classifications: Readonly<Record<string, RecordingStringKind>>,
-  nonStringPaths: ReadonlySet<string>,
+  argumentTypes: Readonly<Record<string, RecordingArgumentType>>,
   variables: ReadonlyMap<string, VariableSource>,
   used: Set<string>,
 ): boolean {
+  const normalizedPath = wildcardPath(path);
+  const expectedType = argumentTypes[path] ?? argumentTypes[normalizedPath];
+  if (!expectedType || !matchesArgumentType(value, expectedType)) return false;
   if (typeof value === "string") {
-    const kind = classifications[path] ?? classifications[wildcardPath(path)];
+    const kind = classifications[path] ?? classifications[normalizedPath];
     if (!kind) return false;
     if (kind === "safe") return true;
     if (kind === "navigation" && isSanitizedHttpUrl(value)) return true;
     return validatePlaceholder(value, kind, variables, used);
   }
   if (Array.isArray(value)) {
-    if (!Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) return false;
-    return value.every((entry, index) => validateArgumentStrings(
+    return value.every((entry, index) => validateArgumentValues(
       entry,
       path ? `${path}.${index}` : `${index}`,
       classifications,
-      nonStringPaths,
+      argumentTypes,
       variables,
       used,
     ));
   }
-  if (value !== null && typeof value === "object") {
-    if (path && !Object.keys(classifications).some((key) => key.startsWith(`${path}.`))) return false;
+  if (isPlainRecord(value)) {
     return Object.entries(value).every(([key, entry]) => {
       const childPath = path === "fields" ? "fields.*" : path ? `${path}.${key}` : key;
-      return validateArgumentStrings(entry, childPath, classifications, nonStringPaths, variables, used);
+      return validateArgumentValues(entry, childPath, classifications, argumentTypes, variables, used);
     });
   }
-  return nonStringPaths.has(path);
+  return true;
 }
 
 function hasSanitizedActionData(recording: SanitizedRecording): boolean {
@@ -261,10 +303,10 @@ function hasSanitizedActionData(recording: SanitizedRecording): boolean {
     const classifications = SERVER_RECORDING_STRING_METADATA[
       step.action as keyof typeof SERVER_RECORDING_STRING_METADATA
     ];
-    const nonStringPaths = new Set<string>(SERVER_RECORDING_NON_STRING_PATHS[
-      step.action as keyof typeof SERVER_RECORDING_NON_STRING_PATHS
-    ]);
-    if (!validateArgumentStrings(args, "", classifications, nonStringPaths, variables, used)) return false;
+    const argumentTypes = SERVER_RECORDING_ARGUMENT_TYPES[
+      step.action as keyof typeof SERVER_RECORDING_ARGUMENT_TYPES
+    ];
+    if (!validateArgumentValues(args, "", classifications, argumentTypes, variables, used)) return false;
     if (step.action === "browser_type" && typeof args.text !== "string") return false;
     if (step.action === "browser_fill_form") {
       if (typeof args.fields !== "object" || args.fields === null || Array.isArray(args.fields)) return false;

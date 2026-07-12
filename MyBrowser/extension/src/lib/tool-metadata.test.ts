@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getRegisteredToolNames } from "./tools";
-import { RECORDING_NON_STRING_PATHS, TOOL_METADATA } from "./tool-metadata";
+import { RECORDING_ARGUMENT_TYPES, TOOL_METADATA } from "./tool-metadata";
 
 describe("TOOL_METADATA", () => {
   it("classifies every registered tool exactly once", () => {
@@ -77,8 +77,16 @@ describe("TOOL_METADATA", () => {
     expect(TOOL_METADATA.select_tab.recordable).toBe(false);
     expect(TOOL_METADATA.close_tab.recordable).toBe(false);
     expect(TOOL_METADATA.browser_wait.tab).toBe("optional");
-    expect(Object.keys(RECORDING_NON_STRING_PATHS).sort())
+    expect(Object.keys(RECORDING_ARGUMENT_TYPES).sort())
       .toEqual(recordable.map(([name]) => name).sort());
+    for (const [name, metadata] of recordable) {
+      const types = RECORDING_ARGUMENT_TYPES[name as keyof typeof RECORDING_ARGUMENT_TYPES];
+      expect(types[""]).toBe("object");
+      for (const path of Object.keys(metadata)) expect(types[path]).toBe("string");
+      expect(Object.values(types).every((type) => [
+        "array", "boolean", "number", "object", "string",
+      ].includes(type))).toBe(true);
+    }
   });
 
   it("routes global mutations through the global queue", () => {

@@ -35,6 +35,41 @@ Implemented and verified. Active recordings are isolated by authenticated sessio
 - Server: `npm run build` passed.
 - Repository: `git diff --check` passed.
 
+## Recovery Browsing, Typed Arguments, And Retry Bounds Follow-Up
+
+### Recovery Browsing
+
+- `prepareStep` treats persisted `stopping` recovery as non-recording, so click, type, navigation, and other recordable actions execute normally without adding steps.
+- A new recording still cannot start while recovery exists.
+- A repeated stop with cached `serverSaved:false` returns the same sanitized partial result without retrying transport, renewing, or deleting the only copy.
+- RED/GREEN coverage verifies click/type/navigation execution, unchanged cached state, no new transport request, and start rejection.
+
+### Type-Aware Default-Deny
+
+- Extension and server export conformant path-to-type metadata for all 15 recordable actions, covering root objects, containers, wildcard entries, strings, finite numbers, and booleans.
+- Parameterization and server persistence reject wrong primitive types, null, non-finite numbers, malformed arrays/objects, unknown keys, and unclassified paths.
+- String classification and type metadata are checked bidirectionally so a new string path cannot exist without sensitivity classification.
+- Table-driven probes include `type.submit=1`, `click.mark=true`, `wait.time=null/NaN/Infinity`, non-string select values, and malformed fill-form values.
+
+### Bounded Canonical Retry State
+
+- Server retry state is explicitly bounded to one canonical sanitized payload per authenticated session.
+- A canonical is retained only after a durable write while reservation release is unresolved.
+- Confirmed release, confirmed expiry, failed write, and session cleanup delete retained state; a second payload is rejected rather than evicting a live token.
+- A 20-recording long-lived-session test verifies retained count returns to zero after every successful release.
+- This supersedes the temporary post-release retry rule: released recordings retain no canonical payload, and cached failed-write recovery is surfaced by the extension rather than replayed without reservation authority.
+
+### Verification
+
+- Extension RED: recovery actions threw `RECORDING_STOP_PENDING`, repeated stop retried transport, and wrong-type arguments were accepted.
+- Server RED: the type-map export was absent, every-action wrong-type probes were accepted, and retry canonicals were unbounded or retained after release.
+- Extension focused GREEN: recorder, parameterizer, and tool-metadata suites passed.
+- Server focused GREEN: recording privacy and WebSocket suites passed.
+- Extension full: 12 files, 115 tests passed; `npm run check` and `npm run build` passed.
+- Server full: 6 files, 143 tests passed; `npm run check` and `npm run build` passed.
+- Canary scans: all `SECRET_*` matches are test-only; no unbounded retry map or legacy non-string allowlist remains.
+- Repository: `git diff --check` passed.
+
 ## Lifecycle and Schema Follow-Up (2026-07-12)
 
 ### Changes

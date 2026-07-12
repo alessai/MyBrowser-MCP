@@ -369,7 +369,7 @@ export class RecordingManager {
       await this.restoreAllUnlocked();
       const active = this.active.get(sessionId);
       if (!active || this.replaying.has(sessionId) || active.tabId !== tabId) return null;
-      if (active.status !== 'active') throw new Error('RECORDING_STOP_PENDING');
+      if (active.status !== 'active') return null;
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
       }
@@ -532,6 +532,13 @@ export class RecordingManager {
         }
         state = stoppingState;
         await this.refreshRenewalAlarmUnlocked();
+      }
+
+      if (state.stopStatus?.serverSaved === false) {
+        return {
+          ...clone(state.stopStatus),
+          recording,
+        };
       }
 
       let serverSaved = state.stopStatus?.serverSaved === true;
