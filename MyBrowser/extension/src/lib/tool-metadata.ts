@@ -107,4 +107,37 @@ export const RECORDING_ARGUMENT_TYPES = {
   browser_clipboard: { '': 'object', action: 'string', text: 'string', tabId: 'number' },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingArgumentType>>>>;
 
+export interface RecordingNumericConstraint {
+  readonly integer: boolean;
+  readonly min: number;
+  readonly max: number;
+}
+
+const TAB_ID_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
+const MARK_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
+const TIMER_MS_BOUNDS = { integer: false, min: 0, max: 2_147_483_647 } as const;
+const WAIT_SECONDS_BOUNDS = { integer: false, min: 0, max: 2_147_483.647 } as const;
+
+export const RECORDING_NUMERIC_BOUNDS = {
+  browser_navigate: { tabId: TAB_ID_BOUNDS },
+  browser_go_back: { tabId: TAB_ID_BOUNDS },
+  browser_go_forward: { tabId: TAB_ID_BOUNDS },
+  browser_wait: { time: WAIT_SECONDS_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_click: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_type: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_hover: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_press_key: { tabId: TAB_ID_BOUNDS },
+  browser_drag: { startMark: MARK_BOUNDS, endMark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_select_option: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_set_viewport: { tabId: TAB_ID_BOUNDS },
+  browser_reset_viewport: { tabId: TAB_ID_BOUNDS },
+  browser_fill_form: { tabId: TAB_ID_BOUNDS },
+  browser_wait_for: {
+    timeout: TIMER_MS_BOUNDS, pollInterval: TIMER_MS_BOUNDS, tabId: TAB_ID_BOUNDS,
+  },
+  browser_clipboard: { tabId: TAB_ID_BOUNDS },
+} as const satisfies Readonly<
+  Record<string, Readonly<Record<string, RecordingNumericConstraint>>>
+>;
+
 export type ToolName = keyof typeof TOOL_METADATA;

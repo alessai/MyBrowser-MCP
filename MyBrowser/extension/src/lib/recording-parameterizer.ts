@@ -1,7 +1,9 @@
 import {
   RECORDING_ARGUMENT_TYPES,
+  RECORDING_NUMERIC_BOUNDS,
   TOOL_METADATA,
   type RecordingArgumentType,
+  type RecordingNumericConstraint,
   type RecordingStringKind,
   type ToolName,
 } from './tool-metadata';
@@ -100,12 +102,25 @@ export function parameterizeArgs(
     Record<ToolName, Readonly<Record<string, RecordingArgumentType>>>
   >)[toolName];
   if (!argumentTypes) throw new Error('RECORDING_METADATA_MISMATCH');
+  const numericBounds = (RECORDING_NUMERIC_BOUNDS as Partial<
+    Record<ToolName, Readonly<Record<string, RecordingNumericConstraint>>>
+  >)[toolName];
+  if (!numericBounds) throw new Error('RECORDING_METADATA_MISMATCH');
   const requiredVariables: RequiredVariable[] = [];
 
   const transform = (value: unknown, path: string): unknown => {
     const expectedType = argumentTypes[path] ?? argumentTypes[wildcardPath(path)];
     if (!expectedType || !matchesArgumentType(value, expectedType)) {
       throw new Error('RECORDING_METADATA_MISMATCH');
+    }
+    if (typeof value === 'number') {
+      const bounds = numericBounds[path] ?? numericBounds[wildcardPath(path)];
+      if (!bounds
+        || value < bounds.min
+        || value > bounds.max
+        || (bounds.integer && !Number.isSafeInteger(value))) {
+        throw new Error('RECORDING_METADATA_MISMATCH');
+      }
     }
     if (typeof value === 'string') {
       const kind = classifications[path] ?? classifications[wildcardPath(path)];
@@ -135,7 +150,12 @@ export function parameterizeArgs(
       const result = Object.create(null) as Record<string, unknown>;
       for (const [key, entry] of Object.entries(value)) {
         const childPath = path === 'fields' ? 'fields.*' : path ? `${path}.${key}` : key;
-        result[key] = transform(entry, childPath);
+        Object.defineProperty(result, key, {
+          value: transform(entry, childPath),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
       return result;
     }

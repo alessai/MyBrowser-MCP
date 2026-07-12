@@ -87,7 +87,7 @@ function ensureRecordingsDir(
 
 const RecordStartArgs = z.object({
   name: z.string().trim().min(1).describe("Name for this recording session (e.g. 'checkout_flow')"),
-  tabId: z.number().int().nonnegative().describe("Tab where recording starts"),
+  tabId: z.number().int().min(1).max(2_147_483_647).describe("Tab where recording starts"),
 }).strict();
 
 const RecordStopArgs = z.object({}).strict();
@@ -96,6 +96,34 @@ const RecordListArgs = z.object({}).strict();
 
 const MAX_RECORDING_STEPS = 1_000;
 const MAX_RECORDING_BYTES = 2 * 1024 * 1024;
+export const MAX_RECORDING_TIMESTAMP_MS = 8_640_000_000_000_000;
+export const MAX_RECORDED_DURATION_MS = 2_147_483_647;
+export const MAX_REQUIRED_VARIABLES = 100_000;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function cloneExactValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneExactValue);
+  if (!isPlainRecord(value)) return value;
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.getOwnPropertyNames(value)) {
+    Object.defineProperty(result, key, {
+      value: cloneExactValue(value[key]),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
+const ExactArgsSchema = z.custom<Record<string, unknown>>(isPlainRecord, {
+  message: "Expected a plain argument object",
+});
 
 const RequiredVariableSchema = z.object({
   name: z.string().regex(/^(input|form|select|navigation|clipboard)_\d+$/),
@@ -113,19 +141,19 @@ const RequiredVariableSchema = z.object({
 
 const RecordedStepSchema = z.object({
   action: z.string().min(1),
-  args: z.record(z.unknown()),
-  timestamp: z.number().finite().nonnegative(),
-  durationMs: z.number().finite().nonnegative(),
+  args: ExactArgsSchema,
+  timestamp: z.number().int().nonnegative().max(MAX_RECORDING_TIMESTAMP_MS),
+  durationMs: z.number().finite().nonnegative().max(MAX_RECORDED_DURATION_MS),
   url: z.string(),
 }).strict();
 
 export const RecordingSchema = z.object({
   name: z.string().min(1),
-  startedAt: z.number().finite().nonnegative(),
-  stoppedAt: z.number().finite().nonnegative(),
+  startedAt: z.number().int().nonnegative().max(MAX_RECORDING_TIMESTAMP_MS),
+  stoppedAt: z.number().int().nonnegative().max(MAX_RECORDING_TIMESTAMP_MS),
   url: z.string(),
   steps: z.array(RecordedStepSchema).max(MAX_RECORDING_STEPS),
-  requiredVariables: z.array(RequiredVariableSchema),
+  requiredVariables: z.array(RequiredVariableSchema).max(MAX_REQUIRED_VARIABLES),
 }).strict();
 
 export type SanitizedRecording = z.infer<typeof RecordingSchema>;
@@ -197,6 +225,39 @@ export const SERVER_RECORDING_ARGUMENT_TYPES = {
   browser_clipboard: { "": "object", action: "string", text: "string", tabId: "number" },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingArgumentType>>>>;
 
+export interface RecordingNumericConstraint {
+  readonly integer: boolean;
+  readonly min: number;
+  readonly max: number;
+}
+
+const TAB_ID_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
+const MARK_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
+const TIMER_MS_BOUNDS = { integer: false, min: 0, max: 2_147_483_647 } as const;
+const WAIT_SECONDS_BOUNDS = { integer: false, min: 0, max: 2_147_483.647 } as const;
+
+export const SERVER_RECORDING_NUMERIC_BOUNDS = {
+  browser_navigate: { tabId: TAB_ID_BOUNDS },
+  browser_go_back: { tabId: TAB_ID_BOUNDS },
+  browser_go_forward: { tabId: TAB_ID_BOUNDS },
+  browser_wait: { time: WAIT_SECONDS_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_click: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_type: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_hover: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_press_key: { tabId: TAB_ID_BOUNDS },
+  browser_drag: { startMark: MARK_BOUNDS, endMark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_select_option: { mark: MARK_BOUNDS, tabId: TAB_ID_BOUNDS },
+  browser_set_viewport: { tabId: TAB_ID_BOUNDS },
+  browser_reset_viewport: { tabId: TAB_ID_BOUNDS },
+  browser_fill_form: { tabId: TAB_ID_BOUNDS },
+  browser_wait_for: {
+    timeout: TIMER_MS_BOUNDS, pollInterval: TIMER_MS_BOUNDS, tabId: TAB_ID_BOUNDS,
+  },
+  browser_clipboard: { tabId: TAB_ID_BOUNDS },
+} as const satisfies Readonly<
+  Record<string, Readonly<Record<string, RecordingNumericConstraint>>>
+>;
+
 const RECORDABLE_ACTIONS = new Set(Object.keys(SERVER_RECORDING_STRING_METADATA));
 
 function isSanitizedHttpUrl(value: string): boolean {
@@ -235,12 +296,6 @@ function wildcardPath(path: string): string {
   return path.replace(/\.\d+(?=\.|$)/g, ".*").replace(/^(fields)\.[^.]+$/, "$1.*");
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 function matchesArgumentType(value: unknown, type: RecordingArgumentType): boolean {
   if (type === "string") return typeof value === "string";
   if (type === "number") return typeof value === "number" && Number.isFinite(value);
@@ -254,12 +309,20 @@ function validateArgumentValues(
   path: string,
   classifications: Readonly<Record<string, RecordingStringKind>>,
   argumentTypes: Readonly<Record<string, RecordingArgumentType>>,
+  numericBounds: Readonly<Record<string, RecordingNumericConstraint>>,
   variables: ReadonlyMap<string, VariableSource>,
   used: Set<string>,
 ): boolean {
   const normalizedPath = wildcardPath(path);
   const expectedType = argumentTypes[path] ?? argumentTypes[normalizedPath];
   if (!expectedType || !matchesArgumentType(value, expectedType)) return false;
+  if (typeof value === "number") {
+    const bounds = numericBounds[path] ?? numericBounds[normalizedPath];
+    if (!bounds
+      || value < bounds.min
+      || value > bounds.max
+      || (bounds.integer && !Number.isSafeInteger(value))) return false;
+  }
   if (typeof value === "string") {
     const kind = classifications[path] ?? classifications[normalizedPath];
     if (!kind) return false;
@@ -273,6 +336,7 @@ function validateArgumentValues(
       path ? `${path}.${index}` : `${index}`,
       classifications,
       argumentTypes,
+      numericBounds,
       variables,
       used,
     ));
@@ -280,7 +344,9 @@ function validateArgumentValues(
   if (isPlainRecord(value)) {
     return Object.entries(value).every(([key, entry]) => {
       const childPath = path === "fields" ? "fields.*" : path ? `${path}.${key}` : key;
-      return validateArgumentValues(entry, childPath, classifications, argumentTypes, variables, used);
+      return validateArgumentValues(
+        entry, childPath, classifications, argumentTypes, numericBounds, variables, used,
+      );
     });
   }
   return true;
@@ -307,7 +373,12 @@ function hasSanitizedActionData(recording: SanitizedRecording): boolean {
     const argumentTypes = SERVER_RECORDING_ARGUMENT_TYPES[
       step.action as keyof typeof SERVER_RECORDING_ARGUMENT_TYPES
     ];
-    if (!validateArgumentValues(args, "", classifications, argumentTypes, variables, used)) return false;
+    const numericBounds = SERVER_RECORDING_NUMERIC_BOUNDS[
+      step.action as keyof typeof SERVER_RECORDING_NUMERIC_BOUNDS
+    ];
+    if (!validateArgumentValues(
+      args, "", classifications, argumentTypes, numericBounds, variables, used,
+    )) return false;
     if (step.action === "browser_type" && typeof args.text !== "string") return false;
     if (step.action === "browser_fill_form") {
       if (typeof args.fields !== "object" || args.fields === null || Array.isArray(args.fields)) return false;
@@ -334,7 +405,28 @@ export function sanitizeRecording(recording: unknown): SanitizedRecording {
   if (Buffer.byteLength(JSON.stringify(recording), "utf8") > MAX_RECORDING_BYTES) {
     throw new Error("Recording exceeds the byte limit");
   }
-  const parsed = RecordingSchema.parse(recording);
+  const exactInput = cloneExactValue(recording);
+  const exactSteps = isPlainRecord(exactInput) && Array.isArray(exactInput.steps)
+    ? exactInput.steps
+    : [];
+  const schemaInput = isPlainRecord(exactInput)
+    ? {
+        ...exactInput,
+        steps: exactSteps.map((step) => (
+          isPlainRecord(step) ? { ...step, args: {} } : step
+        )),
+      }
+    : exactInput;
+  const schemaResult = RecordingSchema.parse(schemaInput);
+  const parsed: SanitizedRecording = {
+    ...schemaResult,
+    steps: schemaResult.steps.map((step, index) => ({
+      ...step,
+      args: isPlainRecord(exactSteps[index]) && isPlainRecord(exactSteps[index].args)
+        ? exactSteps[index].args
+        : step.args,
+    })),
+  };
   if (!hasSanitizedActionData(parsed)) {
     throw new Error("Recording contains unsanitized action data");
   }
@@ -344,9 +436,16 @@ export function sanitizeRecording(recording: unknown): SanitizedRecording {
 const RecordStopResultSchema = z.object({
   extensionSaved: z.boolean().optional(),
   serverSaved: z.boolean().optional(),
-  recording: RecordingSchema,
+  recording: z.unknown(),
   error: z.string().optional(),
 }).strict();
+
+export function sanitizeRecordStopResult(value: unknown): z.infer<typeof RecordStopResultSchema> & {
+  recording: SanitizedRecording;
+} {
+  const parsed = RecordStopResultSchema.parse(value);
+  return { ...parsed, recording: sanitizeRecording(parsed.recording) };
+}
 
 export function createRecordingTools(
   stateManager: IStateManager,
@@ -480,8 +579,8 @@ export function createRecordingTools(
         }
 
         try {
-          const result = RecordStopResultSchema.parse(rawResult);
-          const recording = sanitizeRecording(result.recording);
+      const result = sanitizeRecordStopResult(rawResult);
+      const recording = result.recording;
           if (activeRecordingName && recording.name !== activeRecordingName) {
             throw new Error("Recording result does not match the active reservation");
           }

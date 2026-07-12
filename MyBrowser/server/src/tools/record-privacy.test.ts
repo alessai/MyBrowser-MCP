@@ -5,8 +5,13 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_ACTIVE_RECORDING_STEPS,
+  MAX_RECORDED_DURATION_MS,
+  MAX_RECORDING_TIMESTAMP_MS,
   SERVER_RECORDING_ARGUMENT_TYPES,
+  SERVER_RECORDING_NUMERIC_BOUNDS,
   SERVER_RECORDING_STRING_METADATA,
+  sanitizeRecordStopResult,
   sanitizeRecording,
   saveRecordingToFile,
 } from "./record.js";
@@ -62,6 +67,7 @@ function recording() {
 function extensionRecordingMetadata(): {
   strings: Record<string, Record<string, string>>;
   types: Record<string, Record<string, string>>;
+  numericBounds: Record<string, Record<string, { integer: boolean; min: number; max: number }>>;
 } {
   const source = readFileSync(
     resolve(process.cwd(), "../extension/src/lib/tool-metadata.ts"),
@@ -81,6 +87,10 @@ function extensionRecordingMetadata(): {
     .filter(([, value]) => value.recordable)
     .map(([action, value]) => [action, value.recordingStrings ?? {}])),
     types: exports.RECORDING_ARGUMENT_TYPES as Record<string, Record<string, string>>,
+    numericBounds: exports.RECORDING_NUMERIC_BOUNDS as Record<
+      string,
+      Record<string, { integer: boolean; min: number; max: number }>
+    >,
   };
 }
 
@@ -89,6 +99,7 @@ describe("recording argument privacy", () => {
     const extension = extensionRecordingMetadata();
     expect(SERVER_RECORDING_STRING_METADATA).toEqual(extension.strings);
     expect(SERVER_RECORDING_ARGUMENT_TYPES).toEqual(extension.types);
+    expect(SERVER_RECORDING_NUMERIC_BOUNDS).toEqual(extension.numericBounds);
   });
 
   it("default-denies unclassified top-level and nested strings for every recordable action", () => {
@@ -151,6 +162,30 @@ describe("recording argument privacy", () => {
       const candidate = recording();
       candidate.steps.find((step) => step.action === "browser_fill_form")!.args.fields = invalidFields;
       expect(() => sanitizeRecording(candidate)).toThrow("unsanitized action data");
+    }
+  });
+
+  it("enforces conformant bounds for every numeric recording argument path", () => {
+    for (const [action, paths] of Object.entries(SERVER_RECORDING_NUMERIC_BOUNDS)) {
+      for (const [path, bounds] of Object.entries(paths)) {
+        for (const value of [bounds.min, bounds.max]) {
+          const candidate = recording();
+          candidate.steps.find((step) => step.action === action)!.args[path] = value;
+          expect(() => sanitizeRecording(candidate), `${action}.${path}=${value}`).not.toThrow();
+        }
+        for (const value of [bounds.min - 1, bounds.max + 1]) {
+          const candidate = recording();
+          candidate.steps.find((step) => step.action === action)!.args[path] = value;
+          expect(() => sanitizeRecording(candidate), `${action}.${path}=${value}`)
+            .toThrow("unsanitized action data");
+        }
+        if (bounds.integer) {
+          const candidate = recording();
+          candidate.steps.find((step) => step.action === action)!.args[path] = bounds.min + 0.5;
+          expect(() => sanitizeRecording(candidate), `${action}.${path}=fractional`)
+            .toThrow("unsanitized action data");
+        }
+      }
     }
   });
 
@@ -305,6 +340,111 @@ describe("recording argument privacy", () => {
       mutate(candidate);
       expect(() => sanitizeRecording(candidate)).toThrow();
     }
+
+    const boundary = recording();
+    boundary.startedAt = 0;
+    boundary.stoppedAt = MAX_RECORDING_TIMESTAMP_MS;
+    for (const step of boundary.steps) {
+      step.timestamp = MAX_RECORDING_TIMESTAMP_MS;
+      step.durationMs = MAX_RECORDED_DURATION_MS;
+    }
+    expect(sanitizeRecording(boundary)).toBeDefined();
+    const maxSteps = structuredClone(boundary);
+    while (maxSteps.steps.length < MAX_ACTIVE_RECORDING_STEPS) {
+      maxSteps.steps.push({
+        action: "browser_go_back",
+        args: {},
+        timestamp: 0,
+        durationMs: 0,
+        url: "",
+      });
+    }
+    expect(sanitizeRecording(maxSteps).steps).toHaveLength(MAX_ACTIVE_RECORDING_STEPS);
+    maxSteps.steps.push({
+      action: "browser_go_back",
+      args: {},
+      timestamp: 0,
+      durationMs: 0,
+      url: "",
+    });
+    expect(() => sanitizeRecording(maxSteps)).toThrow();
+    for (const mutate of [
+      (candidate: ReturnType<typeof recording>) => { candidate.startedAt = 0.5; },
+      (candidate: ReturnType<typeof recording>) => {
+        candidate.stoppedAt = MAX_RECORDING_TIMESTAMP_MS + 1;
+      },
+      (candidate: ReturnType<typeof recording>) => {
+        candidate.steps[0]!.durationMs = MAX_RECORDED_DURATION_MS + 1;
+      },
+    ]) {
+      const candidate = recording();
+      mutate(candidate);
+      expect(() => sanitizeRecording(candidate)).toThrow();
+    }
+  });
+
+  it("preserves hostile own keys before exact recursive validation", () => {
+    const parameterized = recording();
+    const fill = parameterized.steps.find((step) => step.action === "browser_fill_form")!;
+    const fields = Object.create(null) as Record<string, string>;
+    for (const [key, value] of [
+      ["Account", "{{form_4}}"],
+      ["__proto__", "{{form_7}}"],
+      ["constructor", "{{form_8}}"],
+      ["prototype", "{{form_9}}"],
+    ]) {
+      Object.defineProperty(fields, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    fill.args.fields = fields;
+    parameterized.requiredVariables.push(
+      { name: "form_7", source: "form", hint: "form_input_7" },
+      { name: "form_8", source: "form", hint: "form_input_8" },
+      { name: "form_9", source: "form", hint: "form_input_9" },
+    );
+
+    const sanitized = sanitizeRecording(parameterized);
+    const sanitizedFields = sanitized.steps.find((step) => (
+      step.action === "browser_fill_form"
+    ))!.args.fields as Record<string, string>;
+    expect(Object.keys(sanitizedFields).sort()).toEqual([
+      "Account", "__proto__", "constructor", "prototype",
+    ]);
+    expect(Object.hasOwn(sanitizedFields, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(sanitizedFields, "__proto__")?.value)
+      .toBe("{{form_7}}");
+
+    const stopResult = sanitizeRecordStopResult({
+      extensionSaved: true,
+      serverSaved: true,
+      recording: parameterized,
+    });
+    const stopFields = stopResult.recording.steps.find((step) => (
+      step.action === "browser_fill_form"
+    ))!.args.fields as Record<string, string>;
+    expect(Object.getOwnPropertyDescriptor(stopFields, "__proto__")?.value)
+      .toBe("{{form_7}}");
+
+    const hostileUnknown = recording();
+    hostileUnknown.steps[0]!.args = JSON.parse(
+      `{"__proto__":"${SECRET_UNKNOWN}","url":"{{navigation_1}}"}`,
+    ) as Record<string, unknown>;
+    expect(() => sanitizeRecording(hostileUnknown)).toThrow();
+
+    const hostileValue = recording();
+    const hostileFields = Object.create(null) as Record<string, string>;
+    Object.defineProperty(hostileFields, "__proto__", {
+      value: SECRET_FORM,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    hostileValue.steps.find((step) => step.action === "browser_fill_form")!.args.fields = hostileFields;
+    expect(() => sanitizeRecording(hostileValue)).toThrow();
   });
 
   it("never passes an unclassified canary to disk operations", () => {

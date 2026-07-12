@@ -7,6 +7,10 @@ import {
   MAX_ACTIVE_RECORDING_BYTES,
   MAX_ACTIVE_RECORDING_STEPS,
   MAX_AGGREGATE_RECORDING_BYTES,
+  MAX_CHROME_TAB_ID,
+  MAX_RECORDED_DURATION_MS,
+  MAX_RECORDING_TIMESTAMP_MS,
+  MAX_REQUIRED_VARIABLES,
   isSanitizedRecording,
   RecordingManager,
   runRecordedAction,
@@ -209,7 +213,7 @@ describe("RecordingManager privacy and ownership", () => {
       message = error instanceof Error ? error.message : String(error);
     }
 
-    expect(message).toBe("RECORDING_START_FAILED");
+    expect(message).toBe("RECORDED_STATE_FAILED");
     expect(manager.snapshot().active).toEqual([]);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
@@ -546,6 +550,54 @@ describe("runRecordedAction", () => {
     }
   });
 
+  it("wraps public start and stop restore failures before background reporting", async () => {
+    const cases: Array<{ toolType: string; invoke: () => Promise<unknown>; storage: MemoryStorage }> = [];
+
+    const startStorage = new MemoryStorage();
+    startStorage.failGetKeys = new Error(`START_RESTORE_${SECRET_TEXT}`);
+    const startManager = createManager({ sessionStorage: startStorage }).manager;
+    cases.push({
+      toolType: "browser_record_start",
+      invoke: () => startManager.start("session-a", "private-start", 11, "https://example.test"),
+      storage: startStorage,
+    });
+
+    const stopStorage = new MemoryStorage();
+    const stopManager = createManager({ sessionStorage: stopStorage }).manager;
+    await stopManager.start("session-a", "private-stop", 11, "https://example.test");
+    stopStorage.failGet = new Error(`STOP_RESTORE_${SECRET_FORM}`);
+    cases.push({
+      toolType: "browser_record_stop",
+      invoke: () => stopManager.stop("session-a"),
+      storage: stopStorage,
+    });
+
+    for (const [index, testCase] of cases.entries()) {
+      const error = await testCase.invoke().catch((caught: unknown) => caught);
+      const issueCount = getRecentExtensionIssues(100).length;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const failure = reportToolFailure(error, {
+        requestId: `public-recording-${index}`,
+        toolType: testCase.toolType,
+      });
+      const evidence = {
+        response: failure.responseError,
+        diagnostics: getRecentExtensionIssues(100).slice(issueCount),
+        console: [...consoleError.mock.calls, ...consoleWarn.mock.calls],
+        storage: testCase.storage.writes,
+      };
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+      expect(failure).toEqual({
+        responseError: "RECORDED_STATE_FAILED",
+        category: "RECORDED_STATE_FAILED",
+        recorded: true,
+      });
+      expectAbsent(evidence);
+    }
+  });
+
   it("reserves worst-case UTF-8 page metadata before browser effects", async () => {
     const { manager } = createManager({
       limits: { maxSteps: 1_000, maxRecordingBytes: 15_000, maxAggregateBytes: 50_000 },
@@ -586,6 +638,93 @@ describe("RecordingManager restart and stop persistence", () => {
     }]);
     expect(restarted.manager.snapshot().active).toHaveLength(1);
     expectAbsent({ storage: sessionStorage.writes, requests: renewedTransport.requests });
+  });
+
+  it("quarantines restored active state until authoritative renewal promotes it", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "quarantine-promote", 11, "https://example.test");
+
+    const restarted = createManager({ sessionStorage });
+    expect(await restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).toBeNull();
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(restarted.transport.requests).toEqual([]);
+
+    await restarted.manager.renewPersistedSessions();
+
+    expect(restarted.transport.requests).toEqual([
+      expect.objectContaining({
+        type: "renewRecordingReservation",
+        payload: { sessionId: "session-a", name: "quarantine-promote" },
+      }),
+    ]);
+    expect(await restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).not.toBeNull();
+    expect(sessionStorage.values.get("active-recording:session-a")).toMatchObject({ status: "active" });
+    expectAbsent({ storage: sessionStorage.writes, requests: restarted.transport.requests });
+  });
+
+  it("cleans quarantined restart candidates on false or failed validation without recording", async () => {
+    for (const response of [{ ok: false }, new Error(`RENEW_FAILED_${SECRET_TEXT}`)]) {
+      const sessionStorage = new MemoryStorage();
+      const first = createManager({ sessionStorage });
+      await first.manager.start("session-a", "quarantine-reject", 11, "https://example.test");
+      const transport = new FakeTransport();
+      transport.responses.push(response);
+      const restarted = createManager({ sessionStorage, transport });
+      expect(await restarted.manager.prepareStep(
+        "session-a", "browser_type", { element: "Account", text: SECRET_FORM }, 11,
+      )).toBeNull();
+
+      await restarted.manager.renewPersistedSessions();
+
+      expect(restarted.manager.snapshot().active).toEqual([]);
+      expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+      expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+      expectAbsent({ storage: sessionStorage.writes, requests: transport.requests });
+    }
+  });
+
+  it("tombstones session closure before cleanup persistence and blocks current-worker renewal", async () => {
+    const sessionStorage = new MemoryStorage();
+    const transport = new FakeTransport();
+    let resolveRenew!: (value: unknown) => void;
+    transport.responses.push(new Promise((resolve) => { resolveRenew = resolve; }));
+    const current = createManager({ sessionStorage, transport });
+    await current.manager.start("session-a", "closed-race", 11, "https://example.test");
+    const renewing = current.manager.renewPersistedSessions();
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(1));
+    const closing = current.manager.abortSession("session-a");
+    resolveRenew({ ok: true });
+    await renewing;
+    await closing;
+    expect(current.manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+
+    const failedStorage = new MemoryStorage();
+    const beforeRestart = createManager({ sessionStorage: failedStorage });
+    await beforeRestart.manager.start("session-a", "closed-persist-failure", 11, "https://example.test");
+    failedStorage.failSetKey = "active-recording:session-a";
+    await beforeRestart.manager.abortSession("session-a");
+    expect(await beforeRestart.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).toBeNull();
+    expect(beforeRestart.transport.requests).toEqual([]);
+
+    failedStorage.failSetKey = undefined;
+    const rejectedTransport = new FakeTransport();
+    rejectedTransport.responses.push({ ok: false });
+    const restarted = createManager({ sessionStorage: failedStorage, transport: rejectedTransport });
+    expect(await restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).toBeNull();
+    await restarted.manager.renewPersistedSessions();
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(failedStorage.values.has("active-recording:session-a")).toBe(false);
+    expectAbsent({ storage: failedStorage.writes, requests: rejectedTransport.requests });
   });
 
   it("persists server-failed stop recovery without renewal or expiry deletion", async () => {
@@ -798,7 +937,7 @@ describe("RecordingManager restart and stop persistence", () => {
     sessionStorage.writes.length = 0;
 
     const missingMarker = createManager({ sessionStorage });
-    await expect(missingMarker.manager.stop("session-a")).rejects.toThrow("NO_ACTIVE_RECORDING");
+    await expect(missingMarker.manager.stop("session-a")).rejects.toThrow("RECORDED_STATE_FAILED");
     expect(sessionStorage.reads).toContain("active-recording-index:session-a");
     expect(sessionStorage.reads).not.toContain("active-recording:session-a");
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
@@ -1168,17 +1307,64 @@ describe("RecordingManager restart and stop persistence", () => {
     const numericMutations: Array<(recording: typeof stopped.recording) => void> = [
       (recording) => { recording.startedAt = -1; },
       (recording) => { recording.startedAt = Number.POSITIVE_INFINITY; },
+      (recording) => { recording.startedAt = MAX_RECORDING_TIMESTAMP_MS + 1; },
+      (recording) => { recording.startedAt = 1.5; },
       (recording) => { recording.stoppedAt = -1; },
       (recording) => { recording.stoppedAt = Number.NaN; },
+      (recording) => { recording.stoppedAt = MAX_RECORDING_TIMESTAMP_MS + 1; },
       (recording) => { recording.steps[0]!.timestamp = -1; },
       (recording) => { recording.steps[0]!.timestamp = Number.POSITIVE_INFINITY; },
+      (recording) => { recording.steps[0]!.timestamp = 1.5; },
       (recording) => { recording.steps[0]!.durationMs = -1; },
       (recording) => { recording.steps[0]!.durationMs = Number.NaN; },
+      (recording) => { recording.steps[0]!.durationMs = MAX_RECORDED_DURATION_MS + 1; },
     ];
     for (const mutate of numericMutations) {
       const candidate = structuredClone(stopped.recording);
       mutate(candidate);
       expect(isSanitizedRecording(candidate)).toBe(false);
+    }
+
+    const boundary = structuredClone(stopped.recording);
+    boundary.startedAt = 0;
+    boundary.stoppedAt = MAX_RECORDING_TIMESTAMP_MS;
+    boundary.steps[0]!.timestamp = MAX_RECORDING_TIMESTAMP_MS;
+    boundary.steps[0]!.durationMs = MAX_RECORDED_DURATION_MS;
+    expect(isSanitizedRecording(boundary)).toBe(true);
+
+    const maxSteps = structuredClone(stopped.recording);
+    while (maxSteps.steps.length < MAX_ACTIVE_RECORDING_STEPS) {
+      maxSteps.steps.push({
+        action: "browser_go_back",
+        args: {},
+        timestamp: 0,
+        durationMs: 0,
+        url: "",
+      });
+    }
+    expect(isSanitizedRecording(maxSteps)).toBe(true);
+    maxSteps.steps.push({ ...maxSteps.steps.at(-1)! });
+    expect(isSanitizedRecording(maxSteps)).toBe(false);
+
+    const maxTab = createManager();
+    await expect(maxTab.manager.start(
+      "session-max", "max-tab", MAX_CHROME_TAB_ID, "https://example.test",
+    )).resolves.toBeUndefined();
+    for (const tabId of [0, MAX_CHROME_TAB_ID + 1, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(createManager().manager.start(
+        `session-${tabId}`, "bad-tab", tabId, "https://example.test",
+      )).rejects.toThrow("RECORDED_STATE_FAILED");
+    }
+
+    for (const nextVariable of [0, MAX_REQUIRED_VARIABLES + 2]) {
+      const storage = new MemoryStorage();
+      const seeded = createManager({ sessionStorage: storage });
+      await seeded.manager.start("session-a", "bad-counter", 11, "https://example.test");
+      const state = storage.values.get("active-recording:session-a") as Record<string, unknown>;
+      storage.values.set("active-recording:session-a", { ...state, nextVariable });
+      const restarted = createManager({ sessionStorage: storage });
+      await expect(restarted.manager.restoreSession("session-a")).resolves.toBe(false);
+      expect(restarted.manager.snapshot().active).toEqual([]);
     }
   });
 });

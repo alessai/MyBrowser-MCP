@@ -237,3 +237,44 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Canary scan: all `SECRET_` and `CANARY_` matches remain confined to test files.
 - Lifecycle/privacy scan: no shared-index value read, split active snapshot/marker cleanup, or non-HTTP residual allowlist remains.
 - Repository: `git diff --check` passed.
+
+## Fail-Closed Restore And Exact-Key Follow-Up
+
+### Quarantined Restart Validation
+
+- A persisted `active` snapshot restores only as hidden in-memory `quarantined` state; it cannot record, stop, appear in public snapshots, or be persisted under that status.
+- One authoritative renewal promotes a quarantined candidate only on `ok:true` and atomically rewrites active snapshot and marker state.
+- False, timed-out, disconnected, or failed validation enters cleanup and removes state or leaves restart-safe cleanup retry state.
+- `session_closed` installs an in-memory tombstone synchronously before queued storage work. Renewal responses and commits check it, and it clears only after atomic state removal.
+- Cleanup-state write failure leaves stale persisted active data quarantined after worker restart; false server validation removes it without pre-validation recording.
+
+### Public Error Privacy
+
+- Start and stop restore/storage dependency failures now surface only `RECORDED_STATE_FAILED` through the recorded-state failure envelope.
+- Background diagnostics contain only stable category and request metadata, never dependency message, stack, payload, or canary.
+- Canary tests scan response envelopes, diagnostics, console calls, storage writes, and manager snapshots for start, stop, and prepare failures.
+
+### Exact Hostile Keys
+
+- Raw step args no longer enter a Zod record reconstruction. Exact own entries are cloned first, withheld from fixed-shape Zod parsing, then reattached for recursive path/type/placeholder validation.
+- Extension and server builders use data-property definitions so `__proto__`, `constructor`, and `prototype` remain own keys.
+- Parameterized hostile form keys round-trip and count variable usage; unparameterized hostile top-level and dynamic form values reject before persistence.
+
+### Numeric Bounds
+
+- Persisted tab IDs are positive bounded safe integers; timestamps are nonnegative safe integers within the ECMAScript Date range; durations have an explicit finite nonnegative maximum; step and variable counters remain bounded.
+- Every numeric action path has conformant `{integer,min,max}` metadata on extension and server.
+- Boundary tests cover min, max, below-min, above-max, and fractional integer values for every numeric path and persisted numeric shape.
+
+### Verification
+
+- Extension focused GREEN: recorder, parameterizer, tool-metadata, recording-transport, and background-privacy suites passed.
+- Server focused GREEN: recording privacy and WebSocket lifecycle suites passed.
+- Extension full: 12 files, 127 tests passed.
+- Extension `npm run check`: passed.
+- Extension `npm run build`: passed.
+- Server full: 6 files, 146 tests passed.
+- Server `npm run check`: passed.
+- Server `npm run build`: passed.
+- `git diff --check`: passed.
+- Canary/debug scans: all `SECRET_*` matches are test-only; no temporary debug output, sequential request ID, or raw Zod argument record remains.

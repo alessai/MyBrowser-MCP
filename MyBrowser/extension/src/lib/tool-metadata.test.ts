@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { getRegisteredToolNames } from "./tools";
-import { RECORDING_ARGUMENT_TYPES, TOOL_METADATA } from "./tool-metadata";
+import {
+  RECORDING_ARGUMENT_TYPES,
+  RECORDING_NUMERIC_BOUNDS,
+  TOOL_METADATA,
+} from "./tool-metadata";
 
 describe("TOOL_METADATA", () => {
   it("classifies every registered tool exactly once", () => {
@@ -83,9 +87,25 @@ describe("TOOL_METADATA", () => {
       const types = RECORDING_ARGUMENT_TYPES[name as keyof typeof RECORDING_ARGUMENT_TYPES];
       expect(types[""]).toBe("object");
       for (const path of Object.keys(metadata)) expect(types[path]).toBe("string");
+      expect(Object.entries(types)
+        .filter(([, type]) => type === "string")
+        .map(([path]) => path)
+        .sort()).toEqual(Object.keys(metadata).sort());
       expect(Object.values(types).every((type) => [
         "array", "boolean", "number", "object", "string",
       ].includes(type))).toBe(true);
+      const numericPaths = Object.entries(types)
+        .filter(([, type]) => type === "number")
+        .map(([path]) => path)
+        .sort();
+      const bounds = RECORDING_NUMERIC_BOUNDS[name as keyof typeof RECORDING_NUMERIC_BOUNDS];
+      expect(Object.keys(bounds).sort()).toEqual(numericPaths);
+      for (const constraint of Object.values(bounds)) {
+        expect(Object.keys(constraint).sort()).toEqual(["integer", "max", "min"]);
+        expect(Number.isFinite(constraint.min)).toBe(true);
+        expect(Number.isFinite(constraint.max)).toBe(true);
+        expect(constraint.min).toBeLessThanOrEqual(constraint.max);
+      }
     }
   });
 

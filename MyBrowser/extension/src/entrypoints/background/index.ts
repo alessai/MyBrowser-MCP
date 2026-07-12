@@ -901,6 +901,11 @@ export default defineBackground(() => {
     } catch {
       recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
     }
+    try {
+      await getRecordingManager().renewPersistedSessions();
+    } catch {
+      recordExtensionIssue('recording_lifecycle', 'RECORDING_RESTORE_VALIDATION_FAILED');
+    }
   });
 
   // Alarm every 25 seconds to:
