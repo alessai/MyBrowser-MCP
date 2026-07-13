@@ -91,11 +91,11 @@ async function registerSession(ws: WebSocket, sessionId: string) {
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const socket of sockets.splice(0)) {
     if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
   }
-  for (const server of servers.splice(0)) server.close();
+  await Promise.allSettled(servers.splice(0).map((server) => server.close()));
 });
 
 function createState() {

@@ -34,6 +34,7 @@ describe("protocol v2 conformance", () => {
       "SESSION_CLOSED",
       "SESSION_FINALIZED",
       "SESSION_IDENTITY_MISMATCH",
+      "SERVER_SHUTTING_DOWN",
       "INVALID_SESSION_ID",
       "REQUEST_EXPIRED",
       "QUEUE_OVERLOADED",

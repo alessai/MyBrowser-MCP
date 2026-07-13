@@ -251,6 +251,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const stateManager = new LocalStateManager();
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
   const recordingPersistQueues = new Map<string, RecordingPersistQueue>();
+  const sessionFinalizations = new Map<string, Promise<boolean>>();
   const sessionReconnectGraceMs = options.sessionReconnectGraceMs
     ?? SESSION_RECONNECT_GRACE_MS;
   const finalizedSessions = new FinalizedSessionRegistry({
@@ -317,7 +318,30 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
    * `removeSession` is the single extension notification point and
    * broadcasts `session_closed` only after all hub-owned state is gone.
    */
-  async function finalizeSession(
+  function finalizeSession(
+    sessionId: string,
+    expectedGeneration?: number,
+    allowConnectedGeneration = false,
+  ): Promise<boolean> {
+    const activeFinalization = sessionFinalizations.get(sessionId);
+    if (activeFinalization) return activeFinalization;
+    if (finalizedSessions.has(sessionId)) return Promise.resolve(false);
+    const finalization = runSessionFinalizer(
+      sessionId,
+      expectedGeneration,
+      allowConnectedGeneration,
+    );
+    sessionFinalizations.set(sessionId, finalization);
+    const forget = () => {
+      if (sessionFinalizations.get(sessionId) === finalization) {
+        sessionFinalizations.delete(sessionId);
+      }
+    };
+    void finalization.then(forget, forget);
+    return finalization;
+  }
+
+  async function runSessionFinalizer(
     sessionId: string,
     expectedGeneration?: number,
     allowConnectedGeneration = false,
@@ -450,6 +474,52 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   // Periodically ping all connections via WS protocol-level ping.
   // If a connection didn't respond to the previous ping, it's dead — close it.
   const awaitingPong = new Set<WebSocket>();
+  const inFlightMessageHandlers = new Set<Promise<void>>();
+
+  function rejectMessageDuringShutdown(
+    ws: WebSocket,
+    data: Buffer | string,
+    connectionRole: ConnectionRole | undefined,
+  ): void {
+    let msg: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(data.toString());
+      if (!isRecord(parsed)) throw new Error("invalid message");
+      msg = parsed;
+    } catch {
+      ws.close(1012, "SERVER_SHUTTING_DOWN");
+      return;
+    }
+    if (!connectionRole || msg.type === "auth") {
+      ws.close(1012, "SERVER_SHUTTING_DOWN");
+      return;
+    }
+    if (typeof msg.id !== "string" || msg.id.length === 0) return;
+    if (msg.type === "hub_rpc") {
+      safeSend(ws, {
+        type: "hub_rpc_result",
+        id: msg.id,
+        error: "SERVER_SHUTTING_DOWN",
+      });
+      return;
+    }
+    if (RECORDING_CONTROL_TYPES.has(String(msg.type))) {
+      safeSend(ws, {
+        type: `${String(msg.type)}Result`,
+        id: msg.id,
+        ok: false,
+        error: "SERVER_SHUTTING_DOWN",
+      });
+      return;
+    }
+    safeSend(ws, {
+      type: MESSAGE_RESPONSE_TYPE,
+      payload: {
+        requestId: msg.id,
+        error: "SERVER_SHUTTING_DOWN",
+      },
+    });
+  }
 
   const livenessSweep = setInterval(() => {
     for (const client of wss.clients) {
@@ -489,6 +559,10 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   }, LIVENESS_SWEEP_INTERVAL_MS);
 
   wss.on("connection", (ws: WebSocket) => {
+    if (shuttingDown) {
+      ws.close(1012, "SERVER_SHUTTING_DOWN");
+      return;
+    }
     let connectionRole: ConnectionRole | undefined;
     let activityTimer: ReturnType<typeof setTimeout>;
     let timeoutMs = CLIENT_TIMEOUT_MS; // Default to client timeout, updated on auth
@@ -508,7 +582,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
     resetActivityTimer();
 
-    ws.on("message", async (data: Buffer | string) => {
+    const handleMessage = async (data: Buffer | string): Promise<void> => {
       resetActivityTimer();
 
       let msg: any;
@@ -650,25 +724,23 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           }
           cancelSessionCleanup(sessionId);
 
-          stateManager
-            .registerSession(
+          try {
+            await stateManager.registerSession(
               sessionId,
               typeof msg.params?.name === "string" ? msg.params.name : undefined,
-            )
-            .then(() => {
-              safeSend(ws, {
-                type: "hub_rpc_result",
-                id: msg.id,
-                result: { ok: true },
-              });
-            })
-            .catch((err) => {
-              safeSend(ws, {
-                type: "hub_rpc_result",
-                id: msg.id,
-                error: err instanceof Error ? err.message : String(err),
-              });
+            );
+            safeSend(ws, {
+              type: "hub_rpc_result",
+              id: msg.id,
+              result: { ok: true },
             });
+          } catch (err) {
+            safeSend(ws, {
+              type: "hub_rpc_result",
+              id: msg.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           return;
         }
 
@@ -714,22 +786,21 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           return;
         }
 
-        dispatchHubRpc(
-          stateManager,
-          { role: "client", sessionId },
-          msg.method,
-          isRecord(msg.params) ? msg.params : {},
-        )
-          .then((result: unknown) => {
-            ws.send(JSON.stringify({ type: "hub_rpc_result", id: msg.id, result }));
-          })
-          .catch((err: unknown) => {
-            ws.send(JSON.stringify({
-              type: "hub_rpc_result",
-              id: msg.id,
-              error: err instanceof Error ? err.message : String(err),
-            }));
+        try {
+          const result = await dispatchHubRpc(
+            stateManager,
+            { role: "client", sessionId },
+            msg.method,
+            isRecord(msg.params) ? msg.params : {},
+          );
+          safeSend(ws, { type: "hub_rpc_result", id: msg.id, result });
+        } catch (err) {
+          safeSend(ws, {
+            type: "hub_rpc_result",
+            id: msg.id,
+            error: err instanceof Error ? err.message : String(err),
           });
+        }
 
         return;
       }
@@ -760,28 +831,26 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           return;
         }
 
-        stateManager
-          .renewRecordingReservation(
+        try {
+          const ok = await stateManager.renewRecordingReservation(
             sessionId,
             name,
             RECORDING_RESERVATION_LEASE_MS,
-          )
-          .then((ok) => {
-            safeSend(ws, {
-              type: "renewRecordingReservationResult",
-              id: msg.id,
-              ok,
-              ...(ok ? {} : { error: "reservation unavailable" }),
-            });
-          })
-          .catch(() => {
-            safeSend(ws, {
-              type: "renewRecordingReservationResult",
-              id: msg.id,
-              ok: false,
-              error: "invalid request",
-            });
+          );
+          safeSend(ws, {
+            type: "renewRecordingReservationResult",
+            id: msg.id,
+            ok,
+            ...(ok ? {} : { error: "reservation unavailable" }),
           });
+        } catch {
+          safeSend(ws, {
+            type: "renewRecordingReservationResult",
+            id: msg.id,
+            ok: false,
+            error: "invalid request",
+          });
+        }
         return;
       }
 
@@ -947,39 +1016,37 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         // Look up the handler state BEFORE pushing. Silent drop on
         // mismatch so probing for other sessions' queues yields
         // nothing observable to the sender.
-          stateManager
-            .hasMatchingEventHandler(
+        try {
+          const hasMatch = await stateManager.hasMatchingEventHandler(
             p.sessionId,
             browserId,
             p.event,
             p.queueName,
-          )
-          .then((hasMatch) => {
-            if (!hasMatch) {
-              recordIssue({
-                level: "warn",
-                area: "event_handler",
-                message: `Dropped eventEmitted with no matching handler for session=${p.sessionId} browser=${browserId} event=${p.event} queue=${p.queueName}`,
-                sessionId: p.sessionId,
-                browserId,
-              });
-              console.error(
-                `[MyBrowser MCP] dropped eventEmitted: no matching handler for session=${p.sessionId} browser=${browserId} event=${p.event} queue=${p.queueName}`,
-              );
-              return;
-            }
-            return stateManager.pushEvent(
-              p.sessionId!,
-              browserId,
-              p.event!,
-              p.queueName!,
-              p.data,
-              typeof p.tabId === "number" ? p.tabId : undefined,
-            );
-          })
-          .catch(() =>
-            console.error("[MyBrowser MCP] EVENT_HANDLER_FAILED"),
           );
+          if (!hasMatch) {
+            recordIssue({
+              level: "warn",
+              area: "event_handler",
+              message: `Dropped eventEmitted with no matching handler for session=${p.sessionId} browser=${browserId} event=${p.event} queue=${p.queueName}`,
+              sessionId: p.sessionId,
+              browserId,
+            });
+            console.error(
+              `[MyBrowser MCP] dropped eventEmitted: no matching handler for session=${p.sessionId} browser=${browserId} event=${p.event} queue=${p.queueName}`,
+            );
+            return;
+          }
+          await stateManager.pushEvent(
+            p.sessionId,
+            browserId,
+            p.event,
+            p.queueName,
+            p.data,
+            typeof p.tabId === "number" ? p.tabId : undefined,
+          );
+        } catch {
+          console.error("[MyBrowser MCP] EVENT_HANDLER_FAILED");
+        }
         return;
       }
 
@@ -1107,15 +1174,26 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             resolvedBrowserId = handler.browserId;
             forwardedPayload = { handlerId: handler.id };
           } else {
-            const resolution = await stateManager.resolveBrowserTarget(clientSessionId);
-            if (!resolution.ok) {
-              safeSend(ws, {
-                type: MESSAGE_RESPONSE_TYPE,
-                payload: { requestId: msg.id, error: resolution.message },
-              });
-              return;
+            const requestedBrowserId = typeof msg.targetBrowserId === "string"
+              ? msg.targetBrowserId
+              : undefined;
+            if (
+              msg.type === "browser_unregister_handler"
+              && requestedBrowserId !== undefined
+              && ownHandlers.some(({ browserId }) => browserId === requestedBrowserId)
+            ) {
+              resolvedBrowserId = requestedBrowserId;
+            } else {
+              const resolution = await stateManager.resolveBrowserTarget(clientSessionId);
+              if (!resolution.ok) {
+                safeSend(ws, {
+                  type: MESSAGE_RESPONSE_TYPE,
+                  payload: { requestId: msg.id, error: resolution.message },
+                });
+                return;
+              }
+              resolvedBrowserId = resolution.browserId;
             }
-            resolvedBrowserId = resolution.browserId;
             forwardedPayload = { sessionId: clientSessionId };
           }
         } else {
@@ -1135,6 +1213,13 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           resolvedBrowserId = resolution.browserId;
         }
 
+        if (resolvedBrowserId === undefined) {
+          safeSend(ws, {
+            type: MESSAGE_RESPONSE_TYPE,
+            payload: { requestId: msg.id, error: "No browser connected" },
+          });
+          return;
+        }
         const browser = context.getBrowser(resolvedBrowserId);
         if (!browser || browser.ws.readyState !== WebSocket.OPEN) {
           recordIssue({
@@ -1262,6 +1347,18 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
         return;
       }
+    };
+
+    ws.on("message", (data: Buffer | string) => {
+      if (shuttingDown) {
+        rejectMessageDuringShutdown(ws, data, connectionRole);
+        return;
+      }
+      const task = handleMessage(data);
+      inFlightMessageHandlers.add(task);
+      void task
+        .catch(() => console.error("[MyBrowser MCP] MESSAGE_HANDLER_FAILED"))
+        .finally(() => inFlightMessageHandlers.delete(task));
     });
 
     ws.on("close", () => {
@@ -1283,11 +1380,13 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         context.removeBrowser(closedBrowserId);
         // F1: clear all event handlers registered against this browser.
         // Session-scoped per the design — a fresh connection starts clean.
-        stateManager
-          .clearEventHandlersForBrowser(closedBrowserId)
-          .catch(() =>
-            console.error("[MyBrowser MCP] CLEAR_EVENT_HANDLERS_FAILED"),
-          );
+        if (!shuttingDown) {
+          stateManager
+            .clearEventHandlersForBrowser(closedBrowserId)
+            .catch(() =>
+              console.error("[MyBrowser MCP] CLEAR_EVENT_HANDLERS_FAILED"),
+            );
+        }
         recordIssue({
           level: "warn",
           area: "extension_disconnect",
@@ -1319,6 +1418,12 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         clearTimeout(timer);
       }
       pendingSessionCleanup.clear();
+      while (inFlightMessageHandlers.size > 0 || sessionFinalizations.size > 0) {
+        await Promise.allSettled([
+          ...inFlightMessageHandlers,
+          ...sessionFinalizations.values(),
+        ]);
+      }
       try {
         const sessions = await stateManager.listSessions();
         for (const { id } of sessions) {

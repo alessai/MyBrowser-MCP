@@ -159,7 +159,9 @@ export async function dispatchHubRpc(
         typeof params.browserId === "string" ? params.browserId : undefined,
       );
     case "clearEventHandlersForSession":
-      await stateManager.clearEventHandlersForSession(auth.sessionId);
+      await stateManager.clearEventHandlersForSession(auth.sessionId, {
+        notifyExtension: params.notifyExtension !== false,
+      });
       return { ok: true };
     case "hasMatchingEventHandler":
       return await stateManager.hasMatchingEventHandler(

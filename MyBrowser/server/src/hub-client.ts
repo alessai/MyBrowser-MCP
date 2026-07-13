@@ -26,6 +26,7 @@ import type {
   DefaultBrowserInfo,
   BrowserTargetResolution,
   RecordingReservation,
+  EventHandlerClearOptions,
 } from "./state-manager.js";
 
 const RPC_TIMEOUT_MS = 10_000;
@@ -332,8 +333,13 @@ export class HubStateManager implements IStateManager {
     })) as EventHandler[];
   }
 
-  async clearEventHandlersForSession(_sessionId: string): Promise<void> {
-    await this.sendRpc("clearEventHandlersForSession");
+  async clearEventHandlersForSession(
+    _sessionId: string,
+    options?: EventHandlerClearOptions,
+  ): Promise<void> {
+    await this.sendRpc("clearEventHandlersForSession", {
+      notifyExtension: options?.notifyExtension,
+    });
   }
 
   async clearEventHandlersForBrowser(browserId: string): Promise<void> {

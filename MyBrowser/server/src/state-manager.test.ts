@@ -220,7 +220,7 @@ describe("LocalStateManager recording reservations", () => {
 });
 
 describe("LocalStateManager event mirror cleanup", () => {
-  it("notifies extensions when browser_off explicitly clears the session", async () => {
+  it("does not duplicate the acknowledged browser_off clear with a broadcast", async () => {
     const state = new LocalStateManager();
     const broadcast = vi.fn();
     state.setBroadcastToBrowsersFn(broadcast);
@@ -232,12 +232,14 @@ describe("LocalStateManager event mirror cleanup", () => {
       async () => "browser-a",
     );
 
-    await browserOff.handle({} as Context, {});
+    const context = {
+      sendSocketMessageToBrowser: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as Context;
+    await browserOff.handle(context, {});
 
-    expect(broadcast).toHaveBeenCalledOnce();
-    expect(broadcast).toHaveBeenCalledWith("browser_unregister_handler", {
-      sessionId: "session-a",
-    });
+    expect(context.sendSocketMessageToBrowser).toHaveBeenCalledOnce();
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(await state.listEventHandlers("session-a")).toEqual([]);
   });
 
   it("suppresses mirror unregister during final session_closed cleanup", async () => {

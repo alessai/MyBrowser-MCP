@@ -72,6 +72,18 @@ describe('production event mirror controls', () => {
     expect(listHandlers().map(({ id }) => id)).toEqual(['handler-a', 'handler-b']);
   });
 
+  it('applies an owned single-handler removal before acknowledging it', async () => {
+    addHandler(handler('handler-a', 'session-a'));
+    addHandler(handler('handler-b', 'session-b'));
+
+    await expect(handleTool(
+      'browser_unregister_handler',
+      { handlerId: 'handler-a' },
+      context('session-a'),
+    )).resolves.toEqual({ ok: true });
+    expect(listHandlers()).toEqual([handler('handler-b', 'session-b')]);
+  });
+
   it.each([
     { clearAll: true },
     { sessionId: 'session-b' },

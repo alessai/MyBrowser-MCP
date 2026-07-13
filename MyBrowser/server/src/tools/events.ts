@@ -279,6 +279,24 @@ export function createEventsTools(
             isError: true,
           };
         }
+        try {
+          await context.sendSocketMessageToBrowser(
+            existing.browserId,
+            "browser_unregister_handler",
+            { handlerId: args.handlerId },
+            { timeoutMs: 5_000 },
+          );
+        } catch {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "EVENT_HANDLER_MIRROR_FAILED",
+              },
+            ],
+            isError: true,
+          };
+        }
         const removed = await sm.unregisterEventHandler(
           sessionId,
           args.handlerId,
@@ -288,33 +306,38 @@ export function createEventsTools(
             content: [
               {
                 type: "text",
-                text: `Handler ${args.handlerId} already removed`,
+                text: "EVENT_HANDLER_STATE_CHANGED",
               },
             ],
             isError: true,
           };
-        }
-        try {
-          await context.sendSocketMessageToBrowser(
-            existing.browserId,
-            "browser_unregister_handler",
-            { handlerId: args.handlerId },
-          );
-        } catch {
-          /* best-effort — hub state is authoritative */
         }
         return {
           content: [{ type: "text", text: `Removed handler ${args.handlerId}` }],
         };
       }
 
-      // No id → clear everything THIS SESSION registered.
-      // `clearEventHandlersForSession` internally broadcasts the
-      // session-scoped unregister to all connected browsers via the
-      // state manager's broadcaster, so we don't need a separate
-      // `context.sendSocketMessage` push here.
       const existing = await sm.listEventHandlers(sessionId);
-      await sm.clearEventHandlersForSession(sessionId);
+      const browserIds = [...new Set(existing.map(({ browserId }) => browserId))];
+      try {
+        await Promise.all(browserIds.map((browserId) =>
+          context.sendSocketMessageToBrowser(
+            browserId,
+            "browser_unregister_handler",
+            { sessionId },
+            { timeoutMs: 5_000 },
+          )
+        ));
+      } catch {
+        return {
+          content: [{ type: "text", text: "EVENT_HANDLER_MIRROR_FAILED" }],
+          isError: true,
+        };
+      }
+      await sm.clearEventHandlersForSession(
+        sessionId,
+        { notifyExtension: false },
+      );
       return {
         content: [
           {
