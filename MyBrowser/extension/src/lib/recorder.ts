@@ -182,7 +182,7 @@ class ChromeStorageAdapter implements RecordingStorage {
 
 export class ChromeRecordingAlarmScheduler implements RecordingAlarmScheduler {
   async ensureRenewal(): Promise<void> {
-    chrome.alarms.create(RECORDING_RENEWAL_ALARM, {
+    await chrome.alarms.create(RECORDING_RENEWAL_ALARM, {
       periodInMinutes: RECORDING_RENEWAL_MINUTES,
     });
   }
@@ -192,7 +192,7 @@ export class ChromeRecordingAlarmScheduler implements RecordingAlarmScheduler {
   }
 
   async ensureCleanup(sessionId: string): Promise<void> {
-    chrome.alarms.create(recordingCleanupAlarmName(sessionId), {
+    await chrome.alarms.create(recordingCleanupAlarmName(sessionId), {
       periodInMinutes: RECORDING_CLEANUP_MINUTES,
     });
   }

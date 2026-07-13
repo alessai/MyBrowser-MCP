@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getRecentExtensionIssues } from "./diagnostics";
 import { reportToolFailure } from "./background-privacy";
@@ -13,6 +13,8 @@ import {
   MAX_RECORDED_DURATION_MS,
   MAX_RECORDING_TIMESTAMP_MS,
   MAX_REQUIRED_VARIABLES,
+  RECORDING_RENEWAL_ALARM,
+  ChromeRecordingAlarmScheduler,
   isSanitizedRecording,
   loadRecordingFromStorage,
   recordingCleanupAlarmName,
@@ -31,6 +33,20 @@ const SECRET_URL = "SECRET_MANAGER_DELTA_4178";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function expectAbsent(value: unknown, secrets = [
@@ -214,6 +230,136 @@ async function captureType(
     currentUrl: `https://example.test/account?token=${SECRET_URL}#private`,
   });
 }
+
+describe("ChromeRecordingAlarmScheduler", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stubAlarms(
+    createAlarm: (name: string, info: chrome.alarms.AlarmCreateInfo) => Promise<void>,
+  ) {
+    const create = vi.fn(createAlarm);
+    const clear = vi.fn(async () => true);
+    const getAll = vi.fn(async () => [] as chrome.alarms.Alarm[]);
+    vi.stubGlobal("chrome", { alarms: { create, clear, getAll } });
+    return { create, clear };
+  }
+
+  function concreteManager(
+    sessionStorage: MemoryStorage,
+    transport = new FakeTransport(),
+  ): RecordingManager {
+    return new RecordingManager({
+      sessionStorage,
+      localStorage: new MemoryStorage(),
+      transport,
+      scheduler: new ChromeRecordingAlarmScheduler(),
+      now: () => 1_700_000_000_000,
+    });
+  }
+
+  it("does not enter queued cleanup until Chrome confirms alarm creation", async () => {
+    const sessionStorage = new MemoryStorage();
+    const seeded = createManager({ sessionStorage });
+    await seeded.manager.start("session-a", "delayed-alarm", 11, "https://example.test");
+    sessionStorage.reads.length = 0;
+    const created = deferred<void>();
+    let firstCleanup = true;
+    const alarms = stubAlarms((name) => {
+      if (name === recordingCleanupAlarmName("session-a") && firstCleanup) {
+        firstCleanup = false;
+        return created.promise;
+      }
+      return Promise.resolve();
+    });
+    const manager = concreteManager(sessionStorage);
+
+    const closing = manager.abortSession("session-a");
+    let settled = false;
+    void closing.then(() => { settled = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(alarms.create).toHaveBeenCalledWith(
+      "recording-cleanup:session-a",
+      { periodInMinutes: 1 },
+    );
+    expect(sessionStorage.reads).toEqual([]);
+    expect(settled).toBe(false);
+
+    created.resolve();
+    await closing;
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(alarms.clear).toHaveBeenCalledWith("recording-cleanup:session-a");
+  });
+
+  it("waits for rejected Chrome alarm creation before continuing stable cleanup", async () => {
+    const sessionStorage = new MemoryStorage();
+    const seeded = createManager({ sessionStorage });
+    await seeded.manager.start("session-a", "rejected-alarm", 11, "https://example.test");
+    sessionStorage.reads.length = 0;
+    const created = deferred<void>();
+    void created.promise.catch(() => undefined);
+    let firstCleanup = true;
+    stubAlarms((name) => {
+      if (name === recordingCleanupAlarmName("session-a") && firstCleanup) {
+        firstCleanup = false;
+        return created.promise;
+      }
+      return Promise.resolve();
+    });
+    const manager = concreteManager(sessionStorage);
+
+    const closing = manager.abortSession("session-a");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sessionStorage.reads).toEqual([]);
+
+    created.reject(new Error(`ALARM_EXPOSED_${SECRET_TEXT}`));
+    await expect(closing).resolves.toBeUndefined();
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+  });
+
+  it("keeps resolved cleanup authority while an earlier queued transport is blocked", async () => {
+    const sessionStorage = new MemoryStorage();
+    const seeded = createManager({ sessionStorage });
+    await seeded.manager.start("session-a", "blocked-queue", 11, "https://example.test");
+    const renewal = deferred<unknown>();
+    const transport = new FakeTransport();
+    transport.responses.push(renewal.promise);
+    const alarms = stubAlarms(async () => undefined);
+    const manager = concreteManager(sessionStorage, transport);
+
+    const renewing = manager.renewPersistedSessions();
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(1));
+    const closing = manager.abortSession("session-a");
+    await vi.waitFor(() => expect(alarms.create).toHaveBeenCalledWith(
+      "recording-cleanup:session-a",
+      { periodInMinutes: 1 },
+    ));
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+
+    renewal.resolve({ ok: true });
+    await renewing;
+    await closing;
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(alarms.clear).toHaveBeenCalledWith("recording-cleanup:session-a");
+  });
+
+  it("propagates renewal creation rejection so start rolls back persisted state", async () => {
+    const sessionStorage = new MemoryStorage();
+    const rejected = Promise.reject(new Error(`RENEWAL_EXPOSED_${SECRET_FORM}`));
+    void rejected.catch(() => undefined);
+    stubAlarms((name) => name === RECORDING_RENEWAL_ALARM ? rejected : Promise.resolve());
+    const manager = concreteManager(sessionStorage);
+
+    await expect(manager.start(
+      "session-a", "renewal-rejection", 11, "https://example.test",
+    )).rejects.toThrow("SCHEDULE_RENEWAL_FAILED");
+    expect(manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+  });
+});
 
 describe("RecordingManager privacy and ownership", () => {
   it("rolls back failed start persistence without exposing dependency errors", async () => {
