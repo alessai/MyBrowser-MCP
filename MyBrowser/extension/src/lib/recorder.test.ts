@@ -1689,6 +1689,64 @@ describe("RecordingManager restart and stop persistence", () => {
     ]);
   });
 
+  it("prevents an action when session closure races quarantined renewal", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "closing-renewal", 11, "https://example.test");
+
+    const renewal = deferred<unknown>();
+    const transport = new FakeTransport();
+    transport.responses.push(renewal.promise);
+    const restarted = createManager({ sessionStorage, transport });
+    let actionRan = false;
+    const action = runRecordedAction({
+      manager: restarted.manager,
+      sessionId: "session-a",
+      toolName: "browser_click",
+      args: { element: "Account" },
+      tabId: 11,
+      run: async () => { actionRan = true; },
+      currentUrl: async () => "https://example.test",
+    });
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(1));
+
+    const closing = restarted.manager.abortSession("session-a");
+    renewal.resolve({ ok: true });
+
+    await expect(action).rejects.toMatchObject({ stage: "session_closed" });
+    expect(actionRan).toBe(false);
+    await closing;
+  });
+
+  it("coalesces periodic renewal and releases the manager queue during bounded batches", async () => {
+    const sessionStorage = new MemoryStorage();
+    const source = createManager({ sessionStorage });
+    for (let index = 0; index < 40; index += 1) {
+      await source.manager.start(`session-${index}`, `flow-${index}`, index + 1, "https://example.test");
+    }
+
+    const renewals = Array.from({ length: 40 }, () => deferred<unknown>());
+    const transport = new FakeTransport();
+    transport.responses.push(...renewals.map((renewal) => renewal.promise));
+    const restarted = createManager({ sessionStorage, transport });
+
+    const firstPass = restarted.manager.renewPersistedSessions();
+    const coalescedPass = restarted.manager.renewPersistedSessions();
+    expect(coalescedPass).toBe(firstPass);
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(32));
+
+    let startResolved = false;
+    const start = restarted.manager.start(
+      "session-new", "flow-new", 100, "https://example.test",
+    ).then(() => { startResolved = true; });
+    await vi.waitFor(() => expect(startResolved).toBe(true));
+
+    renewals.slice(0, 32).forEach((renewal) => renewal.resolve({ ok: true }));
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(40));
+    renewals.slice(32).forEach((renewal) => renewal.resolve({ ok: true }));
+    await Promise.all([firstPass, start]);
+  });
+
   it("tombstones session closure before cleanup persistence and blocks current-worker renewal", async () => {
     const sessionStorage = new MemoryStorage();
     const transport = new FakeTransport();

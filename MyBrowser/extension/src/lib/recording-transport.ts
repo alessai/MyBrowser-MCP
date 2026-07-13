@@ -94,7 +94,11 @@ export class RecordingRequestBroker implements RecordingTransport {
     if (!pending || candidate.type !== pending.expectedType) return false;
     clearTimeout(pending.timer);
     this.pending.delete(candidate.id);
-    pending.resolve({ ok: candidate.ok === true });
+    if (typeof candidate.ok !== 'boolean') {
+      pending.reject(new Error('INVALID_RECORDING_RESPONSE'));
+      return true;
+    }
+    pending.resolve({ ok: candidate.ok });
     return true;
   }
 

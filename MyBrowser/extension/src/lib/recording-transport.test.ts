@@ -94,6 +94,28 @@ describe("RecordingRequestBroker", () => {
     expect(JSON.stringify({ sent, result })).not.toContain(SECRET);
   });
 
+  it("rejects malformed matched acknowledgements as ambiguous", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const broker = new RecordingRequestBroker((message) => {
+      sent.push(message);
+      return true;
+    });
+    const pending = broker.request("renewRecordingReservation", {
+      sessionId: "session-a",
+      name: "flow",
+    }, 10_000);
+    const id = sent[0]!.id as string;
+
+    expect(broker.accept({
+      type: "renewRecordingReservationResult",
+      id,
+      ok: `INVALID_${SECRET}`,
+    })).toBe(true);
+
+    await expect(pending).rejects.toThrow("INVALID_RECORDING_RESPONSE");
+    expect(JSON.stringify(sent)).not.toContain(SECRET);
+  });
+
   it("rejects immediately when the request cannot be sent", async () => {
     const broker = new RecordingRequestBroker(() => false);
 
