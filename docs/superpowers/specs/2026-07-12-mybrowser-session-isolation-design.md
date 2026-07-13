@@ -96,9 +96,12 @@ Rules:
 - a socket cannot switch to a different session after registration;
 - a session already bound to a live socket cannot be registered by another socket;
 - a reconnect may reclaim the same session after the prior socket closes and while the existing reconnect grace period is active;
+- a session ID whose cleanup has finalized cannot be registered again while its tombstone is live;
 - unregistered clients may only authenticate and register a session.
 
 The hub maintains both `socketToSession` and `sessionToSocket` indexes. Registration by a second live socket, or an attempt by one socket to switch sessions, returns `SESSION_IDENTITY_MISMATCH` without mutating either index.
+
+Final cleanup creates a `SESSION_FINALIZED` tombstone for the session ID. Hub and extension tombstone registries retain at most 10,000 IDs for 24 hours and evict the oldest entry at the bound, preventing attacker-controlled identifiers from growing memory without limit. A reconnect within the 15-second production grace period retains its ID. A client receiving `SESSION_FINALIZED` generates a fresh cryptographic UUID, updates its context and every session-ID accessor, and retries registration once; queued responses and state remain namespaced to the old incarnation.
 
 The hub process's own MCP session is the one exception to socket binding. It is registered directly against `LocalStateManager` in the trusted hub process. Socket registration, duplicate-socket rejection, and protocol-auth tests apply to client-mode MCP processes and extensions; hub-local tool envelopes still carry the hub session ID.
 
@@ -194,6 +197,8 @@ Tab transfer derives `fromSessionId` from the authenticated socket and accepts o
 
 For ordinary proxied tool requests, the hub ignores and overwrites client-supplied `targetBrowserId`. Browser routing comes from the bound session's selected browser, persisted default, or exactly-one-browser fallback. Explicit browser routing remains available only through server-owned APIs that validate the requested browser, such as event-handler registration.
 
+The raw extension-mirror controls `browser_register_handler`, `browser_unregister_handler`, and `browser_list_handlers` use a strict hub-control path rather than ordinary caller-selected routing. The hub replaces every nested `sessionId` with the socket-bound session, resolves register/unregister targets from that session's authoritative handler records, and resolves bulk/list targets from authoritative browser selection. A client cannot enumerate or mutate another session's handlers or select an arbitrary target browser through these raw messages. The extension independently applies the injected request session when registering, listing, unregistering, or clearing mirrors as defense in depth.
+
 Internal-only operations include removing arbitrary sessions, clearing another session's handlers, releasing another session's locks, and browser-disconnect cleanup. They are invoked directly by hub lifecycle code, not exposed through client-selected RPC subjects.
 
 An authenticated but unregistered client receives `SESSION_NOT_REGISTERED` for any hub RPC other than registration and for every tool proxy attempt. A forbidden role message returns a structured, redacted `AUTH_ROLE_VIOLATION` response when correlation is possible and immediately closes the socket with application close code `4403`; there is no untestable repeated-violation threshold.
@@ -265,6 +270,8 @@ The scheduler has fixed bounds:
 Requests beyond those limits fail with an overload error. A request that expires before it starts is rejected without invoking its handler. One failed request cannot poison the queue behind it. Idle queues are deleted.
 
 Tab closure rejects queued work for that tab. Every queued entry retains its session ID, so final session cleanup also rejects that session's pending entries in tab queues before removing the session's fallback tab and active recording.
+
+`queue: "none"` enters through the same dispatcher helper. It has no serialization queue, but it checks the session tombstone and request deadline immediately before invoking work. New unqueued wait, download, and handler-list requests reject with `SESSION_CLOSED` after closure; unqueued work that already started may finish.
 
 Queue closures live only in the MV3 background service worker and are not persisted. The offscreen runtime tracks each tool request ID forwarded to the worker until it sees the correlated response. If the port disconnects, it sends a `messageResponse` carrying `EXTENSION_WORKER_RESTARTED` back to the hub over the WebSocket for each pending ID and never replays them automatically. The new worker starts with empty queues and rehydrates only session tab and sanitized recording state. FIFO and queue-bound guarantees apply within one worker incarnation.
 
@@ -342,7 +349,7 @@ The hub reservation is the authoritative collision guard for both stores. Extens
 
 ## Cleanup and reconnect behavior
 
-The existing reconnect grace period remains authoritative. A brief client disconnect retains session ownership, queued state, and an active recording so reconnect can continue safely.
+The existing 15-second reconnect grace period remains authoritative. A brief client disconnect retains session ownership, queued state, and an active recording so reconnect can continue safely.
 
 When grace expires, the hub performs final cleanup and broadcasts:
 
@@ -361,9 +368,11 @@ Each extension then:
 - discards the unfinished active recording;
 - removes local event-handler mirrors for that session.
 
-`session_closed` becomes the single extension-side session-cleanup trigger and supersedes the current session-scoped `browser_unregister_handler` broadcast. Handler teardown is one sub-action of session cleanup rather than a second parallel broadcast.
+`session_closed` is the single extension-side trigger for final session cleanup and suppresses a duplicate `browser_unregister_handler` broadcast. Explicit user `browser_off` remains different: it clears only the bound session and broadcasts a session-scoped `browser_unregister_handler` so the extension immediately mirrors that user action.
 
-Cleanup is idempotent. Receiving the same control message twice has no additional effect. Extension WebSocket reconnect is separate from MCP-session reconnect: the extension receives a new ephemeral browser ID, while stale session browser selections are cleared by existing hub target resolution.
+All disconnect, unregister, MCP server close, and hub shutdown paths use the same idempotent finalizer. It first drains in-flight recording persistence, then re-checks the current socket generation before destructive cleanup. Reclaiming a session while the drain is awaiting persistence cancels the stale finalizer; an old socket or timer cannot clean a live generation. A successful finalizer releases tabs and locks, clears event and retry state, removes the session, records its tombstone, and emits exactly one `session_closed`. Orderly shutdown awaits this sequence before closing sockets, and repeated close calls share one completion promise.
+
+Receiving the same cleanup control twice has no additional effect. Extension WebSocket reconnect is separate from MCP-session reconnect: the extension receives a new ephemeral browser ID, while stale session browser selections are cleared by existing hub target resolution.
 
 ## Error handling
 
@@ -373,6 +382,7 @@ Errors use stable categories suitable for tests and diagnostics:
 - `AUTH_ROLE_VIOLATION`;
 - `SESSION_NOT_REGISTERED`;
 - `SESSION_CLOSED`;
+- `SESSION_FINALIZED`;
 - `SESSION_IDENTITY_MISMATCH`;
 - `REQUEST_EXPIRED`;
 - `QUEUE_OVERLOADED`;
@@ -404,8 +414,12 @@ Tests cover:
 - immutable socket-to-session binding;
 - duplicate live-session registration rejection;
 - reconnect reclaim during grace;
+- reconnect during a deferred persistence drain;
+- finalized-ID rejection, bounded expiry, and client incarnation rotation;
 - session ID overwrite before extension forwarding;
 - client `targetBrowserId` overwrite during ordinary tool proxying;
+- cross-session event-mirror register/list/unregister rejection;
+- drain-first explicit unregister and repeated orderly close;
 - source identity derivation during tab transfer;
 - the trusted hub-local session envelope;
 - extension and client message allowlists;

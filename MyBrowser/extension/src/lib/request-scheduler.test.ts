@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { RequestScheduler, type RequestMeta } from "./request-scheduler";
+import {
+  dispatchScheduledRequest,
+  RequestScheduler,
+  type RequestMeta,
+} from "./request-scheduler";
+import { TOOL_METADATA, type ToolName } from "./tool-metadata";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -229,6 +234,46 @@ describe("RequestScheduler", () => {
     expect(laterStarted).toBe(false);
 
     running.resolve("finished");
+    await expect(active).resolves.toBe("finished");
+  });
+
+  it.each([
+    "browser_wait",
+    "browser_download",
+    "browser_list_handlers",
+  ] satisfies ToolName[])("rejects closed-session queue:none %s work in the dispatcher", async (toolName) => {
+    const scheduler = new RequestScheduler({ now: () => 0 });
+    scheduler.cancelSession("target", "SESSION_CLOSED");
+    let started = false;
+
+    const result = dispatchScheduledRequest(
+      scheduler,
+      TOOL_METADATA[toolName].queue,
+      -1,
+      meta({ sessionId: "target", requestId: toolName }),
+      async () => {
+        started = true;
+      },
+    );
+
+    await expect(result).rejects.toThrow("SESSION_CLOSED");
+    expect(started).toBe(false);
+  });
+
+  it("allows already-running queue:none work to complete after closure", async () => {
+    const scheduler = new RequestScheduler({ now: () => 0 });
+    const running = deferred<string>();
+    const active = dispatchScheduledRequest(
+      scheduler,
+      "none",
+      -1,
+      meta({ sessionId: "target" }),
+      () => running.promise,
+    );
+
+    scheduler.cancelSession("target", "SESSION_CLOSED");
+    running.resolve("finished");
+
     await expect(active).resolves.toBe("finished");
   });
 

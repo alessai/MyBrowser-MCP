@@ -7,7 +7,10 @@ import { addMessageHandler, sendToTab } from '../../lib/messaging';
 import { handleTool } from '../../lib/tools';
 import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
 import { RequestToolContext, resolveInitialTab } from '../../lib/request-context';
-import { RequestScheduler } from '../../lib/request-scheduler';
+import {
+  dispatchScheduledRequest,
+  RequestScheduler,
+} from '../../lib/request-scheduler';
 import { SessionStateStore } from '../../lib/session-state';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
@@ -339,22 +342,14 @@ export default defineBackground(() => {
         });
       };
 
-      let result: unknown;
-      switch (metadata.queue) {
-        case 'tab':
-          if (tabId < 0) throw new Error('TAB_CLOSED');
-          result = await scheduler.runTab(tabId, requestMeta, work);
-          break;
-        case 'session':
-          result = await scheduler.runSession(request.sessionId, requestMeta, work);
-          break;
-        case 'global':
-          result = await scheduler.runGlobal(requestMeta, work);
-          break;
-        case 'none':
-          result = await work();
-          break;
-      }
+      if (metadata.queue === 'tab' && tabId < 0) throw new Error('TAB_CLOSED');
+      const result = await dispatchScheduledRequest(
+        scheduler,
+        metadata.queue,
+        tabId,
+        requestMeta,
+        work,
+      );
 
       response = {
         type: 'messageResponse',

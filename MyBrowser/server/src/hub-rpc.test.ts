@@ -509,29 +509,47 @@ describe("authenticated hub routing", () => {
     });
   });
 
-  it("honors validated explicit routing only for server-control tools", async () => {
+  it("derives event mirror registration identity and routing from hub state", async () => {
     const server = await startHub();
     const browserA = await connect(server);
     const browserB = await connect(server);
-    await authenticate(browserA, "extension");
+    const browserAId = (await authenticate(browserA, "extension")).browserId as string;
     const browserBId = (await authenticate(browserB, "extension")).browserId;
     const client = await connect(server);
     await authenticate(client, "client");
     await registerSession(client, "actual");
+    const registration = await sendAndWait(client, {
+      type: "hub_rpc",
+      id: "register-handler",
+      method: "registerEventHandler",
+      params: {
+        browserId: browserAId,
+        event: "new_tab",
+        action: "ignore",
+      },
+    });
+    const authoritative = registration.result as Record<string, unknown>;
+    const browserBMessages = captureAndRespondToBrowser(browserB);
 
-    const browserRequest = waitForMessage(browserB);
+    const browserRequest = waitForMessage(browserA);
     const clientResponse = waitForMessage(client);
     client.send(JSON.stringify({
       id: "tool-control",
       type: "browser_register_handler",
-      payload: { handler: "handler-1" },
+      payload: {
+        handler: {
+          ...authoritative,
+          sessionId: "forged-session",
+          browserId: browserBId,
+        },
+      },
       sessionId: "spoofed",
       timeoutMs: 8_000,
       targetBrowserId: browserBId,
     }));
 
     const forwarded = await browserRequest;
-    browserB.send(JSON.stringify({
+    browserA.send(JSON.stringify({
       type: "messageResponse",
       payload: { requestId: forwarded.id, result: { ok: true } },
     }));
@@ -542,10 +560,98 @@ describe("authenticated hub routing", () => {
     expect(forwarded).toEqual({
       id: expect.any(String),
       type: "browser_register_handler",
-      payload: { handler: "handler-1" },
+      payload: { handler: authoritative },
       sessionId: "actual",
       timeoutMs: 8_000,
     });
+    await waitForTurn();
+    expect(browserBMessages).toEqual([]);
+  });
+
+  it("rejects foreign handler control and injects own session into list and clear", async () => {
+    const server = await startHub();
+    const browserA = await connect(server);
+    const browserB = await connect(server);
+    const browserAId = (await authenticate(browserA, "extension")).browserId as string;
+    const browserBId = (await authenticate(browserB, "extension")).browserId as string;
+    const clientA = await connect(server);
+    const clientB = await connect(server);
+    await authenticate(clientA, "client");
+    await authenticate(clientB, "client");
+    await registerSession(clientA, "session-a");
+    await registerSession(clientB, "session-b");
+    await sendAndWait(clientA, {
+      type: "hub_rpc",
+      id: "select-a",
+      method: "selectBrowser",
+      params: { browserId: browserAId },
+    });
+    const foreignRegistration = await sendAndWait(clientB, {
+      type: "hub_rpc",
+      id: "register-foreign",
+      method: "registerEventHandler",
+      params: {
+        browserId: browserBId,
+        event: "new_tab",
+        action: "ignore",
+      },
+    });
+    const foreignHandler = foreignRegistration.result as Record<string, unknown>;
+    const browserBMessages = captureAndRespondToBrowser(browserB);
+
+    await expect(sendAndWait(clientA, {
+      id: "foreign-unregister",
+      type: "browser_unregister_handler",
+      payload: { handlerId: foreignHandler.id, sessionId: "session-b" },
+      targetBrowserId: browserBId,
+    })).resolves.toMatchObject({
+      type: "messageResponse",
+      payload: { requestId: "foreign-unregister", error: "AUTH_ROLE_VIOLATION" },
+    });
+
+    const listRequest = waitForMessage(browserA);
+    const listResponse = sendAndWait(clientA, {
+      id: "list-own",
+      type: "browser_list_handlers",
+      payload: { sessionId: "session-b" },
+      targetBrowserId: browserBId,
+    });
+    const forwardedList = await listRequest;
+    expect(forwardedList).toMatchObject({
+      type: "browser_list_handlers",
+      payload: { sessionId: "session-a" },
+      sessionId: "session-a",
+    });
+    browserA.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: forwardedList.id, result: { handlers: [] } },
+    }));
+    await expect(listResponse).resolves.toMatchObject({
+      payload: { requestId: "list-own", result: { handlers: [] } },
+    });
+
+    const clearRequest = waitForMessage(browserA);
+    const clearResponse = sendAndWait(clientA, {
+      id: "clear-own",
+      type: "browser_unregister_handler",
+      payload: { clearAll: true, sessionId: "session-b" },
+      targetBrowserId: browserBId,
+    });
+    const forwardedClear = await clearRequest;
+    expect(forwardedClear).toMatchObject({
+      type: "browser_unregister_handler",
+      payload: { sessionId: "session-a" },
+      sessionId: "session-a",
+    });
+    browserA.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: forwardedClear.id, result: { ok: true, removed: 0 } },
+    }));
+    await expect(clearResponse).resolves.toMatchObject({
+      payload: { requestId: "clear-own" },
+    });
+    await waitForTurn();
+    expect(browserBMessages).toEqual([]);
   });
 
   it("adds the trusted local session to direct hub tool envelopes", async () => {

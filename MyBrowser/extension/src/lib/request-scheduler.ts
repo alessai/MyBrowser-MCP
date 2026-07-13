@@ -1,5 +1,11 @@
 import type { ProtocolErrorCode } from './protocol';
 
+import {
+  MAX_SESSION_TOMBSTONES,
+  SESSION_TOMBSTONE_TTL_MS,
+  SessionTombstones,
+} from './session-tombstones';
+
 export interface RequestMeta {
   requestId: string;
   sessionId: string;
@@ -24,11 +30,16 @@ export interface RequestSchedulerOptions {
   now?: () => number;
 }
 
+export type RequestQueueKind = 'tab' | 'session' | 'global' | 'none';
+
 export class RequestScheduler {
   private readonly tabQueues = new Map<number, WorkQueue>();
   private readonly sessionQueues = new Map<string, WorkQueue>();
   private readonly globalQueues = new Map<string, WorkQueue>();
-  private readonly closedSessions = new Set<string>();
+  private readonly closedSessions = new SessionTombstones({
+    ttlMs: SESSION_TOMBSTONE_TTL_MS,
+    maxEntries: MAX_SESSION_TOMBSTONES,
+  });
   private readonly maxPendingPerTab: number;
   private readonly maxPendingGlobal: number;
   private readonly now: () => number;
@@ -58,6 +69,12 @@ export class RequestScheduler {
 
   runGlobal<T>(meta: RequestMeta, work: () => Promise<T>): Promise<T> {
     return this.enqueue(this.globalQueues, 'global', Number.POSITIVE_INFINITY, meta, work);
+  }
+
+  async runUnqueued<T>(meta: RequestMeta, work: () => Promise<T>): Promise<T> {
+    if (this.closedSessions.has(meta.sessionId)) throw new Error('SESSION_CLOSED');
+    if (meta.expiresAt <= this.now()) throw new Error('REQUEST_EXPIRED');
+    return work();
   }
 
   cancelTab(tabId: number, code: ProtocolErrorCode): void {
@@ -157,5 +174,24 @@ export class RequestScheduler {
       }
     }
     queue.entries = retained;
+  }
+}
+
+export function dispatchScheduledRequest<T>(
+  scheduler: RequestScheduler,
+  queue: RequestQueueKind,
+  tabId: number,
+  meta: RequestMeta,
+  work: () => Promise<T>,
+): Promise<T> {
+  switch (queue) {
+    case 'tab':
+      return scheduler.runTab(tabId, meta, work);
+    case 'session':
+      return scheduler.runSession(meta.sessionId, meta, work);
+    case 'global':
+      return scheduler.runGlobal(meta, work);
+    case 'none':
+      return scheduler.runUnqueued(meta, work);
   }
 }

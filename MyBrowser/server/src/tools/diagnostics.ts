@@ -36,7 +36,7 @@ interface DiagnosticsFactoryOptions {
     version: string;
     host: string;
     port: number;
-    sessionId: string;
+    getSessionId: () => string;
     sessionName?: string;
     isHub: boolean;
   };
@@ -47,6 +47,7 @@ async function collectDiagnostics(
   args: z.infer<typeof DiagnosticsArgs>,
 ): Promise<Record<string, unknown>> {
   const { stateManager, context, getActiveBrowser, serverInfo } = options;
+  const sessionId = serverInfo.getSessionId();
 
   const [browsers, sessions, locks] = await Promise.all([
     stateManager.listBrowsers().catch((error) => ({ error: String(error) })),
@@ -62,7 +63,7 @@ async function collectDiagnostics(
     const browserId = await getActiveBrowser();
     selectedBrowser = {
       browserId,
-      sessionSelectedBrowser: await stateManager.getSessionBrowser(serverInfo.sessionId),
+      sessionSelectedBrowser: await stateManager.getSessionBrowser(sessionId),
       contextActiveBrowserId: context.activeBrowserId,
       defaultBrowserPreference,
     };
@@ -94,7 +95,7 @@ async function collectDiagnostics(
       mode: serverInfo.isHub ? "hub" : "client",
       host: serverInfo.host,
       port: serverInfo.port,
-      sessionId: serverInfo.sessionId,
+      sessionId,
       sessionName: serverInfo.sessionName,
       node: process.version,
       platform: process.platform,

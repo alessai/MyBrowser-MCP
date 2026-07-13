@@ -8,6 +8,7 @@ import { createWebSocketServer } from "./ws-server.js";
 import { makeTabKey, type IStateManager } from "./state-manager.js";
 import type { Tool } from "./tools/types.js";
 import { recordIssue } from "./logger.js";
+import { SessionIncarnation } from "./session-incarnation.js";
 
 // Navigation tools
 import { navigate, goBack, goForward, wait } from "./tools/navigation.js";
@@ -103,15 +104,6 @@ const MUTATING_TOOLS = new Set([
   "browser_set_viewport", "browser_reset_viewport",
 ]);
 
-function generateSessionId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  const timestamp = Date.now().toString(36);
-  const randomStr = Math.random().toString(36).substring(2, 10);
-  return `${timestamp}-${randomStr}`;
-}
-
 function extractTabId(args: unknown): number | undefined {
   if (args && typeof args === "object" && "tabId" in args) {
     const val = (args as Record<string, unknown>).tabId;
@@ -124,7 +116,8 @@ export async function createServerWithTools(options: ServerOptions) {
   const { host, port, token } = options;
   const context = new Context();
 
-  const sessionId = options.sessionId ?? generateSessionId();
+  const incarnation = new SessionIncarnation(options.sessionId);
+  let sessionId = incarnation.sessionId;
   context.sessionId = sessionId;
 
   ensureDirectories();
@@ -133,10 +126,15 @@ export async function createServerWithTools(options: ServerOptions) {
   const wss = await createWebSocketServer({ host, port, token, context });
   stateManager = wss.stateManager;
 
-  await stateManager.registerSession(sessionId, options.sessionName);
+  const registerSession = async (): Promise<void> => {
+    const registration = await incarnation.register(stateManager, options.sessionName);
+    sessionId = registration.sessionId;
+    context.sessionId = registration.sessionId;
+  };
+  await registerSession();
 
   // Re-register session on hub reconnect (client mode only)
-  wss.onReconnect?.(() => stateManager.registerSession(sessionId, options.sessionName));
+  wss.onReconnect?.(registerSession);
 
   // Helper to get the active browser for this session (for composite tab keys)
   const getActiveBrowser = async (): Promise<string> => {
@@ -172,7 +170,7 @@ export async function createServerWithTools(options: ServerOptions) {
       version: "1.1.4",
       host,
       port,
-      sessionId,
+      getSessionId: () => sessionId,
       sessionName: options.sessionName,
       isHub: wss.isHub,
     },
@@ -318,29 +316,28 @@ export async function createServerWithTools(options: ServerOptions) {
   });
 
   const originalClose = server.close.bind(server);
-  server.close = async () => {
-    // Each cleanup step is independent — catch per-step so a single
-    // failure doesn't leak state elsewhere. Note:
-    // clearEventHandlersForSession internally broadcasts a session-
-    // scoped unregister to all connected browsers (via the broadcaster
-    // installed in ws-server), so we don't need a separate push step.
-    // In client mode the hub receives the RPC and does the broadcast
-    // on its side; in hub mode it happens locally.
-    for (const step of [
-      () => stateManager.releaseAllTabs(sessionId),
-      () => stateManager.releaseLocksForSession(sessionId),
-      () => stateManager.clearEventHandlersForSession(sessionId),
-      () => stateManager.removeSession(sessionId),
-    ]) {
-      try {
-        await step();
-      } catch {
-        console.error("[MyBrowser MCP] SESSION_CLEANUP_STEP_FAILED");
+  let closePromise: Promise<void> | undefined;
+  server.close = () => {
+    if (closePromise) return closePromise;
+    closePromise = (async () => {
+      const errors: unknown[] = [];
+      for (const step of [
+        () => wss.finalizeSession(sessionId),
+        () => originalClose(),
+        () => wss.close(),
+        () => context.close(),
+      ]) {
+        try {
+          await step();
+        } catch (error) {
+          errors.push(error);
+        }
       }
-    }
-    await originalClose();
-    wss.close();
-    await context.close();
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "Server shutdown failed");
+      }
+    })();
+    return closePromise;
   };
 
   return server;

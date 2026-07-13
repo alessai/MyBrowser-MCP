@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Context } from "./context.js";
 import { LocalStateManager } from "./state-manager.js";
+import { createEventsTools } from "./tools/events.js";
 
 const LEASE_MS = 1_800_000;
 
@@ -214,5 +216,41 @@ describe("LocalStateManager recording reservations", () => {
     });
     expect(terminated).toHaveBeenCalledTimes(3);
     unsubscribe();
+  });
+});
+
+describe("LocalStateManager event mirror cleanup", () => {
+  it("notifies extensions when browser_off explicitly clears the session", async () => {
+    const state = new LocalStateManager();
+    const broadcast = vi.fn();
+    state.setBroadcastToBrowsersFn(broadcast);
+    await state.registerSession("session-a");
+    await state.registerEventHandler("session-a", "browser-a", "new_tab", "ignore");
+    const { browserOff } = createEventsTools(
+      state,
+      () => "session-a",
+      async () => "browser-a",
+    );
+
+    await browserOff.handle({} as Context, {});
+
+    expect(broadcast).toHaveBeenCalledOnce();
+    expect(broadcast).toHaveBeenCalledWith("browser_unregister_handler", {
+      sessionId: "session-a",
+    });
+  });
+
+  it("suppresses mirror unregister during final session_closed cleanup", async () => {
+    const state = new LocalStateManager();
+    const broadcast = vi.fn();
+    state.setBroadcastToBrowsersFn(broadcast);
+    await state.registerSession("session-a");
+    await state.registerEventHandler("session-a", "browser-a", "new_tab", "ignore");
+
+    await state.clearEventHandlersForSession("session-a", { notifyExtension: false });
+    await state.removeSession("session-a");
+
+    expect(broadcast).toHaveBeenCalledOnce();
+    expect(broadcast).toHaveBeenCalledWith("session_closed", { sessionId: "session-a" });
   });
 });

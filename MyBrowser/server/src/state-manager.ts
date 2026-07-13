@@ -71,6 +71,10 @@ export interface EventHandler {
   createdAt: number;
 }
 
+export interface EventHandlerClearOptions {
+  notifyExtension?: boolean;
+}
+
 export interface QueuedEvent {
   event: EventName;
   queueName: string;
@@ -241,7 +245,10 @@ export interface IStateManager {
     sessionId: string,
     browserId?: string,
   ): Promise<EventHandler[]>;
-  clearEventHandlersForSession(sessionId: string): Promise<void>;
+  clearEventHandlersForSession(
+    sessionId: string,
+    options?: EventHandlerClearOptions,
+  ): Promise<void>;
   clearEventHandlersForBrowser(browserId: string): Promise<void>;
   /** Check whether a handler exists matching the given scope. Used
    *  by ws-server.ts to validate eventEmitted payloads against
@@ -878,7 +885,10 @@ export class LocalStateManager implements IStateManager {
     return out;
   }
 
-  async clearEventHandlersForSession(sessionId: string): Promise<void> {
+  async clearEventHandlersForSession(
+    sessionId: string,
+    options: EventHandlerClearOptions = {},
+  ): Promise<void> {
     // Drop handlers installed by this session.
     for (const [id, h] of this.eventHandlers) {
       if (h.sessionId === sessionId) {
@@ -916,6 +926,9 @@ export class LocalStateManager implements IStateManager {
         }
       }
       this.eventWaiters.delete(key);
+    }
+    if (options.notifyExtension !== false) {
+      this._broadcastToBrowsersFn("browser_unregister_handler", { sessionId });
     }
   }
 

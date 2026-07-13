@@ -30,6 +30,7 @@ import * as recordingTools from "./tools/record.js";
 import type { Tool } from "./tools/types.js";
 import {
   createWebSocketServer,
+  FinalizedSessionRegistry,
   MAX_PENDING_RECORDING_PERSISTS_PER_SESSION,
   RecordingRetryRegistry,
   type WsServerOptions,
@@ -359,13 +360,40 @@ async function persistRecordingMessage(
   return response;
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const socket of sockets.splice(0)) {
     if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
   }
-  for (const server of servers.splice(0)) server.close();
-  for (const fakeHub of fakeHubs.splice(0)) fakeHub.close();
+  await Promise.allSettled(servers.splice(0).map((server) => server.close()));
+  await Promise.all(fakeHubs.splice(0).map((fakeHub) => new Promise<void>((resolve) => {
+    fakeHub.close(() => resolve());
+  })));
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("FinalizedSessionRegistry", () => {
+  it("expires tombstones and bounds retained finalized IDs", () => {
+    let now = 0;
+    const finalized = new FinalizedSessionRegistry({
+      ttlMs: 10,
+      maxEntries: 2,
+      now: () => now,
+    });
+
+    finalized.add("session-a");
+    finalized.add("session-b");
+    finalized.add("session-c");
+
+    expect(finalized.size).toBe(2);
+    expect(finalized.has("session-a")).toBe(false);
+    expect(finalized.has("session-b")).toBe(true);
+    expect(finalized.has("session-c")).toBe(true);
+
+    now = 11;
+    expect(finalized.has("session-b")).toBe(false);
+    expect(finalized.has("session-c")).toBe(false);
+    expect(finalized.size).toBe(0);
+  });
 });
 
 describe("recording tools and persistence", () => {
@@ -2704,11 +2732,12 @@ describe("real loopback session topology", () => {
       timeoutMs: 100,
       ttlMs: 10_000,
     });
-    await callHubRpc(clientA, "handler-a", "registerEventHandler", {
+    const handlerRegistration = await callHubRpc(clientA, "handler-a", "registerEventHandler", {
       browserId,
       event: "dialog",
       action: "dismiss",
     });
+    const registeredHandler = handlerRegistration.result as Record<string, unknown>;
     const clientAInbox = createMessageInbox(clientA);
     const clientBInbox = createMessageInbox(clientB);
     clientA.send(JSON.stringify({
@@ -2764,7 +2793,7 @@ describe("real loopback session topology", () => {
     clientA.send(JSON.stringify({
       id: "internal-route",
       type: "browser_register_handler",
-      payload: { handlerId: "handler-a" },
+      payload: { handler: registeredHandler },
       targetBrowserId: browserId,
     }));
     const internalForward = await extensionInbox.next();
@@ -2869,5 +2898,208 @@ describe("real loopback session topology", () => {
       error: "AUTH_ROLE_VIOLATION",
     });
     expect((await extensionClosed).code).toBe(WS_CLOSE.forbiddenRole);
+  }, 5_000);
+
+  it("cancels a stale finalizer when the session reconnects during persistence drain", async () => {
+    const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-drain-reconnect-"));
+    tempDirs.push(recordingsDir);
+    const server = await startHub(
+      recordingsDir,
+      undefined,
+      undefined,
+      { sessionReconnectGraceMs: 20 },
+    );
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const extensionInbox = createMessageInbox(extension);
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "register-a", "registerSession", { sessionId: "session-a" });
+    await callHubRpc(client, "reserve-a", "reserveRecording", {
+      name: validRecording.name,
+      leaseMs: 1_800_000,
+    });
+
+    const persistStarted = deferred<void>();
+    const allowPersist = deferred<boolean>();
+    const reservationSpy = vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockImplementation(async () => {
+        persistStarted.resolve();
+        return allowPersist.promise;
+      });
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "persist-during-reconnect",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    await persistStarted.promise;
+
+    const closed = waitForClose(client);
+    client.close();
+    await closed;
+    await new Promise((resolve) => setTimeout(resolve, 35));
+
+    const reclaimed = await connect(server);
+    await authenticate(reclaimed, "client");
+    await expect(callHubRpc(
+      reclaimed,
+      "reclaim-a",
+      "registerSession",
+      { sessionId: "session-a" },
+    )).resolves.toMatchObject({ result: { ok: true } });
+
+    allowPersist.resolve(true);
+    await expect(extensionInbox.next()).resolves.toMatchObject({
+      type: "persistRecordingResult",
+      id: "persist-during-reconnect",
+    });
+    reservationSpy.mockRestore();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect((await server.stateManager.listSessions()).map(({ id }) => id))
+      .toContain("session-a");
+    expect(extensionInbox.all.filter(({ type }) => type === "session_closed"))
+      .toEqual([]);
+  }, 5_000);
+
+  it("retains an ID within grace and rejects it after finalization", async () => {
+    const server = await startHub(undefined, undefined, undefined, {
+      sessionReconnectGraceMs: 30,
+      finalizedSessionTtlMs: 1_000,
+    });
+    const first = await connect(server);
+    await authenticate(first, "client");
+    await expect(callHubRpc(first, "register-first", "registerSession", {
+      sessionId: "session-a",
+    })).resolves.toMatchObject({ result: { ok: true } });
+
+    const firstClosed = waitForClose(first);
+    first.close();
+    await firstClosed;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const reclaimed = await connect(server);
+    await authenticate(reclaimed, "client");
+    await expect(callHubRpc(reclaimed, "register-reclaimed", "registerSession", {
+      sessionId: "session-a",
+    })).resolves.toMatchObject({ result: { ok: true } });
+
+    const reclaimedClosed = waitForClose(reclaimed);
+    reclaimed.close();
+    await reclaimedClosed;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const stale = await connect(server);
+    await authenticate(stale, "client");
+    await expect(callHubRpc(stale, "register-stale", "registerSession", {
+      sessionId: "session-a",
+    })).resolves.toEqual({
+      type: "hub_rpc_result",
+      id: "register-stale",
+      error: "SESSION_FINALIZED",
+    });
+  });
+
+  it("drains in-flight persistence before explicit client unregister", async () => {
+    const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-unregister-drain-"));
+    tempDirs.push(recordingsDir);
+    const server = await startHub(recordingsDir);
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const extensionMessages = waitForMessages(extension, 2, 2_000);
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "register-a", "registerSession", { sessionId: "session-a" });
+    await callHubRpc(client, "reserve-a", "reserveRecording", {
+      name: validRecording.name,
+      leaseMs: 1_800_000,
+    });
+
+    const persistStarted = deferred<void>();
+    const allowPersist = deferred<boolean>();
+    vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockImplementation(async () => {
+        persistStarted.resolve();
+        return allowPersist.promise;
+      });
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "persist-before-unregister",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    await persistStarted.promise;
+
+    let unregisterSettled = false;
+    const unregister = callHubRpc(client, "unregister-a", "removeSession")
+      .then((result) => {
+        unregisterSettled = true;
+        return result;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(unregisterSettled).toBe(false);
+
+    allowPersist.resolve(true);
+    await expect(unregister).resolves.toMatchObject({ result: { ok: true } });
+    const messages = await extensionMessages;
+    expect(messages.map(({ type }) => type)).toEqual([
+      "persistRecordingResult",
+      "session_closed",
+    ]);
+    expect((await server.stateManager.listSessions()).map(({ id }) => id))
+      .not.toContain("session-a");
+    expect(server.pendingRecordingPersistCount("session-a")).toBe(0);
+  }, 5_000);
+
+  it("uses the drain finalizer for orderly close and is idempotent", async () => {
+    const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-orderly-drain-"));
+    tempDirs.push(recordingsDir);
+    const server = await startHub(recordingsDir);
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const extensionMessages = waitForMessages(extension, 2, 2_000);
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "register-a", "registerSession", { sessionId: "session-a" });
+    await callHubRpc(client, "reserve-a", "reserveRecording", {
+      name: validRecording.name,
+      leaseMs: 1_800_000,
+    });
+
+    const persistStarted = deferred<void>();
+    const allowPersist = deferred<boolean>();
+    vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockImplementation(async () => {
+        persistStarted.resolve();
+        return allowPersist.promise;
+      });
+    const removeSession = vi.spyOn(server.stateManager, "removeSession");
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "persist-before-close",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    await persistStarted.promise;
+
+    let closeSettled = false;
+    const closing = Promise.resolve(server.close()).then(() => {
+      closeSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(closeSettled).toBe(false);
+
+    allowPersist.resolve(true);
+    const messages = await extensionMessages;
+    await closing;
+    expect(messages.map(({ type }) => type)).toEqual([
+      "persistRecordingResult",
+      "session_closed",
+    ]);
+    expect(removeSession).toHaveBeenCalledTimes(1);
+    await server.close();
+    expect(removeSession).toHaveBeenCalledTimes(1);
+    expect(server.pendingRecordingPersistCount()).toBe(0);
   }, 5_000);
 });

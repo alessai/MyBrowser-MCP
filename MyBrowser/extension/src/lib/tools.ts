@@ -25,7 +25,7 @@ import {
 import {
   addHandler,
   removeHandler,
-  clearHandlers,
+  clearHandlersForSession,
   listHandlers,
   type EventHandler,
 } from './events';
@@ -1390,10 +1390,11 @@ const handlers: Record<string, ToolHandler> = {
   // from server-side browser_on / browser_off.
 
   async browser_register_handler(args, ctx) {
-    const handler = args.handler as EventHandler;
-    if (!handler || typeof handler !== 'object') {
+    const rawHandler = args.handler as EventHandler;
+    if (!rawHandler || typeof rawHandler !== 'object') {
       throw new Error('browser_register_handler: missing handler');
     }
+    const handler = { ...rawHandler, sessionId: ctx.sessionId };
     addHandler(handler);
 
     // Enable the CDP domain needed for this event type on every tab we
@@ -1430,36 +1431,24 @@ const handlers: Record<string, ToolHandler> = {
     return { ok: true, handlerId: handler.id };
   },
 
-  async browser_unregister_handler(args, _ctx) {
-    // Three dispatch shapes (server pushes whichever is relevant):
-    //   { handlerId }           — remove one specific handler
-    //   { sessionId }           — remove every handler installed by a session
-    //   { clearAll: true }      — legacy, remove everything locally (kept for
-    //                              now so stale server builds still work)
-    if (args.clearAll === true) {
-      clearHandlers();
-      return { ok: true, cleared: 'all' };
+  async browser_unregister_handler(args, ctx) {
+    const handlerId = args.handlerId as string | undefined;
+    if (handlerId) {
+      const owned = listHandlers().find(
+        (handler) => handler.id === handlerId && handler.sessionId === ctx.sessionId,
+      );
+      return { ok: owned ? removeHandler(owned.id) : false };
     }
-    if (typeof args.sessionId === 'string') {
-      const sid = args.sessionId;
-      const before = listHandlers().length;
-      // Remove any handler whose sessionId matches.
-      for (const h of listHandlers()) {
-        if (h.sessionId === sid) removeHandler(h.id);
-      }
-      const after = listHandlers().length;
-      return { ok: true, removed: before - after };
-    }
-    const handlerId = args.handlerId as string;
-    if (!handlerId) {
-      throw new Error('browser_unregister_handler: missing handlerId or sessionId');
-    }
-    const removed = removeHandler(handlerId);
-    return { ok: removed };
+
+    const before = listHandlers().length;
+    clearHandlersForSession(ctx.sessionId);
+    return { ok: true, removed: before - listHandlers().length };
   },
 
-  async browser_list_handlers(_args, _ctx) {
-    return { handlers: listHandlers() };
+  async browser_list_handlers(_args, ctx) {
+    return {
+      handlers: listHandlers().filter((handler) => handler.sessionId === ctx.sessionId),
+    };
   },
 };
 
