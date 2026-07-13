@@ -994,6 +994,27 @@ describe("recording tools and persistence", () => {
     expect(readFileSync(filePath, "utf8")).toBe(original);
   });
 
+  it("rejects a normalized alias embedded in an existing canonical artifact", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-alias-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    mkdirSync(recordingsDir, { mode: 0o700 });
+    const filePath = join(recordingsDir, "Checkout_Flow.json");
+    const aliasContents = `${JSON.stringify({
+      ...validRecording,
+      name: "Checkout Flow",
+    }, null, 2)}\n`;
+    writeFileSync(filePath, aliasContents, { mode: 0o600 });
+
+    expect(() => getRecordingApi().saveRecordingToFile(validRecording, recordingsDir))
+      .toThrow(/EEXIST/);
+    expect(readFileSync(filePath, "utf8")).toBe(aliasContents);
+
+    writeFileSync(filePath, `${JSON.stringify(validRecording, null, 2)}\n`);
+    expect(getRecordingApi().saveRecordingToFile(validRecording, recordingsDir))
+      .toBe("existing-identical");
+  });
+
   it("fsyncs and closes the recording directory for new and idempotent writes", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-dir-sync-"));
     tempDirs.push(base);

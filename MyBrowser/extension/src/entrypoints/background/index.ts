@@ -12,8 +12,8 @@ import { SessionStateStore } from '../../lib/session-state';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
 import {
-  RECORDING_CLEANUP_ALARM,
   RECORDING_RENEWAL_ALARM,
+  recordingCleanupSessionId,
   runRecordedAction,
 } from '../../lib/recorder';
 import { RecordingPortGeneration } from '../../lib/recording-transport';
@@ -918,9 +918,11 @@ export default defineBackground(() => {
       await ensureAlive();
     } else if (alarm.name === RECORDING_RENEWAL_ALARM) {
       await getRecordingManager().renewPersistedSessions();
-    } else if (alarm.name === RECORDING_CLEANUP_ALARM) {
+    } else {
+      const cleanupSessionId = recordingCleanupSessionId(alarm.name);
+      if (!cleanupSessionId) return;
       try {
-        await getRecordingManager().retryCleanupStates();
+        await getRecordingManager().retryCleanupSession(cleanupSessionId);
       } catch {
         recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
       }

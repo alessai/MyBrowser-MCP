@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { getRecentExtensionIssues } from "./diagnostics";
 import { reportToolFailure } from "./background-privacy";
-import { validateSanitizedArgs } from "./recording-parameterizer";
+import { MAX_RECORDED_URL_LENGTH, validateSanitizedArgs } from "./recording-parameterizer";
 import { RECORDING_NUMERIC_BOUNDS } from "./tool-metadata";
 
 import {
@@ -15,6 +15,8 @@ import {
   MAX_REQUIRED_VARIABLES,
   isSanitizedRecording,
   loadRecordingFromStorage,
+  recordingCleanupAlarmName,
+  recordingCleanupSessionId,
   RecordingManager,
   runRecordedAction,
   type RecordingAlarmScheduler,
@@ -128,6 +130,7 @@ class FakeScheduler implements RecordingAlarmScheduler {
   cleanupEnsured = 0;
   cleanupCleared = 0;
   failClear = false;
+  readonly cleanupSessions = new Set<string>();
 
   async ensureRenewal(): Promise<void> {
     this.ensured += 1;
@@ -138,12 +141,18 @@ class FakeScheduler implements RecordingAlarmScheduler {
     if (this.failClear) throw new Error("ALARM_CLEAR_FAILED");
   }
 
-  async ensureCleanup(): Promise<void> {
+  async ensureCleanup(sessionId: string): Promise<void> {
     this.cleanupEnsured += 1;
+    this.cleanupSessions.add(sessionId);
   }
 
-  async clearCleanup(): Promise<void> {
+  async clearCleanup(sessionId: string): Promise<void> {
     this.cleanupCleared += 1;
+    this.cleanupSessions.delete(sessionId);
+  }
+
+  async getCleanupSessionIds(): Promise<string[]> {
+    return [...this.cleanupSessions].sort();
   }
 }
 
@@ -443,6 +452,44 @@ describe("RecordingManager limits", () => {
     expect(first).not.toBeNull();
     await expect(aggregate.prepareStep("session-b", "browser_click", { element: "safe" }, 22))
       .rejects.toThrow("RECORDING_STATE_LIMIT");
+  });
+
+  it("guarantees a prepared 2 MiB boundary step fits fractional commit metadata", async () => {
+    const probe = createManager({
+      limits: {
+        maxSteps: MAX_ACTIVE_RECORDING_STEPS,
+        maxRecordingBytes: MAX_ACTIVE_RECORDING_BYTES + 100_000,
+        maxAggregateBytes: MAX_AGGREGATE_RECORDING_BYTES,
+      },
+    });
+    await probe.manager.start("session-probe", "boundary", 11, "https://example.test");
+    const empty = await probe.manager.prepareStep(
+      "session-probe", "browser_click", { element: "" }, 11,
+    );
+    const emptyCeiling = (empty as unknown as { finalReservedBytes?: number }).finalReservedBytes;
+    expect(emptyCeiling).toBeTypeOf("number");
+    await probe.manager.discardStep("session-probe", empty!);
+
+    const elementLength = MAX_ACTIVE_RECORDING_BYTES - emptyCeiling!;
+    const { manager } = createManager();
+    await manager.start("session-a", "boundary", 11, "https://example.test");
+    const prepared = await manager.prepareStep(
+      "session-a", "browser_click", { element: "x".repeat(elementLength) }, 11,
+    );
+    expect(prepared).not.toBeNull();
+    expect(prepared!.finalReservedBytes).toBe(MAX_ACTIVE_RECORDING_BYTES);
+
+    await expect(manager.commitStep("session-a", prepared!, {
+      durationMs: 0.0000012345678901234567,
+      currentUrl: `https://example.test/${"a".repeat(MAX_RECORDED_URL_LENGTH)}`,
+    })).resolves.toBeUndefined();
+
+    const recording = manager.snapshot().active[0]!.recording;
+    const finalBytes = new TextEncoder().encode(JSON.stringify({
+      ...recording,
+      stoppedAt: MAX_RECORDING_TIMESTAMP_MS,
+    })).byteLength;
+    expect(finalBytes).toBeLessThanOrEqual(prepared!.finalReservedBytes);
   });
 
   it("allows only one prepared action per session", async () => {
@@ -1228,6 +1275,73 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expectAbsent({ partial, writes: sessionStorage.writes, snapshot: restarted.manager.snapshot() });
+  });
+
+  it("treats a cleanup alarm as authoritative over a stale stopping snapshot", async () => {
+    const sessionStorage = new MemoryStorage();
+    const failedTransport = new FakeTransport();
+    failedTransport.responses.push(new Error("SERVER_UNAVAILABLE"));
+    const first = createManager({ sessionStorage, transport: failedTransport });
+    await first.manager.start("session-a", "stale-stopping", 11, "https://example.test");
+    const partial = await first.manager.stop("session-a");
+    expect(sessionStorage.values.get("active-recording:session-a")).toMatchObject({
+      status: "stopping",
+      stopStatus: {
+        extensionSaved: partial.extensionSaved,
+        serverSaved: partial.serverSaved,
+        error: partial.error,
+      },
+    });
+
+    const scheduler = new FakeScheduler();
+    scheduler.cleanupSessions.add("session-a");
+    const restarted = createManager({ sessionStorage, scheduler });
+    await restarted.manager.retryCleanupStates();
+    await restarted.manager.renewPersistedSessions();
+
+    expect(restarted.transport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(scheduler.cleanupSessions.has("session-a")).toBe(false);
+    await expect(restarted.manager.start(
+      "session-a", "replacement", 11, "https://example.test/new",
+    )).resolves.toBeUndefined();
+  });
+
+  it("reschedules a stale active cleanup alarm after removal failure and deletes it eventually", async () => {
+    expect(recordingCleanupAlarmName("session-a")).toBe("recording-cleanup:session-a");
+    expect(recordingCleanupSessionId("recording-cleanup:session-a")).toBe("session-a");
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "stale-active", 11, "https://example.test");
+
+    const scheduler = new FakeScheduler();
+    scheduler.cleanupSessions.add("session-a");
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const restarted = createManager({ sessionStorage, scheduler });
+    await restarted.manager.retryCleanupStates();
+
+    expect(restarted.transport.requests).toEqual([]);
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(true);
+    expect(scheduler.cleanupSessions.has("session-a")).toBe(true);
+    expect(scheduler.cleanupEnsured).toBeGreaterThan(0);
+    await expect(restarted.manager.start(
+      "session-a", "blocked", 11, "https://example.test/new",
+    )).rejects.toThrow("ACTIVE_RECORDING_EXISTS");
+    expect(restarted.transport.requests).toEqual([]);
+
+    sessionStorage.failRemoveMany = undefined;
+    await (restarted.manager as unknown as {
+      retryCleanupSession(sessionId: string): Promise<void>;
+    }).retryCleanupSession("session-a");
+
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(scheduler.cleanupSessions.has("session-a")).toBe(false);
+    expect(restarted.manager.snapshot().active).toEqual([]);
   });
 
   it("persists to the server before creating the local completed copy", async () => {

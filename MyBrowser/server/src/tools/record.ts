@@ -733,7 +733,11 @@ function verifyExistingRecording(
     if (descriptorStats.dev !== stats.dev || descriptorStats.ino !== stats.ino) {
       throw new Error(`Existing recording artifact changed between lstat and open: ${filePath}`);
     }
-    const existing = sanitizeRecording(JSON.parse(ops.readFileSync(existingFd, "utf-8")));
+    const parsedExisting: unknown = JSON.parse(ops.readFileSync(existingFd, "utf-8"));
+    if (!isPlainRecord(parsedExisting) || parsedExisting.name !== sanitized.name) {
+      throw mismatchError;
+    }
+    const existing = sanitizeRecording(parsedExisting);
     if (!isDeepStrictEqual(existing, sanitized)) throw mismatchError;
     ops.fsyncSync(existingFd);
   } catch (verificationError) {

@@ -45,8 +45,9 @@ export interface RecordingTransport {
 export interface RecordingAlarmScheduler {
   ensureRenewal(): Promise<void>;
   clearRenewal(): Promise<void>;
-  ensureCleanup(): Promise<void>;
-  clearCleanup(): Promise<void>;
+  ensureCleanup(sessionId: string): Promise<void>;
+  clearCleanup(sessionId: string): Promise<void>;
+  getCleanupSessionIds(): Promise<string[]>;
 }
 
 export interface PreparedStep {
@@ -57,6 +58,7 @@ export interface PreparedStep {
   readonly timestamp: number;
   readonly requiredVariables: RequiredVariable[];
   readonly nextVariable: number;
+  readonly finalReservedBytes: number;
 }
 
 export class RecordedActionFailure extends Error {
@@ -114,7 +116,7 @@ interface PendingReservation {
   sessionId: string;
   baseStepCount: number;
   baseNextVariable: number;
-  reservedRecordingBytes: number;
+  finalReservedBytes: number;
   reservedAggregateDelta: number;
 }
 
@@ -133,7 +135,7 @@ export const MAX_RECORDED_DURATION_MS = 2_147_483_647;
 export const MAX_REQUIRED_VARIABLES = 100_000;
 export const RECORDING_RENEWAL_ALARM = 'active-recordings-renewal';
 export const RECORDING_RENEWAL_MINUTES = 5;
-export const RECORDING_CLEANUP_ALARM = 'active-recordings-cleanup';
+export const RECORDING_CLEANUP_ALARM_PREFIX = 'recording-cleanup:';
 export const RECORDING_CLEANUP_MINUTES = 1;
 
 const ACTIVE_PREFIX = 'active-recording:';
@@ -143,6 +145,7 @@ const COMPLETED_PREFIX = 'recording:';
 const COMPLETED_DIGEST_PREFIX = 'recording-digest:';
 const SERVER_TIMEOUT_MS = 10_000;
 const COMMIT_OVERHEAD_BYTES = 1_024;
+const COMMIT_DURATION_JSON_SLACK_BYTES = 32;
 
 class ChromeStorageAdapter implements RecordingStorage {
   constructor(private readonly area: chrome.storage.StorageArea) {}
@@ -188,15 +191,33 @@ export class ChromeRecordingAlarmScheduler implements RecordingAlarmScheduler {
     await chrome.alarms.clear(RECORDING_RENEWAL_ALARM);
   }
 
-  async ensureCleanup(): Promise<void> {
-    chrome.alarms.create(RECORDING_CLEANUP_ALARM, {
+  async ensureCleanup(sessionId: string): Promise<void> {
+    chrome.alarms.create(recordingCleanupAlarmName(sessionId), {
       periodInMinutes: RECORDING_CLEANUP_MINUTES,
     });
   }
 
-  async clearCleanup(): Promise<void> {
-    await chrome.alarms.clear(RECORDING_CLEANUP_ALARM);
+  async clearCleanup(sessionId: string): Promise<void> {
+    await chrome.alarms.clear(recordingCleanupAlarmName(sessionId));
   }
+
+  async getCleanupSessionIds(): Promise<string[]> {
+    const alarms = await chrome.alarms.getAll();
+    return alarms
+      .map((alarm) => recordingCleanupSessionId(alarm.name))
+      .filter((sessionId): sessionId is string => sessionId !== null)
+      .sort();
+  }
+}
+
+export function recordingCleanupAlarmName(sessionId: string): string {
+  return `${RECORDING_CLEANUP_ALARM_PREFIX}${sessionId}`;
+}
+
+export function recordingCleanupSessionId(alarmName: string): string | null {
+  if (!alarmName.startsWith(RECORDING_CLEANUP_ALARM_PREFIX)) return null;
+  const sessionId = alarmName.slice(RECORDING_CLEANUP_ALARM_PREFIX.length);
+  return isValidV2SessionId(sessionId) ? sessionId : null;
 }
 
 function byteLength(value: unknown): number {
@@ -489,21 +510,23 @@ export class RecordingManager {
       const conservativeStep: RecordedStep = {
         action: toolName,
         args: parameterized.args,
-        timestamp,
-        durationMs: Number.MAX_SAFE_INTEGER,
-        url: 'x'.repeat(MAX_RECORDED_URL_LENGTH * 6),
+        timestamp: MAX_RECORDING_TIMESTAMP_MS,
+        durationMs: 0,
+        url: '\u0000'.repeat(MAX_RECORDED_URL_LENGTH),
       };
       const projectedRecording: Recording & { stoppedAt: number } = {
         ...active.recording,
-        stoppedAt: Number.MAX_SAFE_INTEGER,
+        stoppedAt: MAX_RECORDING_TIMESTAMP_MS,
         steps: [...active.recording.steps, conservativeStep],
         requiredVariables: [
           ...active.recording.requiredVariables,
           ...parameterized.requiredVariables,
         ],
       };
-      const reservedRecordingBytes = byteLength(projectedRecording) + COMMIT_OVERHEAD_BYTES;
-      if (reservedRecordingBytes > this.limits.maxRecordingBytes) {
+      const finalReservedBytes = byteLength(projectedRecording)
+        + COMMIT_DURATION_JSON_SLACK_BYTES
+        + COMMIT_OVERHEAD_BYTES;
+      if (finalReservedBytes > this.limits.maxRecordingBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
 
@@ -515,6 +538,7 @@ export class RecordingManager {
       const currentBytes = byteLength(active);
       const projectedBytes = byteLength(projectedActive);
       const reservedAggregateDelta = Math.max(0, projectedBytes - currentBytes)
+        + COMMIT_DURATION_JSON_SLACK_BYTES
         + COMMIT_OVERHEAD_BYTES;
       const pendingBytes = [...this.pending.values()]
         .reduce((total, entry) => total + entry.reservedAggregateDelta, 0);
@@ -531,12 +555,13 @@ export class RecordingManager {
         timestamp,
         requiredVariables: parameterized.requiredVariables,
         nextVariable: parameterState.nextVariable,
+        finalReservedBytes,
       };
       this.pending.set(prepared.id, {
         sessionId,
         baseStepCount: active.recording.steps.length,
         baseNextVariable: active.nextVariable,
-        reservedRecordingBytes,
+        finalReservedBytes,
         reservedAggregateDelta,
       });
       return clone(prepared);
@@ -559,6 +584,7 @@ export class RecordingManager {
         || active.status !== 'active'
         || active.recording.steps.length !== reservation.baseStepCount
         || active.nextVariable !== reservation.baseNextVariable
+        || prepared.finalReservedBytes !== reservation.finalReservedBytes
       ) {
         throw new Error('INVALID_PREPARED_RECORDING_STEP');
       }
@@ -588,9 +614,9 @@ export class RecordingManager {
       };
       const completedProjection = {
         ...updated.recording,
-        stoppedAt: Number.MAX_SAFE_INTEGER,
+        stoppedAt: MAX_RECORDING_TIMESTAMP_MS,
       };
-      if (byteLength(completedProjection) + COMMIT_OVERHEAD_BYTES > reservation.reservedRecordingBytes) {
+      if (byteLength(completedProjection) > reservation.finalReservedBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
 
@@ -615,6 +641,9 @@ export class RecordingManager {
         throw new RecordedStateFailure();
       }
       let state = this.active.get(sessionId);
+      if (!state && this.closedSessions.has(sessionId)) {
+        throw new Error('RECORDING_CLEANUP_PENDING');
+      }
       if (!state) throw new Error('NO_ACTIVE_RECORDING');
       if (state.status === 'quarantined') throw new RecordedStateFailure();
       if (state.status === 'cleanup') throw new Error('RECORDING_CLEANUP_PENDING');
@@ -776,9 +805,11 @@ export class RecordingManager {
 
   renewPersistedSessions(): Promise<void> {
     return this.enqueue(async () => {
+      const cleanupSessions = await this.retryCleanupAlarmsUnlocked();
       const sessionIds = await this.persistedSessionIdsUnlocked();
       for (const sessionId of sessionIds) {
-        const restored = await this.restoreSessionUnlocked(sessionId);
+        if (cleanupSessions.has(sessionId)) continue;
+        const restored = await this.restoreSessionUnlocked(sessionId, false);
         if (!restored) continue;
         const active = this.active.get(sessionId)!;
         if (active.status === 'cleanup') {
@@ -816,15 +847,23 @@ export class RecordingManager {
 
   retryCleanupStates(): Promise<void> {
     return this.enqueue(async () => {
+      const cleanupSessions = await this.retryCleanupAlarmsUnlocked();
       const sessionIds = new Set(await this.persistedSessionIdsUnlocked());
       for (const sessionId of this.active.keys()) sessionIds.add(sessionId);
       for (const sessionId of sessionIds) {
-        await this.restoreSessionUnlocked(sessionId);
+        if (cleanupSessions.has(sessionId)) continue;
+        await this.restoreSessionUnlocked(sessionId, false);
         if (this.active.get(sessionId)?.status === 'cleanup') {
           await this.finishStopUnlocked(sessionId);
         }
       }
-      await this.refreshCleanupAlarmUnlocked();
+    });
+  }
+
+  retryCleanupSession(sessionId: string): Promise<void> {
+    return this.enqueue(async () => {
+      if (!isValidV2SessionId(sessionId)) throw new RecordedStateFailure();
+      await this.retryCleanupSessionUnlocked(sessionId);
     });
   }
 
@@ -851,11 +890,12 @@ export class RecordingManager {
   }
 
   private async restoreAllUnlocked(): Promise<Set<string>> {
+    const cleanupSessions = await this.retryCleanupAlarmsUnlocked();
     const sessionIds = new Set(await this.persistedSessionIdsUnlocked());
     for (const sessionId of this.active.keys()) sessionIds.add(sessionId);
-    const cleanupSessions = new Set<string>();
     for (const sessionId of sessionIds) {
-      await this.restoreSessionUnlocked(sessionId);
+      if (cleanupSessions.has(sessionId)) continue;
+      await this.restoreSessionUnlocked(sessionId, false);
       if (this.active.get(sessionId)?.status === 'cleanup') {
         cleanupSessions.add(sessionId);
         await this.finishStopUnlocked(sessionId);
@@ -864,7 +904,17 @@ export class RecordingManager {
     return cleanupSessions;
   }
 
-  private async restoreSessionUnlocked(sessionId: string): Promise<boolean> {
+  private async restoreSessionUnlocked(
+    sessionId: string,
+    consultCleanupAlarms = true,
+  ): Promise<boolean> {
+    if (consultCleanupAlarms) {
+      const cleanupSessions = new Set(await this.scheduler.getCleanupSessionIds());
+      if (cleanupSessions.has(sessionId)) {
+        await this.retryCleanupSessionUnlocked(sessionId);
+        return false;
+      }
+    }
     const marker = await this.sessionStorage.get<unknown>(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
     if (!isRecordingMarker(marker, sessionId)) {
       await this.removeActiveStateUnlocked(sessionId);
@@ -901,7 +951,7 @@ export class RecordingManager {
     }
     if (stored.status === 'active') await this.scheduler.ensureRenewal();
     else if (stored.status === 'cleanup') {
-      await this.scheduler.ensureCleanup();
+      await this.scheduler.ensureCleanup(sessionId);
       await this.refreshRenewalAlarmUnlocked();
     } else await this.refreshRenewalAlarmUnlocked();
     return true;
@@ -1016,28 +1066,59 @@ export class RecordingManager {
   private async finishStopUnlocked(sessionId: string): Promise<boolean> {
     const current = this.active.get(sessionId);
     if (!current) return true;
+    try { await this.scheduler.ensureCleanup(sessionId); } catch { /* persisted cleanup is fallback */ }
     if (current.status !== 'cleanup') {
       const cleanupState: ActiveRecording = { ...current, status: 'cleanup' };
       this.active.set(sessionId, cleanupState);
       try {
         await this.persistActiveUnlocked(cleanupState);
       } catch {
-        try { await this.scheduler.ensureCleanup(); } catch { /* retried on restore/startup */ }
+        try { await this.scheduler.ensureCleanup(sessionId); } catch { /* retried on restore/startup */ }
         await this.refreshRenewalAlarmUnlocked();
         return false;
       }
     }
-    try { await this.scheduler.ensureCleanup(); } catch { /* removal can still complete */ }
     await this.refreshRenewalAlarmUnlocked();
     try {
       await this.removeActiveStateUnlocked(sessionId);
     } catch {
-      try { await this.scheduler.ensureCleanup(); } catch { /* retried on restore/startup */ }
+      this.hideSessionForCleanupUnlocked(sessionId);
+      try { await this.scheduler.ensureCleanup(sessionId); } catch { /* retried on restore/startup */ }
       return false;
     }
     await this.refreshRenewalAlarmUnlocked();
-    await this.refreshCleanupAlarmUnlocked();
+    try { await this.scheduler.clearCleanup(sessionId); } catch { /* stale tombstones retry safely */ }
     return true;
+  }
+
+  private async retryCleanupAlarmsUnlocked(): Promise<Set<string>> {
+    const cleanupSessions = new Set(await this.scheduler.getCleanupSessionIds());
+    for (const sessionId of cleanupSessions) {
+      await this.retryCleanupSessionUnlocked(sessionId);
+    }
+    return cleanupSessions;
+  }
+
+  private async retryCleanupSessionUnlocked(sessionId: string): Promise<boolean> {
+    this.hideSessionForCleanupUnlocked(sessionId);
+    try {
+      await this.removeActiveStateUnlocked(sessionId);
+    } catch {
+      this.closedSessions.add(sessionId);
+      try { await this.scheduler.ensureCleanup(sessionId); } catch { /* periodic retry remains best effort */ }
+      return false;
+    }
+    try { await this.scheduler.clearCleanup(sessionId); } catch { /* stale tombstones retry safely */ }
+    return true;
+  }
+
+  private hideSessionForCleanupUnlocked(sessionId: string): void {
+    this.closedSessions.add(sessionId);
+    this.active.delete(sessionId);
+    this.replaying.delete(sessionId);
+    for (const [id, reservation] of this.pending) {
+      if (reservation.sessionId === sessionId) this.pending.delete(id);
+    }
   }
 
   private async refreshRenewalAlarmUnlocked(): Promise<void> {
@@ -1054,23 +1135,6 @@ export class RecordingManager {
       else await this.scheduler.clearRenewal();
     } catch {
       // Stale alarms are harmless because renewal ignores non-active states.
-    }
-  }
-
-  private async refreshCleanupAlarmUnlocked(): Promise<void> {
-    try {
-      const keys = await this.sessionStorage.getKeys();
-      let hasCleanup = [...this.active.values()].some((state) => state.status === 'cleanup');
-      for (const key of keys) {
-        if (hasCleanup || !key.startsWith(ACTIVE_MARKER_PREFIX)) continue;
-        const sessionId = key.slice(ACTIVE_MARKER_PREFIX.length);
-        const marker = await this.sessionStorage.get<unknown>(key);
-        if (isRecordingMarker(marker, sessionId) && marker.status === 'cleanup') hasCleanup = true;
-      }
-      if (hasCleanup) await this.scheduler.ensureCleanup();
-      else await this.scheduler.clearCleanup();
-    } catch {
-      // Startup and the persisted cleanup marker retry this best-effort alarm update.
     }
   }
 
