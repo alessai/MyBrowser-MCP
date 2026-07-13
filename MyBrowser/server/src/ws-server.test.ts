@@ -47,7 +47,7 @@ const fakeHubs: WebSocketServer[] = [];
 const tempDirs: string[] = [];
 
 const validRecording = {
-  name: "Checkout Flow",
+  name: "Checkout_Flow",
   startedAt: 100,
   stoppedAt: 200,
   url: "https://example.test/",
@@ -62,10 +62,11 @@ const validRecording = {
 };
 
 function getRecordingApi() {
-  return recordingTools as unknown as {
+  const api = recordingTools as unknown as {
     createRecordingTools: (
       stateManager: IStateManager,
       getSessionId: () => string,
+      options?: { recordingsDir?: string },
     ) => { recordStart: Tool; recordStop: Tool; recordList: Tool };
     saveRecordingToFile: (
       recording: unknown,
@@ -83,6 +84,21 @@ function getRecordingApi() {
         unlinkSync?: typeof unlinkSync;
       },
     ) => "created" | "existing-identical";
+  };
+  return {
+    ...api,
+    createRecordingTools: (
+      stateManager: IStateManager,
+      getSessionId: () => string,
+      options?: { recordingsDir?: string },
+    ) => {
+      if (options?.recordingsDir) return api.createRecordingTools(stateManager, getSessionId, options);
+      const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-tools-"));
+      tempDirs.push(base);
+      return api.createRecordingTools(stateManager, getSessionId, {
+        recordingsDir: join(base, "recordings"),
+      });
+    },
   };
 }
 
@@ -354,13 +370,66 @@ describe("recording tools and persistence", () => {
 
     await recordStart.handle(context, { name: "Checkout Flow", tabId: 7 });
 
-    expect(state.reserveRecording).toHaveBeenCalledWith("session-a", "Checkout Flow", 1_800_000);
+    expect(state.reserveRecording).toHaveBeenCalledWith("session-a", "Checkout_Flow", 1_800_000);
     expect(state.reserveRecording.mock.invocationCallOrder[0]).toBeLessThan(
       sendSocketMessage.mock.invocationCallOrder[0]!,
     );
     expect(sendSocketMessage).toHaveBeenCalledWith("browser_record_start", {
-      name: "Checkout Flow",
+      name: "Checkout_Flow",
       tabId: 7,
+    });
+  });
+
+  it("rejects canonical server artifacts before reservation or extension start", async () => {
+    const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-recording-conflict-"));
+    tempDirs.push(recordingsDir);
+    writeFileSync(join(recordingsDir, "Checkout_Flow.json"), "{}\n");
+    const state = createRecordingState();
+    const sendSocketMessage = vi.fn();
+    const { recordStart } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+      { recordingsDir },
+    );
+
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Checkout Flow", tabId: 7 },
+    )).rejects.toThrow("RECORDING_NAME_CONFLICT");
+
+    expect(state.reserveRecording).not.toHaveBeenCalled();
+    expect(state.releaseRecordingReservation).not.toHaveBeenCalled();
+    expect(sendSocketMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, "LOCAL_PERSIST_FAILED"],
+    [true, "LOCAL_RECORDING_CONFLICT"],
+    [false, "SERVER_PERSIST_FAILED"],
+  ] as const)("preserves exact stop status for serverSaved=%s error=%s", async (serverSaved, error) => {
+    const state = createRecordingState();
+    state.hasRecordingReservation.mockResolvedValue(!serverSaved);
+    const tools = getRecordingApi().createRecordingTools(state, () => "session-a");
+    await tools.recordStart.handle(
+      { sendSocketMessage: vi.fn().mockResolvedValue({ status: "recording" }) } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    const extensionSaved = false;
+
+    const result = await tools.recordStop.handle({
+      sendSocketMessage: vi.fn().mockResolvedValue({
+        extensionSaved,
+        serverSaved,
+        recording: validRecording,
+        error,
+      }),
+    } as unknown as Context, {});
+
+    expect(result).toMatchObject({
+      extensionSaved,
+      serverSaved,
+      recording: validRecording,
+      error,
     });
   });
 
@@ -490,8 +559,10 @@ describe("recording tools and persistence", () => {
     const startGate = deferred<{ status: string }>();
     const startSend = vi.fn(() => startGate.promise);
     const stopSend = vi.fn().mockResolvedValue({
+      extensionSaved: false,
       serverSaved: false,
       recording: validRecording,
+      error: "SERVER_PERSIST_FAILED",
     });
     const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
       state,
@@ -597,6 +668,9 @@ describe("recording tools and persistence", () => {
     const state = createRecordingState();
     const context = {
       sendSocketMessage: vi.fn().mockResolvedValue({
+        extensionSaved: false,
+        serverSaved: false,
+        error: "SERVER_PERSIST_FAILED",
         recording: { ...validRecording },
       }),
     } as unknown as Context;
@@ -618,6 +692,12 @@ describe("recording tools and persistence", () => {
       throw new Error("Expected text recording result content");
     }
     expect(summary.text).toContain("partial");
+    expect(result).toMatchObject({
+      extensionSaved: false,
+      serverSaved: false,
+      error: "SERVER_PERSIST_FAILED",
+      recording: { name: "Checkout_Flow" },
+    });
     expect(state.releaseRecordingReservation).toHaveBeenCalledWith("session-a", "Checkout_Flow");
   });
 
@@ -661,6 +741,8 @@ describe("recording tools and persistence", () => {
     const stopContext = {
       sendSocketMessage: vi.fn()
         .mockResolvedValueOnce({
+          extensionSaved: true,
+          serverSaved: true,
           recording: { ...validRecording },
         })
         .mockRejectedValueOnce(new Error("No recording in progress")),
@@ -699,7 +781,12 @@ describe("recording tools and persistence", () => {
     );
     const stopContext = {
       sendSocketMessage: vi.fn()
-        .mockResolvedValueOnce({ recording: validRecording })
+        .mockResolvedValueOnce({
+          extensionSaved: false,
+          serverSaved: false,
+          recording: validRecording,
+          error: "SERVER_PERSIST_FAILED",
+        })
         .mockRejectedValueOnce(new Error("No recording in progress")),
     } as unknown as Context;
 
@@ -728,7 +815,12 @@ describe("recording tools and persistence", () => {
     );
     const stopContext = {
       sendSocketMessage: vi.fn()
-        .mockResolvedValueOnce({ recording: validRecording })
+        .mockResolvedValueOnce({
+          extensionSaved: false,
+          serverSaved: false,
+          recording: validRecording,
+          error: "SERVER_PERSIST_FAILED",
+        })
         .mockRejectedValueOnce(new Error("No recording in progress")),
     } as unknown as Context;
 
@@ -901,6 +993,63 @@ describe("recording tools and persistence", () => {
     )).toThrow(/EEXIST/);
     expect(readFileSync(filePath, "utf8")).toBe(original);
   });
+
+  it("fsyncs and closes the recording directory for new and idempotent writes", () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-dir-sync-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const open = vi.fn(((path, flags, mode) => {
+      return openSync(path, flags, mode);
+    }) as typeof openSync);
+    const fsync = vi.fn(((fd: number) => fsyncSync(fd)) as typeof fsyncSync);
+    const close = vi.fn(((fd: number) => closeSync(fd)) as typeof closeSync);
+    const ops = recordingFileOps({ openSync: open, fsyncSync: fsync, closeSync: close });
+
+    expect(getRecordingApi().saveRecordingToFile(validRecording, recordingsDir, ops)).toBe("created");
+    expect(getRecordingApi().saveRecordingToFile(validRecording, recordingsDir, ops))
+      .toBe("existing-identical");
+
+    const directoryOpenCalls = open.mock.calls.filter(([path]) => path === recordingsDir);
+    expect(directoryOpenCalls).toHaveLength(2);
+    expect(fsync).toHaveBeenCalledTimes(4);
+    expect(close).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["open", "fsync", "close"] as const)(
+    "fails without deleting the durable file when directory %s fails and permits retry",
+    (failure) => {
+      const base = mkdtempSync(join(tmpdir(), `mybrowser-recording-dir-${failure}-`));
+      tempDirs.push(base);
+      const recordingsDir = join(base, "recordings");
+      let directoryFd: number | undefined;
+      const open = ((path: Parameters<typeof openSync>[0], flags: Parameters<typeof openSync>[1], mode?: number) => {
+        if (failure === "open" && path === recordingsDir) throw new Error("directory open failed");
+        const fd = openSync(path, flags, mode);
+        if (path === recordingsDir) directoryFd = fd;
+        return fd;
+      }) as typeof openSync;
+      const fsync = ((fd: number) => {
+        if (failure === "fsync" && fd === directoryFd) throw new Error("directory fsync failed");
+        fsyncSync(fd);
+      }) as typeof fsyncSync;
+      const close = ((fd: number) => {
+        if (failure === "close" && fd === directoryFd) {
+          closeSync(fd);
+          throw new Error("directory close failed");
+        }
+        closeSync(fd);
+      }) as typeof closeSync;
+
+      expect(() => getRecordingApi().saveRecordingToFile(
+        validRecording,
+        recordingsDir,
+        recordingFileOps({ openSync: open, fsyncSync: fsync, closeSync: close }),
+      )).toThrow("recording directory sync failed");
+      expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(true);
+      expect(getRecordingApi().saveRecordingToFile(validRecording, recordingsDir))
+        .toBe("existing-identical");
+    },
+  );
 
   it("removes an incomplete file after initial fsync failure and allows retry", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-new-fsync-"));
@@ -1124,9 +1273,14 @@ describe("recording tools and persistence", () => {
       recordingsDir,
       recordingFileOps({ closeSync: close, fsyncSync: fsync }),
     )).toThrow("injected existing fsync failure");
-    expect(fsync).toHaveBeenCalledTimes(1);
-    expect(close).toHaveBeenCalledTimes(1);
+    expect(fsync).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(2);
+    const verifiedFileFd = open.mock.results[1]?.value;
+    const directoryFd = open.mock.results[2]?.value;
+    expect(fsync.mock.calls.map(([fd]) => fd)).toEqual([verifiedFileFd, directoryFd]);
+    expect(close.mock.calls.map(([fd]) => fd)).toEqual([verifiedFileFd, directoryFd]);
     expect(fsync.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
+    expect(fsync.mock.invocationCallOrder[1]).toBeLessThan(close.mock.invocationCallOrder[1]!);
   });
 
   it("fsyncs and closes an identical existing artifact before durable retry succeeds", () => {
@@ -1379,6 +1533,46 @@ describe("acknowledged recording reservation messages", () => {
     expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(false);
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(true);
+  });
+
+  it("does not acknowledge or release until directory fsync succeeds", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-ack-dir-fsync-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    let directoryFd: number | undefined;
+    let failDirectorySync = true;
+    const retryRegistry = new RecordingRetryRegistry();
+    const { server, extension } = await setupReservedRecording(recordingsDir, {
+      openSync: ((path, flags, mode) => {
+        const fd = openSync(path, flags, mode);
+        if (path === recordingsDir) directoryFd = fd;
+        return fd;
+      }) as typeof openSync,
+      fsyncSync: ((fd: number) => {
+        if (failDirectorySync && fd === directoryFd) throw new Error("directory fsync failed");
+        fsyncSync(fd);
+      }) as typeof fsyncSync,
+    }, retryRegistry);
+    const release = vi.spyOn(server.stateManager, "releaseRecordingReservation");
+
+    await expect(persistRecordingMessage(extension, "persist-dir-fsync-failure")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-dir-fsync-failure",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(release).not.toHaveBeenCalled();
+    expect(retryRegistry.count("session-a")).toBe(1);
+    expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(true);
+
+    failDirectorySync = false;
+    await expect(persistRecordingMessage(extension, "persist-dir-fsync-retry")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-dir-fsync-retry",
+      ok: true,
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(retryRegistry.count("session-a")).toBe(0);
   });
 
   it("does not retain a canonical payload after a failed persist and wrapper release", async () => {
@@ -1816,17 +2010,19 @@ describe("WebSocket connection roles and session binding", () => {
     expect(receivedMessages).toEqual([]);
   });
 
-  it.each(["", "   "])("rejects blank session ID %j without binding the socket", async (sessionId) => {
+  it("rejects invalid v2 session IDs without binding the socket", async () => {
     const server = await startHub();
     const client = await connect(server);
     await authenticate(client, "client");
 
-    await expect(callHubRpc(client, "rpc-invalid", "registerSession", { sessionId }))
-      .resolves.toEqual({
+    for (const [index, sessionId] of ["", " ", "has space", "has:colon", "x".repeat(129)].entries()) {
+      const id = `rpc-invalid-${index}`;
+      await expect(callHubRpc(client, id, "registerSession", { sessionId })).resolves.toEqual({
         type: "hub_rpc_result",
-        id: "rpc-invalid",
-        error: "SESSION_IDENTITY_MISMATCH",
+        id,
+        error: "INVALID_SESSION_ID",
       });
+    }
     await expect(callHubRpc(client, "rpc-valid", "registerSession", { sessionId: "s1" }))
       .resolves.toEqual({
         type: "hub_rpc_result",
@@ -1834,6 +2030,21 @@ describe("WebSocket connection roles and session binding", () => {
         result: { ok: true },
       });
   });
+
+  it.each(["a", "x".repeat(128), "550e8400-e29b-41d4-a716-446655440000"])(
+    "registers valid v2 session ID %j",
+    async (sessionId) => {
+      const server = await startHub();
+      const client = await connect(server);
+      await authenticate(client, "client");
+      await expect(callHubRpc(client, "rpc-valid-edge", "registerSession", { sessionId }))
+        .resolves.toEqual({
+          type: "hub_rpc_result",
+          id: "rpc-valid-edge",
+          result: { ok: true },
+        });
+    },
+  );
 
   it("keeps one immutable session owner and allows reclaim after close", async () => {
     const server = await startHub();

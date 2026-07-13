@@ -18,6 +18,7 @@ import {
   type SaveNoteInput,
 } from "./notes.js";
 import { loadPreferences, savePreferences } from "./preferences.js";
+import { isValidV2SessionId } from "./session-id.js";
 
 export type { NoteMetadata, NoteStatus, Note, SaveNoteInput } from "./notes.js";
 
@@ -343,6 +344,7 @@ export class LocalStateManager implements IStateManager {
   // -- Sessions --
 
   async registerSession(sessionId: string, name?: string): Promise<void> {
+    if (!isValidV2SessionId(sessionId)) throw new Error("INVALID_SESSION_ID");
     const existing = this.sessions.get(sessionId);
     this.sessions.set(sessionId, {
       id: sessionId,

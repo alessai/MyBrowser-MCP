@@ -323,3 +323,13 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Extension `npm test`: `12 passed files`, `128 passed tests` by the emitted per-file counts.
 - Extension `npm run check && npm run build`: TypeScript check passed; Chrome MV3 production build passed (`434.24 kB`).
 - Server `npm test && npm run check && npm run build`: `6 passed files`, `146 passed tests`; chained TypeScript check and build exited successfully.
+
+## Final Contract Closure
+
+- Initial server run reproduced the independent result: `6 files`, `158 passed`, `4 failed`.
+- Updated the two stop fixtures to include exact `extensionSaved`/`serverSaved` status while preserving retry behavior.
+- Directory durability assertions now use operation counts/order rather than unique descriptor values and verify both file and directory fsync/close.
+- Implemented the remaining session-ID, canonical-name, completed-conflict/key-identity, cap passthrough, exact stop-status, directory durability, and exact-expiry contracts.
+- Pre-commit server `npm test && npm run check && npm run build`: `6 passed files`, `162 passed tests`; check/build passed.
+- Pre-commit extension `npm test && npm run check && npm run build`: `12 passed files`, `130 passed tests`; check/build passed.
+- `git diff --check`: passed before staging.

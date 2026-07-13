@@ -434,10 +434,16 @@ export function sanitizeRecording(recording: unknown): SanitizedRecording {
 }
 
 const RecordStopResultSchema = z.object({
-  extensionSaved: z.boolean().optional(),
-  serverSaved: z.boolean().optional(),
+  extensionSaved: z.boolean(),
+  serverSaved: z.boolean(),
   recording: z.unknown(),
-  error: z.string().optional(),
+  error: z.enum([
+    "SERVER_PERSIST_FAILED",
+    "LOCAL_RECORDING_CONFLICT",
+    "LOCAL_PERSIST_FAILED",
+    "ACTIVE_STATE_PERSIST_FAILED",
+    "ACTIVE_STATE_CLEANUP_FAILED",
+  ]).optional(),
 }).strict();
 
 export function sanitizeRecordStopResult(value: unknown): z.infer<typeof RecordStopResultSchema> & {
@@ -450,11 +456,12 @@ export function sanitizeRecordStopResult(value: unknown): z.infer<typeof RecordS
 export function createRecordingTools(
   stateManager: IStateManager,
   getSessionId: () => string,
+  options: { recordingsDir?: string } = {},
 ): { recordStart: Tool; recordStop: Tool; recordList: Tool } {
   let activeRecordingName: string | undefined;
   let failedStartCleanupPending = false;
   let pendingStop: {
-    recording: SanitizedRecording;
+    result: ReturnType<typeof sanitizeRecordStopResult>;
     serverPersisted: boolean;
   } | undefined;
   let lifecycleTail: Promise<void> = Promise.resolve();
@@ -491,7 +498,8 @@ export function createRecordingTools(
 
   const finishPendingStop = () => {
     if (!pendingStop) throw new Error("No completed recording is pending cleanup");
-    const { recording, serverPersisted } = pendingStop;
+    const { result, serverPersisted } = pendingStop;
+    const { recording } = result;
     const persistenceStatus = serverPersisted
       ? "Server persistence acknowledged."
       : "Server persistence partial: no durable write was acknowledged.";
@@ -499,6 +507,10 @@ export function createRecordingTools(
     pendingStop = undefined;
 
     return {
+      extensionSaved: result.extensionSaved,
+      serverSaved: result.serverSaved,
+      recording,
+      ...(result.error ? { error: result.error } : {}),
       content: [
         {
           type: "text" as const,
@@ -527,9 +539,14 @@ export function createRecordingTools(
           throw new Error("A recording reservation is already active for this session");
         }
         const sessionId = getSessionId();
+        const canonicalName = normalizeRecordingName(name);
+        const recordingsDir = options.recordingsDir ?? RECORDINGS_DIR;
+        if (existsSync(join(recordingsDir, `${canonicalName}.json`))) {
+          throw new Error("RECORDING_NAME_CONFLICT: completed recording already exists");
+        }
         const reserved = await stateManager.reserveRecording(
           sessionId,
-          name,
+          canonicalName,
           RECORDING_RESERVATION_LEASE_MS,
         );
         if (!reserved.ok) {
@@ -539,7 +556,10 @@ export function createRecordingTools(
         failedStartCleanupPending = true;
 
         try {
-          await context.sendSocketMessage("browser_record_start", { name, tabId });
+          await context.sendSocketMessage("browser_record_start", {
+            name: reserved.reservation.name,
+            tabId,
+          });
           failedStartCleanupPending = false;
         } catch (error) {
           await releaseActiveRecording();
@@ -585,7 +605,7 @@ export function createRecordingTools(
             throw new Error("Recording result does not match the active reservation");
           }
 
-          pendingStop = { recording, serverPersisted: false };
+          pendingStop = { result, serverPersisted: false };
           const reservationStillActive = activeRecordingName
             ? await stateManager.hasRecordingReservation(sessionId, activeRecordingName)
             : false;
@@ -651,6 +671,38 @@ export function createRecordingTools(
 
 // --- Server-side persistence (called via acknowledged WS message, not MCP) ---
 
+export class RecordingDirectorySyncError extends Error {
+  constructor() {
+    super("recording directory sync failed");
+    this.name = "RecordingDirectorySyncError";
+  }
+}
+
+export function isRecordingDirectorySyncError(error: unknown): error is RecordingDirectorySyncError {
+  return error instanceof RecordingDirectorySyncError;
+}
+
+function syncRecordingDirectory(recordingsDir: string, ops: RecordingFileOps): void {
+  let fd: number | undefined;
+  let failed = false;
+  try {
+    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+    fd = ops.openSync(recordingsDir, fsConstants.O_RDONLY | noFollow);
+    ops.fsyncSync(fd);
+  } catch {
+    failed = true;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        ops.closeSync(fd);
+      } catch {
+        failed = true;
+      }
+    }
+  }
+  if (failed) throw new RecordingDirectorySyncError();
+}
+
 function verifyExistingRecording(
   sanitized: SanitizedRecording,
   filePath: string,
@@ -710,6 +762,7 @@ export function saveRecordingToFile(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     verifyExistingRecording(sanitized, filePath, ops, error);
+    syncRecordingDirectory(recordingsDir, ops);
     return "existing-identical";
   }
 
@@ -741,6 +794,7 @@ export function saveRecordingToFile(
     }
     throw persistenceFailure;
   }
+  syncRecordingDirectory(recordingsDir, ops);
   return "created";
 }
 

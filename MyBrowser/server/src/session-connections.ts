@@ -1,10 +1,12 @@
+import { isValidV2SessionId } from './session-id.js';
+
 export class SessionConnectionRegistry<TSocket extends object> {
   private readonly socketToSession = new Map<TSocket, string>();
   private readonly sessionToSocket = new Map<string, TSocket>();
 
   bind(socket: TSocket, sessionId: string) {
-    if (sessionId.trim().length === 0) {
-      return { ok: false as const, code: "SESSION_IDENTITY_MISMATCH" as const };
+    if (!isValidV2SessionId(sessionId)) {
+      return { ok: false as const, code: "INVALID_SESSION_ID" as const };
     }
     const existingSession = this.socketToSession.get(socket);
     const existingSocket = this.sessionToSocket.get(sessionId);

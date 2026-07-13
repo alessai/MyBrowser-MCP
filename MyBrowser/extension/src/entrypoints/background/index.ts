@@ -231,7 +231,7 @@ export default defineBackground(() => {
       if (termination.reason === 'session_closed') {
         await getRecordingManager().abortSession(termination.sessionId);
       } else {
-        await getRecordingManager().expireReservation(termination.sessionId);
+        await getRecordingManager().expireReservation(termination.sessionId, termination.name!);
       }
       return;
     }

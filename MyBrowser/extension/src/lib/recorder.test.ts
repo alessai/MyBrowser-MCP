@@ -290,6 +290,30 @@ describe("RecordingManager privacy and ownership", () => {
     });
     await expect(loadRecordingFromStorage("saved-invalid", storage)).resolves.toBeNull();
     expect(storage.values.has("recording:saved-invalid")).toBe(false);
+
+    storage.values.set("recording:canonical_name", { ...valid, name: "different_name" });
+    await expect(loadRecordingFromStorage("canonical name", storage)).resolves.toBeNull();
+    expect(storage.values.has("recording:canonical_name")).toBe(false);
+  });
+
+  it("uses canonical names for active/completed state and rejects local aliases at start", async () => {
+    const localStorage = new MemoryStorage();
+    const canonical = createManager({ localStorage });
+    await canonical.manager.start("session-a", "Checkout Flow", 11, "https://example.test");
+    expect(canonical.manager.snapshot().active[0]?.recording.name).toBe("Checkout_Flow");
+    const stopped = await canonical.manager.stop("session-a");
+    expect(stopped.recording.name).toBe("Checkout_Flow");
+    expect(localStorage.values.get("recording:Checkout_Flow")).toEqual(stopped.recording);
+
+    const conflict = createManager({ localStorage });
+    await expect(conflict.manager.start(
+      "session-b",
+      "Checkout Flow",
+      12,
+      "https://example.test",
+    )).rejects.toThrow("COMPLETED_RECORDING_EXISTS");
+    expect(conflict.manager.snapshot().active).toEqual([]);
+    expect(conflict.sessionStorage.values.has("active-recording:session-b")).toBe(false);
   });
 
   it("isolates simultaneous sessions, bound tabs, and replay suppression", async () => {
@@ -451,7 +475,7 @@ describe("runRecordedAction", () => {
         return "unexpected";
       },
       currentUrl: async () => "https://example.test",
-    })).rejects.toThrow("RECORDED_STATE_FAILED");
+    })).rejects.toThrow("RECORDING_STATE_LIMIT");
 
     expect(actionRan).toBe(false);
   });
@@ -683,7 +707,7 @@ describe("runRecordedAction", () => {
         actionRan = true;
       },
       currentUrl: async () => `https://example.test/${"界".repeat(8_192)}`,
-    })).rejects.toThrow("RECORDED_STATE_FAILED");
+    })).rejects.toThrow("RECORDING_STATE_LIMIT");
     expect(actionRan).toBe(false);
   });
 });
@@ -824,7 +848,9 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(first.scheduler.cleared).toBeGreaterThan(0);
     const requestCount = transport.requests.length;
     await first.manager.renewPersistedSessions();
-    await first.manager.expireReservation("session-a");
+    await first.manager.expireReservation("session-a", "different-flow");
+    expect(first.manager.snapshot().active).toHaveLength(1);
+    await first.manager.expireReservation("session-a", "flow");
     expect(transport.requests).toHaveLength(requestCount);
     expect(first.manager.snapshot().active).toHaveLength(1);
     await expect(first.manager.start("session-a", "replacement", 11, "https://example.test"))
@@ -1064,6 +1090,34 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(markerOnlyStorage.values.has("active-recording-index:session-a")).toBe(false);
   });
 
+  it("enforces the v2 session grammar for starts and persisted marker suffixes", async () => {
+    for (const sessionId of ["", "with space", "with:colon", "x".repeat(129)]) {
+      const storage = new MemoryStorage();
+      storage.values.set(`active-recording-index:${sessionId}`, {
+        sessionId,
+        status: "active",
+      });
+      storage.values.set(`active-recording:${sessionId}`, { secret: SECRET_TEXT });
+      const invalid = createManager({ sessionStorage: storage });
+      await invalid.manager.renewPersistedSessions();
+      expect(storage.values.has(`active-recording-index:${sessionId}`)).toBe(false);
+      expect(storage.values.has(`active-recording:${sessionId}`)).toBe(false);
+      expect(storage.reads).not.toContain(`active-recording:${sessionId}`);
+      await expect(invalid.manager.start(sessionId, "flow", 11, "https://example.test"))
+        .rejects.toThrow("RECORDED_STATE_FAILED");
+    }
+
+    for (const sessionId of [
+      "a",
+      "x".repeat(128),
+      "550e8400-e29b-41d4-a716-446655440000",
+    ]) {
+      const valid = createManager();
+      await valid.manager.start(sessionId, "flow", 11, "https://example.test");
+      expect([...valid.sessionStorage.values.keys()]).toContain(`active-recording-index:${sessionId}`);
+    }
+  });
+
   it("deletes restored state that exceeds current limits before renewal", async () => {
     const sessionStorage = new MemoryStorage();
     const first = createManager({ sessionStorage });
@@ -1087,6 +1141,7 @@ describe("RecordingManager restart and stop persistence", () => {
     const { manager, scheduler } = createManager({ sessionStorage, transport: renewalTransport });
     await manager.start("session-a", "flow", 11, "https://example.test");
     await manager.renewPersistedSessions();
+    expect(renewalTransport.requests).toHaveLength(1);
     expect(manager.snapshot().active).toEqual([]);
 
     const failedTransport = new FakeTransport();
@@ -1195,15 +1250,8 @@ describe("RecordingManager restart and stop persistence", () => {
     const localStorage = new MemoryStorage();
     localStorage.values.set("recording:flow", { existing: true });
     const { manager } = createManager({ localStorage });
-    await manager.start("session-a", "flow", 11, "https://example.test");
-
-    const result = await manager.stop("session-a");
-
-    expect(result).toMatchObject({
-      extensionSaved: false,
-      serverSaved: true,
-      error: "LOCAL_RECORDING_CONFLICT",
-    });
+    await expect(manager.start("session-a", "flow", 11, "https://example.test"))
+      .rejects.toThrow("COMPLETED_RECORDING_EXISTS");
     expect(localStorage.values.get("recording:flow")).toEqual({ existing: true });
     expect(localStorage.reads).not.toContain("recording:flow");
     expect(manager.snapshot().active).toHaveLength(0);
@@ -1260,7 +1308,7 @@ describe("RecordingManager restart and stop persistence", () => {
     ]);
     const requestsBeforeTick = transport.requests.length;
     await manager.renewPersistedSessions();
-    await manager.expireReservation("session-a");
+    await manager.expireReservation("session-a", "cleanup-key");
     expect(transport.requests).toHaveLength(requestsBeforeTick);
     expect(manager.snapshot().active).toHaveLength(0);
 

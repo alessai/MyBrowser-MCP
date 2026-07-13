@@ -183,7 +183,17 @@ describe("recording lifecycle broadcasts", () => {
       id: "bcast-2",
       type: "recording_reservation_expired",
       payload: { sessionId: "session-b", name: "flow" },
-    })).toEqual({ sessionId: "session-b", reason: "reservation_expired" });
+    })).toEqual({ sessionId: "session-b", name: "flow", reason: "reservation_expired" });
+    for (const sessionId of ["", "has space", "has:colon", "x".repeat(129)]) {
+      expect(getRecordingTermination({
+        type: "session_closed",
+        payload: { sessionId },
+      })).toBeUndefined();
+    }
+    expect(getRecordingTermination({
+      type: "recording_reservation_expired",
+      payload: { sessionId: "session-b" },
+    })).toBeUndefined();
     expect(getRecordingTermination({
       type: "session_closed",
       sessionId: "untrusted-top-level",

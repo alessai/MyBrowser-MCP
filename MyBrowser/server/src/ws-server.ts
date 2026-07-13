@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import type { Context } from "./context.js";
-import { RECORDING_RESERVATION_LEASE_MS, type RecordingFileOps, sanitizeRecording, saveRecordingToFile } from './tools/record.js';
+import { RECORDING_RESERVATION_LEASE_MS, isRecordingDirectorySyncError, type RecordingFileOps, sanitizeRecording, saveRecordingToFile } from './tools/record.js';
 import { saveNote, listNotes } from "./notes.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import { HubStateManager } from "./hub-client.js";
@@ -15,6 +15,7 @@ import {
   type ToolRequestV2,
 } from "./protocol.js";
 import { SessionConnectionRegistry } from "./session-connections.js";
+import { isValidV2SessionId } from "./session-id.js";
 import { dispatchHubRpc } from "./hub-rpc.js";
 import net from "node:net";
 
@@ -482,11 +483,11 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
         if (msg.method === "registerSession") {
           const sessionId = msg.params?.sessionId;
-          if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
+          if (!isValidV2SessionId(sessionId)) {
             safeSend(ws, {
               type: "hub_rpc_result",
               id: msg.id,
-              error: "SESSION_IDENTITY_MISMATCH",
+              error: "INVALID_SESSION_ID",
             });
             return;
           }
@@ -696,7 +697,11 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
                 recordingRetryRegistry.clearSession(sessionId);
               }
             } catch (error) {
-              if (!durableWriteSucceeded) recordingRetryRegistry.clearSession(sessionId);
+              if (isRecordingDirectorySyncError(error)) {
+                recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
+              } else if (!durableWriteSucceeded) {
+                recordingRetryRegistry.clearSession(sessionId);
+              }
               throw error;
             }
             safeSend(ws, {

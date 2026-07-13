@@ -7,6 +7,8 @@ import {
   type VariableSource,
 } from './recording-parameterizer';
 import type { ToolName } from './tool-metadata';
+import { isValidV2SessionId } from './session-id';
+import { canonicalizeRecordingName } from './recording-name';
 
 export interface RecordedStep {
   action: string;
@@ -379,10 +381,22 @@ export class RecordingManager {
 
   start(sessionId: string, name: string, tabId: number, url: string): Promise<void> {
     return this.enqueue(async () => {
+      if (!isValidV2SessionId(sessionId)) throw new RecordedStateFailure();
+      let canonicalName: string;
+      try {
+        canonicalName = canonicalizeRecordingName(name);
+        if (await this.localStorage.has(`${COMPLETED_PREFIX}${canonicalName}`)
+          || await this.localStorage.has(`${COMPLETED_DIGEST_PREFIX}${canonicalName}`)) {
+          throw new Error('COMPLETED_RECORDING_EXISTS');
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === 'COMPLETED_RECORDING_EXISTS') throw error;
+        throw new RecordedStateFailure();
+      }
       let cleanupSessions: Set<string>;
       try {
         cleanupSessions = await this.restoreAllUnlocked();
-      } catch {
+      } catch (error) {
         throw new RecordedStateFailure();
       }
       if (cleanupSessions.has(sessionId) || this.active.has(sessionId)) {
@@ -403,7 +417,7 @@ export class RecordingManager {
         nextVariable: 1,
         status: 'active',
         recording: {
-          name,
+          name: canonicalName,
           startedAt,
           url: sanitizedUrl,
           steps: [],
@@ -421,6 +435,18 @@ export class RecordingManager {
       this.active.set(sessionId, state);
       try {
         await this.persistActiveUnlocked(state);
+      } catch {
+        if (!await this.hasExactPersistedStateUnlocked(state)) {
+          this.active.delete(sessionId);
+          try {
+            await this.removeActiveStateUnlocked(sessionId);
+          } catch {
+            // A later restore rejects incomplete state before renewal.
+          }
+          throw new RecordedStateFailure();
+        }
+      }
+      try {
         await this.scheduler.ensureRenewal();
       } catch {
         this.active.delete(sessionId);
@@ -429,7 +455,7 @@ export class RecordingManager {
         } catch {
           // A later restore rejects incomplete state before renewal.
         }
-        throw new RecordedStateFailure();
+        throw new Error('SCHEDULE_RENEWAL_FAILED');
       }
     });
   }
@@ -734,10 +760,11 @@ export class RecordingManager {
     return this.enqueue(() => this.abortSessionUnlocked(sessionId));
   }
 
-  expireReservation(sessionId: string): Promise<void> {
+  expireReservation(sessionId: string, name: string): Promise<void> {
     return this.enqueue(async () => {
       await this.restoreSessionUnlocked(sessionId);
-      if (this.active.get(sessionId)?.status === 'active') {
+      const state = this.active.get(sessionId);
+      if (state?.status === 'active' && state.recording.name === name) {
         await this.finishStopUnlocked(sessionId);
       }
     });
@@ -905,18 +932,42 @@ export class RecordingManager {
     });
   }
 
+  private async hasExactPersistedStateUnlocked(state: ActiveRecording): Promise<boolean> {
+    try {
+      const [stored, marker] = await Promise.all([
+        this.sessionStorage.get<unknown>(`${ACTIVE_PREFIX}${state.sessionId}`),
+        this.sessionStorage.get<unknown>(`${ACTIVE_MARKER_PREFIX}${state.sessionId}`),
+      ]);
+      return isActiveRecording(stored, state.sessionId)
+        && isRecordingMarker(marker, state.sessionId)
+        && JSON.stringify(stored) === JSON.stringify(state)
+        && marker.status === state.status;
+    } catch {
+      return false;
+    }
+  }
+
   private async persistedSessionIdsUnlocked(): Promise<string[]> {
     const keys = await this.sessionStorage.getKeys();
-    const isSessionId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
+    const invalidMarkerKeys = keys.filter((key) => {
+      if (!key.startsWith(ACTIVE_MARKER_PREFIX)) return false;
+      return !isValidV2SessionId(key.slice(ACTIVE_MARKER_PREFIX.length));
+    });
+    if (invalidMarkerKeys.length > 0) {
+      await this.sessionStorage.removeMany(invalidMarkerKeys.flatMap((key) => {
+        const sessionId = key.slice(ACTIVE_MARKER_PREFIX.length);
+        return [key, `${ACTIVE_PREFIX}${sessionId}`];
+      }));
+    }
     const sessionIds = new Set(keys
       .filter((key) => key.startsWith(ACTIVE_MARKER_PREFIX))
       .map((key) => key.slice(ACTIVE_MARKER_PREFIX.length))
-      .filter(isSessionId));
+      .filter(isValidV2SessionId));
     if (keys.includes(LEGACY_ACTIVE_INDEX_KEY)) {
       const orphanSnapshots = keys.filter((key) => {
         if (!key.startsWith(ACTIVE_PREFIX)) return false;
         const sessionId = key.slice(ACTIVE_PREFIX.length);
-        return isSessionId(sessionId) && !keys.includes(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
+        return isValidV2SessionId(sessionId) && !keys.includes(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
       });
       await this.sessionStorage.removeMany([LEGACY_ACTIVE_INDEX_KEY, ...orphanSnapshots]);
     }
@@ -1052,8 +1103,9 @@ export async function runRecordedAction<T>(options: {
       options.args,
       options.tabId,
     );
-  } catch {
+  } catch (error) {
     options.args = {};
+    if (error instanceof Error && error.message === 'RECORDING_STATE_LIMIT') throw error;
     throw new RecordedStateFailure();
   }
   options.args = {};
@@ -1092,12 +1144,13 @@ export async function loadRecordingFromStorage(
   name: string,
   storage: RecordingStorage = completedStorage(),
 ): Promise<Recording | null> {
-  const key = `${COMPLETED_PREFIX}${name}`;
+  const canonicalName = canonicalizeRecordingName(name);
+  const key = `${COMPLETED_PREFIX}${canonicalName}`;
   const recording = await storage.get<unknown>(key);
   if (recording === undefined) return null;
-  if (!isSanitizedRecording(recording)) {
+  if (!isSanitizedRecording(recording) || recording.name !== canonicalName) {
     await storage.remove(key);
-    await storage.remove(`${COMPLETED_DIGEST_PREFIX}${name}`);
+    await storage.remove(`${COMPLETED_DIGEST_PREFIX}${canonicalName}`);
     return null;
   }
   return recording;
@@ -1111,7 +1164,8 @@ export async function listRecordingsFromStorage(): Promise<string[]> {
 }
 
 export async function deleteRecordingFromStorage(name: string): Promise<void> {
+  const canonicalName = canonicalizeRecordingName(name);
   const storage = completedStorage();
-  await storage.remove(`${COMPLETED_PREFIX}${name}`);
-  await storage.remove(`${COMPLETED_DIGEST_PREFIX}${name}`);
+  await storage.remove(`${COMPLETED_PREFIX}${canonicalName}`);
+  await storage.remove(`${COMPLETED_DIGEST_PREFIX}${canonicalName}`);
 }

@@ -30,17 +30,28 @@ describe("SessionConnectionRegistry", () => {
     expect(registry.hasLiveSession("s1")).toBe(false);
   });
 
-  it.each(["", "   "])("rejects a blank session ID %j without creating a binding", (sessionId) => {
+  it.each(["", "   ", "with:colon", "x".repeat(129)])(
+    "rejects an invalid session ID %j without creating a binding",
+    (sessionId) => {
     const registry = new SessionConnectionRegistry<object>();
     const socket = {};
 
     expect(registry.bind(socket, sessionId)).toEqual({
       ok: false,
-      code: "SESSION_IDENTITY_MISMATCH",
+      code: "INVALID_SESSION_ID",
     });
     expect(registry.getSession(socket)).toBeUndefined();
     expect(registry.hasLiveSession(sessionId)).toBe(false);
-  });
+    },
+  );
+
+  it.each(["a", "x".repeat(128), "550e8400-e29b-41d4-a716-446655440000"])(
+    "accepts a valid v2 session ID %j",
+    (sessionId) => {
+      const registry = new SessionConnectionRegistry<object>();
+      expect(registry.bind({}, sessionId)).toEqual({ ok: true });
+    },
+  );
 
   it("does not let a stale unbind remove a replacement socket", () => {
     const registry = new SessionConnectionRegistry<object>();
