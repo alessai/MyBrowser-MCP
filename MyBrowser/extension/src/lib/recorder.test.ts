@@ -600,6 +600,30 @@ describe("RecordingManager privacy and ownership", () => {
     )).resolves.toBeUndefined();
   });
 
+  it("blocks same-session start during first markerless discovery and never deletes replacement state", async () => {
+    const sessionStorage = new MemoryStorage();
+    const orphan = { partial: "unknown failed write" };
+    sessionStorage.values.set("active-recording:session-a", orphan);
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const context = createManager({ sessionStorage });
+
+    await expect(context.manager.start(
+      "session-a", "must-not-overwrite", 11, "https://example.test",
+    )).rejects.toThrow("ACTIVE_RECORDING_EXISTS");
+    expect(sessionStorage.values.get("active-recording:session-a")).toEqual(orphan);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+
+    sessionStorage.failRemoveMany = undefined;
+    await context.manager.retryCleanupStates();
+    await expect(context.manager.start(
+      "session-a", "replacement", 11, "https://example.test",
+    )).resolves.toBeUndefined();
+    const replacement = clone(sessionStorage.values.get("active-recording:session-a"));
+    await context.manager.retryCleanupStates();
+    expect(sessionStorage.values.get("active-recording:session-a")).toEqual(replacement);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(true);
+  });
+
   it("rejects completed recordings with reverse maps or raw sensitive args", () => {
     const safe = {
       name: "flow",

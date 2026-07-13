@@ -433,7 +433,9 @@ export class RecordingManager {
       } catch (error) {
         throw new RecordedStateFailure();
       }
-      if (cleanupSessions.has(sessionId) || this.active.has(sessionId)) {
+      if (cleanupSessions.has(sessionId)
+        || this.cleanupFallbackSessions.has(sessionId)
+        || this.active.has(sessionId)) {
         throw new Error('ACTIVE_RECORDING_EXISTS');
       }
       const startedAt = this.now();
@@ -914,6 +916,7 @@ export class RecordingManager {
   private async restoreAllUnlocked(): Promise<Set<string>> {
     const cleanupSessions = await this.retryCleanupAlarmsUnlocked();
     const sessionIds = new Set(await this.persistedSessionIdsUnlocked());
+    for (const sessionId of this.cleanupFallbackSessions) cleanupSessions.add(sessionId);
     for (const sessionId of this.active.keys()) sessionIds.add(sessionId);
     for (const sessionId of sessionIds) {
       if (cleanupSessions.has(sessionId)) continue;

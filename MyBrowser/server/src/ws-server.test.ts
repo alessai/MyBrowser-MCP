@@ -30,6 +30,7 @@ import * as recordingTools from "./tools/record.js";
 import type { Tool } from "./tools/types.js";
 import {
   createWebSocketServer,
+  MAX_PENDING_RECORDING_PERSISTS_PER_SESSION,
   RecordingRetryRegistry,
   type WsServerOptions,
   type WsServerResult,
@@ -167,6 +168,34 @@ function waitForMessage(ws: WebSocket, timeoutMs = 1_000): Promise<Record<string
     };
     ws.once("message", onMessage);
     ws.once("error", reject);
+  });
+}
+
+function waitForMessages(
+  ws: WebSocket,
+  count: number,
+  timeoutMs = 1_000,
+): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const messages: Record<string, unknown>[] = [];
+    const timer = setTimeout(() => {
+      ws.off("message", onMessage);
+      reject(new Error(`Timed out waiting for ${count} WebSocket messages`));
+    }, timeoutMs);
+    const onMessage = (data: RawData) => {
+      try {
+        messages.push(JSON.parse(data.toString()) as Record<string, unknown>);
+        if (messages.length !== count) return;
+        clearTimeout(timer);
+        ws.off("message", onMessage);
+        resolve(messages);
+      } catch (error) {
+        clearTimeout(timer);
+        ws.off("message", onMessage);
+        reject(error);
+      }
+    };
+    ws.on("message", onMessage);
   });
 }
 
@@ -1555,6 +1584,154 @@ describe("acknowledged recording reservation messages", () => {
     registry.clearTerminated("session-a", "flow-a");
     expect(registry.count("session-a")).toBe(0);
     expect(registry.count()).toBe(0);
+  });
+
+  it.each([
+    ["identical", validRecording],
+    ["differing", { ...validRecording, url: "https://different.test/" }],
+  ] as const)("serializes concurrent %s persistence through reservation release", async (
+    label,
+    secondPayload,
+  ) => {
+    const base = mkdtempSync(join(tmpdir(), `mybrowser-recording-concurrent-${label}-`));
+    tempDirs.push(base);
+    const retryRegistry = new RecordingRetryRegistry();
+    const { server, extension } = await setupReservedRecording(
+      join(base, "recordings"), undefined, retryRegistry,
+    );
+    const releaseGate = deferred<void>();
+    const releaseOriginal = server.stateManager.releaseRecordingReservation.bind(server.stateManager);
+    const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
+      .mockImplementation(async (...args) => {
+        await releaseGate.promise;
+        return releaseOriginal(...args);
+      });
+    const responsesPromise = waitForMessages(extension, 2);
+
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "persist-first",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "persist-second",
+      sessionId: "session-a",
+      payload: secondPayload,
+    }));
+    await vi.waitFor(() => expect(release).toHaveBeenCalled());
+    releaseGate.resolve();
+
+    const responses = await responsesPromise;
+    expect(responses.find((response) => response.id === "persist-first")).toEqual({
+      type: "persistRecordingResult",
+      id: "persist-first",
+      ok: true,
+    });
+    expect(responses.find((response) => response.id === "persist-second")).toEqual({
+      type: "persistRecordingResult",
+      id: "persist-second",
+      ok: false,
+      error: "reservation unavailable",
+    });
+    expect(retryRegistry.count()).toBe(0);
+
+    const nextName = `Next_${label}`;
+    await expect(server.stateManager.reserveRecording("session-a", nextName, 1_800_000))
+      .resolves.toMatchObject({ ok: true, reservation: { name: nextName } });
+    await expect(persistRecordingMessage(extension, `persist-next-${label}`, {
+      ...validRecording,
+      name: nextName,
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: `persist-next-${label}`,
+      ok: true,
+    });
+  });
+
+  it("bounds each session persistence FIFO and returns a correlated overflow error", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-persist-bound-"));
+    tempDirs.push(base);
+    const retryRegistry = new RecordingRetryRegistry();
+    const { server, extension } = await setupReservedRecording(
+      join(base, "recordings"), undefined, retryRegistry,
+    );
+    const hasGate = deferred<void>();
+    const hasOriginal = server.stateManager.hasRecordingReservation.bind(server.stateManager);
+    let firstCheck = true;
+    vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockImplementation(async (...args) => {
+        if (firstCheck) {
+          firstCheck = false;
+          await hasGate.promise;
+        }
+        return hasOriginal(...args);
+      });
+    const overflowPromise = waitForMessage(extension);
+
+    for (let index = 1; index <= MAX_PENDING_RECORDING_PERSISTS_PER_SESSION + 1; index += 1) {
+      extension.send(JSON.stringify({
+        type: "persistRecording",
+        id: `persist-bounded-${index}`,
+        sessionId: "session-a",
+        payload: validRecording,
+      }));
+    }
+    await expect(overflowPromise).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: `persist-bounded-${MAX_PENDING_RECORDING_PERSISTS_PER_SESSION + 1}`,
+      ok: false,
+      error: "persistence busy",
+    });
+
+    const queuedResponses = waitForMessages(extension, 4);
+    hasGate.resolve();
+    const responses = await queuedResponses;
+    expect(responses.filter((response) => response.ok === true)).toHaveLength(1);
+    expect(responses.filter((response) => response.error === "reservation unavailable"))
+      .toHaveLength(3);
+    expect(retryRegistry.count()).toBe(0);
+  });
+
+  it("continues a session persistence FIFO after an individual rejection", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-persist-recovery-"));
+    tempDirs.push(base);
+    let failFirstWrite = true;
+    const retryRegistry = new RecordingRetryRegistry();
+    const { extension } = await setupReservedRecording(join(base, "recordings"), {
+      fchmodSync: (fd, mode) => {
+        if (failFirstWrite) {
+          failFirstWrite = false;
+          throw new Error("first queued write failed");
+        }
+        fchmodSync(fd, mode);
+      },
+    }, retryRegistry);
+    const responsesPromise = waitForMessages(extension, 2);
+
+    for (const id of ["persist-rejected-first", "persist-after-rejection"]) {
+      extension.send(JSON.stringify({
+        type: "persistRecording",
+        id,
+        sessionId: "session-a",
+        payload: validRecording,
+      }));
+    }
+
+    const responses = await responsesPromise;
+    expect(responses.find((response) => response.id === "persist-rejected-first")).toEqual({
+      type: "persistRecordingResult",
+      id: "persist-rejected-first",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(responses.find((response) => response.id === "persist-after-rejection")).toEqual({
+      type: "persistRecordingResult",
+      id: "persist-after-rejection",
+      ok: true,
+    });
+    expect(retryRegistry.count()).toBe(0);
   });
 
   it("renews a live matching reservation with a correlated acknowledgement", async () => {

@@ -66,6 +66,12 @@ interface RecordingRetryPayload {
 }
 
 export const MAX_UNRESOLVED_RECORDING_RETRIES_PER_SESSION = 1;
+export const MAX_PENDING_RECORDING_PERSISTS_PER_SESSION = 4;
+
+interface RecordingPersistQueue {
+  tail: Promise<void>;
+  pending: number;
+}
 
 export class RecordingRetryRegistry {
   private readonly bySession = new Map<string, RecordingRetryPayload>();
@@ -192,9 +198,47 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
   const stateManager = new LocalStateManager();
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
+  const recordingPersistQueues = new Map<string, RecordingPersistQueue>();
   stateManager.onRecordingReservationTerminated(({ sessionId, name }) => {
     recordingRetryRegistry.clearTerminated(sessionId, name);
   });
+
+  function enqueueRecordingPersist<T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> | undefined {
+    let queue = recordingPersistQueues.get(sessionId);
+    if (!queue) {
+      queue = { tail: Promise.resolve(), pending: 0 };
+      recordingPersistQueues.set(sessionId, queue);
+    }
+    if (queue.pending >= MAX_PENDING_RECORDING_PERSISTS_PER_SESSION) return undefined;
+    queue.pending += 1;
+    const currentQueue = queue;
+    const result = queue.tail.then(operation, operation);
+    queue.tail = result.then(() => undefined, () => undefined);
+    void result.then(
+      () => finishRecordingPersist(sessionId, currentQueue),
+      () => finishRecordingPersist(sessionId, currentQueue),
+    );
+    return result;
+  }
+
+  function finishRecordingPersist(sessionId: string, queue: RecordingPersistQueue): void {
+    queue.pending -= 1;
+    if (queue.pending === 0 && recordingPersistQueues.get(sessionId) === queue) {
+      recordingPersistQueues.delete(sessionId);
+    }
+  }
+
+  async function drainRecordingPersists(sessionId: string): Promise<void> {
+    const queue = recordingPersistQueues.get(sessionId);
+    if (!queue) return;
+    await queue.tail;
+    if (queue.pending === 0 && recordingPersistQueues.get(sessionId) === queue) {
+      recordingPersistQueues.delete(sessionId);
+    }
+  }
 
   // Wire up browser listing to context
   stateManager.setListBrowsersFn(() => context.listBrowsers());
@@ -219,6 +263,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         errors.push(e);
       }
     };
+    await step(() => drainRecordingPersists(sessionId));
     await step(() => stateManager.releaseAllTabs(sessionId));
     await step(() => stateManager.releaseLocksForSession(sessionId));
     await step(() => stateManager.clearEventHandlersForSession(sessionId));
@@ -638,71 +683,91 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           return;
         }
 
-        stateManager
-          .hasRecordingReservation(sessionId, rawRecordingName)
-          .then(async (hasReservation) => {
-            if (!hasReservation) {
-              safeSend(ws, {
-                type: "persistRecordingResult",
-                id: msg.id,
-                ok: false,
-                error: "reservation unavailable",
-              });
-              return;
-            }
-
-            let recording;
-            try {
-              recording = sanitizeRecording(msg.payload);
-              if (recording.name !== rawRecordingName) throw new Error("Invalid recording name");
-            } catch {
-              safeSend(ws, {
-                type: "persistRecordingResult",
-                id: msg.id,
-                ok: false,
-                error: "invalid request",
-              });
-              return;
-            }
-            const canonicalRecording = JSON.stringify(recording);
-
-            if (!recordingRetryRegistry.canRetain(sessionId, recording.name, canonicalRecording)) {
-              throw new Error("Recording recovery payload changed");
-            }
-            try {
-              saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
-              recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
-              const released = await stateManager.releaseRecordingReservation(
-                sessionId,
-                recording.name,
-              );
-              if (!released) {
-                const stillLive = await stateManager.hasRecordingReservation(
-                  sessionId,
-                  recording.name,
-                );
-                if (stillLive) throw new Error("Recording reservation release failed");
-              }
-            } catch (error) {
-              if (isRecordingDirectorySyncError(error)) {
-                recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
-              }
-              throw error;
-            }
-            safeSend(ws, {
-              type: "persistRecordingResult",
-              id: msg.id,
-              ok: true,
-            });
-          })
-          .catch(() => {
+        const persistence = enqueueRecordingPersist(sessionId, async () => {
+          if (!connectionSessions.hasLiveSession(sessionId)) {
             safeSend(ws, {
               type: "persistRecordingResult",
               id: msg.id,
               ok: false,
-              error: "persistence failed",
+              error: "reservation unavailable",
             });
+            return;
+          }
+          const hasReservation = await stateManager.hasRecordingReservation(
+            sessionId,
+            rawRecordingName,
+          );
+          if (!hasReservation) {
+            safeSend(ws, {
+              type: "persistRecordingResult",
+              id: msg.id,
+              ok: false,
+              error: "reservation unavailable",
+            });
+            return;
+          }
+
+          let recording;
+          try {
+            recording = sanitizeRecording(msg.payload);
+            if (recording.name !== rawRecordingName) throw new Error("Invalid recording name");
+          } catch {
+            safeSend(ws, {
+              type: "persistRecordingResult",
+              id: msg.id,
+              ok: false,
+              error: "invalid request",
+            });
+            return;
+          }
+          const canonicalRecording = JSON.stringify(recording);
+
+          if (!recordingRetryRegistry.canRetain(sessionId, recording.name, canonicalRecording)) {
+            throw new Error("Recording recovery payload changed");
+          }
+          try {
+            saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
+            recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
+            const released = await stateManager.releaseRecordingReservation(
+              sessionId,
+              recording.name,
+            );
+            if (!released) {
+              const stillLive = await stateManager.hasRecordingReservation(
+                sessionId,
+                recording.name,
+              );
+              if (stillLive) throw new Error("Recording reservation release failed");
+            }
+          } catch (error) {
+            if (isRecordingDirectorySyncError(error)) {
+              recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
+            }
+            throw error;
+          }
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: true,
           });
+        });
+        if (!persistence) {
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: false,
+            error: "persistence busy",
+          });
+          return;
+        }
+        void persistence.catch(() => {
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: false,
+            error: "persistence failed",
+          });
+        });
         return;
       }
 
