@@ -4,6 +4,10 @@
 // persistent port (chrome.runtime.connect) which wakes the SW on demand.
 
 import { addMessageHandler, sendToTab } from '../../lib/messaging';
+import {
+  GLOBAL_KEEPALIVE_ALARM_CONFIG,
+  GLOBAL_KEEPALIVE_ALARM_NAME,
+} from '../../lib/keepalive-policy';
 import { handleTool } from '../../lib/tools';
 import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
 import { RequestToolContext, resolveInitialTab } from '../../lib/request-context';
@@ -914,13 +918,13 @@ export default defineBackground(() => {
     }
   });
 
-  // Alarm every 25 seconds to:
+  // Alarm every 30 seconds (the Chrome 120+ periodic-alarm minimum) to:
   // 1. Keep the SW from being terminated (MV3 kills SW after ~30s idle)
   // 2. Verify offscreen doc is alive and WS is connected
   // 3. Recreate offscreen + reconnect if anything died
-  chrome.alarms.create('keepalive', { periodInMinutes: 25 / 60 });
+  chrome.alarms.create(GLOBAL_KEEPALIVE_ALARM_NAME, GLOBAL_KEEPALIVE_ALARM_CONFIG);
   chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === 'keepalive') {
+    if (alarm.name === GLOBAL_KEEPALIVE_ALARM_NAME) {
       try {
         await getRecordingManager().retryCleanupStates();
       } catch {
