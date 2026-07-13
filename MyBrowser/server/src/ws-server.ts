@@ -196,6 +196,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
   const stateManager = new LocalStateManager();
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
+  stateManager.onRecordingReservationTerminated(({ sessionId, name }) => {
+    recordingRetryRegistry.clearExpired(sessionId, name);
+  });
 
   // Wire up browser listing to context
   stateManager.setListBrowsersFn(() => context.listBrowsers());
@@ -224,7 +227,6 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     await step(() => stateManager.releaseLocksForSession(sessionId));
     await step(() => stateManager.clearEventHandlersForSession(sessionId));
     await step(() => stateManager.removeSession(sessionId));
-    recordingRetryRegistry.clearSession(sessionId);
     if (errors.length > 0) {
       throw new AggregateError(errors, `cleanupSession(${sessionId})`);
     }
@@ -269,11 +271,6 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   // for sessions that registered handlers via implicit single-browser
   // resolution.
   stateManager.setBroadcastToBrowsersFn((type, payload) => {
-    if (type === "recording_reservation_expired" && isRecord(payload)) {
-      const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
-      const name = typeof payload.name === "string" ? payload.name : "";
-      if (sessionId && name) recordingRetryRegistry.clearExpired(sessionId, name);
-    }
     const msg = JSON.stringify({
       id: `bcast_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
       type,
@@ -685,15 +682,12 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
                 sessionId,
                 recording.name,
               );
-              if (released) {
-                recordingRetryRegistry.clearSession(sessionId);
-              } else {
+              if (!released) {
                 const stillLive = await stateManager.hasRecordingReservation(
                   sessionId,
                   recording.name,
                 );
                 if (stillLive) throw new Error("Recording reservation release failed");
-                recordingRetryRegistry.clearSession(sessionId);
               }
             } catch (error) {
               if (isRecordingDirectorySyncError(error)) {

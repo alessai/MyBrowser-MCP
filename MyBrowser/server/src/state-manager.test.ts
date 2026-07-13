@@ -172,4 +172,45 @@ describe("LocalStateManager recording reservations", () => {
       name: "other",
     });
   });
+
+  it("emits canonical termination events only after confirmed ownership removal", async () => {
+    const state = new LocalStateManager();
+    const terminated = vi.fn();
+    const unsubscribe = (state as unknown as {
+      onRecordingReservationTerminated: (
+        listener: (event: { sessionId: string; name: string; reason: string }) => void,
+      ) => () => void;
+    }).onRecordingReservationTerminated(terminated);
+
+    await state.reserveRecording("session-a", "Checkout Flow", LEASE_MS);
+    await expect(state.releaseRecordingReservation("session-b", "Checkout_Flow"))
+      .resolves.toBe(false);
+    expect(terminated).not.toHaveBeenCalled();
+    await expect(state.releaseRecordingReservation("session-a", "Checkout_Flow"))
+      .resolves.toBe(true);
+    expect(terminated).toHaveBeenLastCalledWith({
+      sessionId: "session-a",
+      name: "Checkout_Flow",
+      reason: "released",
+    });
+
+    await state.reserveRecording("session-a", "expires", LEASE_MS);
+    vi.setSystemTime(Date.now() + LEASE_MS);
+    await expect(state.hasRecordingReservation("session-a", "expires")).resolves.toBe(false);
+    expect(terminated).toHaveBeenLastCalledWith({
+      sessionId: "session-a",
+      name: "expires",
+      reason: "expired",
+    });
+
+    await state.reserveRecording("session-a", "removed", LEASE_MS);
+    await state.removeSession("session-a");
+    expect(terminated).toHaveBeenLastCalledWith({
+      sessionId: "session-a",
+      name: "removed",
+      reason: "session_removed",
+    });
+    expect(terminated).toHaveBeenCalledTimes(3);
+    unsubscribe();
+  });
 });

@@ -71,12 +71,14 @@ class MemoryStorage implements RecordingStorage {
   failHas: Error | undefined;
   failSetKey: string | undefined;
   failSetKeyOnCall: number | undefined;
+  failSetManyOnCall: number | undefined;
   failRemoveKey: string | undefined;
   failRemoveMany: Error | undefined;
   readonly removeManyCalls: string[][] = [];
   readonly getBytesInUseCalls: string[][] = [];
   bytesInUseOverride: number | undefined;
   private readonly setCounts = new Map<string, number>();
+  private setManyCount = 0;
 
   constructor(events: string[] = []) {
     this.events = events;
@@ -126,8 +128,10 @@ class MemoryStorage implements RecordingStorage {
   }
 
   async setMany(values: Record<string, unknown>): Promise<void> {
+    this.setManyCount += 1;
     const entries = Object.entries(values);
-    if (this.failSet || entries.some(([key]) => this.failSetKey === key)) {
+    if (this.failSet || this.failSetManyOnCall === this.setManyCount
+      || entries.some(([key]) => this.failSetKey === key)) {
       throw this.failSet ?? new Error("SET_FAILED");
     }
     for (const [key, value] of entries) {
@@ -464,7 +468,73 @@ describe("RecordingManager privacy and ownership", () => {
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expect(scheduler.ensured).toBe(0);
+    expect(scheduler.cleanupEnsured).toBeGreaterThan(0);
+    expect(scheduler.cleanupCleared).toBeGreaterThan(0);
     expectAbsent({ message, snapshot: manager.snapshot() });
+  });
+
+  it("keeps failed-start cleanup counted across restart until removal succeeds", async () => {
+    const maxAggregateBytes = await minimumAggregateLimitForStarts(1);
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.failSetManyOnCall = 1;
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const scheduler = new FakeScheduler();
+    const current = createManager({
+      sessionStorage,
+      scheduler,
+      limits: { maxAggregateBytes },
+    });
+
+    await expect(current.manager.start(
+      "session-0", "flow-0", 1, "https://example.test",
+    )).rejects.toThrow("RECORDED_STATE_FAILED");
+    expect(current.manager.snapshot().active).toEqual([]);
+    expect(scheduler.cleanupSessions.has("session-0")).toBe(true);
+    expect((sessionStorage.values.get("active-recording:session-0") as {
+      status?: string;
+    }).status).toBe("cleanup");
+
+    const restarted = createManager({
+      sessionStorage,
+      scheduler,
+      limits: { maxAggregateBytes },
+    });
+    await expect(restarted.manager.start(
+      "session-1", "flow-1", 2, "https://example.test",
+    )).rejects.toThrow("RECORDING_STATE_LIMIT");
+
+    sessionStorage.failRemoveMany = undefined;
+    await restarted.manager.retryCleanupSession("session-0");
+    await expect(restarted.manager.start(
+      "session-1", "flow-1", 2, "https://example.test",
+    )).resolves.toBeUndefined();
+    expect(scheduler.cleanupSessions.has("session-0")).toBe(false);
+  });
+
+  it("falls back to persisted cleanup when failed-start alarm creation rejects", async () => {
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.failSetManyOnCall = 1;
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const scheduler = new FakeScheduler();
+    scheduler.failCleanupEnsure = new Error(`ALARM_EXPOSED_${SECRET_FORM}`);
+    const current = createManager({ sessionStorage, scheduler });
+
+    await expect(current.manager.start(
+      "session-a", "alarm-fallback", 11, "https://example.test",
+    )).rejects.toThrow("RECORDED_STATE_FAILED");
+    expect(scheduler.cleanupSessions.has("session-a")).toBe(false);
+    expect((sessionStorage.values.get("active-recording:session-a") as {
+      status?: string;
+    }).status).toBe("cleanup");
+
+    sessionStorage.failRemoveMany = undefined;
+    scheduler.failCleanupEnsure = undefined;
+    const restarted = createManager({ sessionStorage, scheduler });
+    await restarted.manager.retryCleanupStates();
+    expect(restarted.manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(current.transport.requests).toEqual([]);
   });
 
   it("rejects completed recordings with reverse maps or raw sensitive args", () => {

@@ -468,15 +468,8 @@ export class RecordingManager {
       try {
         await this.persistActiveUnlocked(state);
       } catch {
-        if (!await this.hasExactPersistedStateUnlocked(state)) {
-          this.active.delete(sessionId);
-          try {
-            await this.removeActiveStateUnlocked(sessionId);
-          } catch {
-            // A later restore rejects incomplete state before renewal.
-          }
-          throw new RecordedStateFailure();
-        }
+        await this.rollbackFailedStartPersistenceUnlocked(state);
+        throw new RecordedStateFailure();
       }
       try {
         await this.scheduler.ensureRenewal();
@@ -1037,19 +1030,13 @@ export class RecordingManager {
     });
   }
 
-  private async hasExactPersistedStateUnlocked(state: ActiveRecording): Promise<boolean> {
-    try {
-      const [stored, marker] = await Promise.all([
-        this.sessionStorage.get<unknown>(`${ACTIVE_PREFIX}${state.sessionId}`),
-        this.sessionStorage.get<unknown>(`${ACTIVE_MARKER_PREFIX}${state.sessionId}`),
-      ]);
-      return isActiveRecording(stored, state.sessionId)
-        && isRecordingMarker(marker, state.sessionId)
-        && JSON.stringify(stored) === JSON.stringify(state)
-        && marker.status === state.status;
-    } catch {
-      return false;
-    }
+  private async rollbackFailedStartPersistenceUnlocked(state: ActiveRecording): Promise<void> {
+    const cleanupState: ActiveRecording = { ...state, status: 'cleanup' };
+    this.closedSessions.add(state.sessionId);
+    this.active.delete(state.sessionId);
+    try { await this.scheduler.ensureCleanup(state.sessionId); } catch { /* persisted cleanup is fallback */ }
+    try { await this.persistActiveUnlocked(cleanupState); } catch { /* alarm or partial write remains authoritative */ }
+    await this.retryCleanupSessionUnlocked(state.sessionId);
   }
 
   private async persistedSessionIdsUnlocked(): Promise<string[]> {

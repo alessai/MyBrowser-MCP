@@ -106,6 +106,12 @@ export interface RecordingReservation {
   expiresAt: number;
 }
 
+export interface RecordingReservationTermination {
+  sessionId: string;
+  name: string;
+  reason: "released" | "expired" | "session_removed";
+}
+
 export const RECORDING_RESERVATION_LEASE_MS = 1_800_000;
 
 export function normalizeRecordingName(name: string): string {
@@ -318,6 +324,9 @@ export class LocalStateManager implements IStateManager {
 
   private recordingReservations = new Map<string, RecordingReservation>();
   private recordingReservationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private recordingReservationTerminationListeners = new Set<(
+    event: RecordingReservationTermination,
+  ) => void>();
 
   // Browser listing is delegated to the context — set by ws-server
   private _listBrowsersFn: () => BrowserInfo[] = () => [];
@@ -341,6 +350,13 @@ export class LocalStateManager implements IStateManager {
     this._broadcastToBrowsersFn = fn;
   }
 
+  onRecordingReservationTerminated(
+    listener: (event: RecordingReservationTermination) => void,
+  ): () => void {
+    this.recordingReservationTerminationListeners.add(listener);
+    return () => this.recordingReservationTerminationListeners.delete(listener);
+  }
+
   // -- Sessions --
 
   async registerSession(sessionId: string, name?: string): Promise<void> {
@@ -358,7 +374,7 @@ export class LocalStateManager implements IStateManager {
   async removeSession(sessionId: string): Promise<void> {
     for (const reservation of this.recordingReservations.values()) {
       if (reservation.sessionId === sessionId) {
-        this.clearRecordingReservation(reservation.name);
+        this.terminateRecordingReservation(reservation, "session_removed");
       }
     }
     this.sessions.delete(sessionId);
@@ -468,7 +484,7 @@ export class LocalStateManager implements IStateManager {
       return false;
     }
 
-    this.clearRecordingReservation(reservation.name);
+    this.terminateRecordingReservation(reservation, "expired");
     this._broadcastToBrowsersFn("recording_reservation_expired", {
       sessionId: reservation.sessionId,
       name: reservation.name,
@@ -487,6 +503,25 @@ export class LocalStateManager implements IStateManager {
     if (timer) clearTimeout(timer);
     this.recordingReservationTimers.delete(normalizedName);
     this.recordingReservations.delete(normalizedName);
+  }
+
+  private terminateRecordingReservation(
+    reservation: RecordingReservation,
+    reason: RecordingReservationTermination["reason"],
+  ): void {
+    this.clearRecordingReservation(reservation.name);
+    const event = {
+      sessionId: reservation.sessionId,
+      name: reservation.name,
+      reason,
+    } satisfies RecordingReservationTermination;
+    for (const listener of this.recordingReservationTerminationListeners) {
+      try {
+        listener(event);
+      } catch {
+        console.error("[MyBrowser MCP] RECORDING_RESERVATION_TERMINATION_HOOK_FAILED");
+      }
+    }
   }
 
   async reserveRecording(
@@ -545,7 +580,7 @@ export class LocalStateManager implements IStateManager {
     const existing = this.getLiveRecordingReservation(normalizedName);
     if (!existing || existing.sessionId !== sessionId) return false;
 
-    this.clearRecordingReservation(normalizedName);
+    this.terminateRecordingReservation(existing, "released");
     return true;
   }
 

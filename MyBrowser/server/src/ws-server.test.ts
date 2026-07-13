@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { Context } from "./context.js";
+import { HubStateManager } from "./hub-client.js";
 import { PROTOCOL_VERSION, WS_CLOSE } from "./protocol.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import * as recordingTools from "./tools/record.js";
@@ -256,6 +257,7 @@ async function setupReservedRecording(
 ): Promise<{
   server: WsServerResult;
   extension: WebSocket;
+  client: WebSocket;
 }> {
   const server = await startHub(recordingsDir, recordingFileOps, recordingRetryRegistry);
   const extension = await connect(server);
@@ -267,7 +269,7 @@ async function setupReservedRecording(
     name: validRecording.name,
     leaseMs: 1_800_000,
   });
-  return { server, extension };
+  return { server, extension, client };
 }
 
 async function persistRecordingMessage(
@@ -1696,6 +1698,82 @@ describe("acknowledged recording reservation messages", () => {
     expect(retryRegistry.count("session-a")).toBe(0);
   });
 
+  it("clears retained retry state through the HubStateManager release wrapper", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-wrapper-release-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    let directoryFd: number | undefined;
+    let failDirectorySync = true;
+    const retryRegistry = new RecordingRetryRegistry();
+    const { extension, client } = await setupReservedRecording(recordingsDir, {
+      openSync: ((path, flags, mode) => {
+        const fd = openSync(path, flags, mode);
+        if (path === recordingsDir) directoryFd = fd;
+        return fd;
+      }) as typeof openSync,
+      fsyncSync: ((fd: number) => {
+        if (failDirectorySync && fd === directoryFd) throw new Error("directory fsync failed");
+        fsyncSync(fd);
+      }) as typeof fsyncSync,
+    }, retryRegistry);
+
+    await expect(persistRecordingMessage(extension, "persist-wrapper-failure")).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-wrapper-failure",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(retryRegistry.count("session-a")).toBe(1);
+
+    const remoteState = new HubStateManager(() => client);
+    await expect(remoteState.releaseRecordingReservation("ignored", validRecording.name))
+      .resolves.toBe(true);
+    expect(retryRegistry.count("session-a")).toBe(0);
+
+    failDirectorySync = false;
+    await expect(remoteState.reserveRecording("ignored", "Different Flow", 1_800_000))
+      .resolves.toMatchObject({ ok: true, reservation: { name: "Different_Flow" } });
+    await expect(persistRecordingMessage(extension, "persist-different-after-release", {
+      ...validRecording,
+      name: "Different_Flow",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-different-after-release",
+      ok: true,
+    });
+  });
+
+  it("clears retained retry state on exact expiry and removeSession cleanup", async () => {
+    const expiryBase = mkdtempSync(join(tmpdir(), "mybrowser-recording-expiry-clear-"));
+    tempDirs.push(expiryBase);
+    const expiryRegistry = new RecordingRetryRegistry();
+    const expirySetup = await setupReservedRecording(
+      join(expiryBase, "recordings"), undefined, expiryRegistry,
+    );
+    expect(expiryRegistry.retain(
+      "session-a", validRecording.name, JSON.stringify(validRecording),
+    )).toBe(true);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now + 1_800_000);
+    await expect(expirySetup.server.stateManager.hasRecordingReservation(
+      "session-a", validRecording.name,
+    )).resolves.toBe(false);
+    dateNow.mockRestore();
+    expect(expiryRegistry.count("session-a")).toBe(0);
+
+    const removalBase = mkdtempSync(join(tmpdir(), "mybrowser-recording-session-clear-"));
+    tempDirs.push(removalBase);
+    const removalRegistry = new RecordingRetryRegistry();
+    const removalSetup = await setupReservedRecording(
+      join(removalBase, "recordings"), undefined, removalRegistry,
+    );
+    expect(removalRegistry.retain(
+      "session-a", validRecording.name, JSON.stringify(validRecording),
+    )).toBe(true);
+    await removalSetup.server.stateManager.removeSession("session-a");
+    expect(removalRegistry.count("session-a")).toBe(0);
+  });
+
   it("does not retain a canonical payload after a failed persist and wrapper release", async () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-recovery-"));
     tempDirs.push(base);
@@ -1811,7 +1889,10 @@ describe("acknowledged recording reservation messages", () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-release-reject-"));
     tempDirs.push(base);
     const recordingsDir = join(base, "recordings");
-    const { server, extension } = await setupReservedRecording(recordingsDir);
+    const retryRegistry = new RecordingRetryRegistry();
+    const { server, extension } = await setupReservedRecording(
+      recordingsDir, undefined, retryRegistry,
+    );
     const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
       .mockRejectedValue(new Error("state unavailable"));
 
@@ -1822,11 +1903,23 @@ describe("acknowledged recording reservation messages", () => {
       error: "persistence failed",
     });
     expect(existsSync(join(recordingsDir, "Checkout_Flow.json"))).toBe(true);
+    expect(retryRegistry.count("session-a")).toBe(1);
+    await expect(persistRecordingMessage(extension, "persist-release-reject-different", {
+      ...validRecording,
+      url: "https://different.test/",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-release-reject-different",
+      ok: false,
+      error: "persistence failed",
+    });
+    expect(retryRegistry.count("session-a")).toBe(1);
 
     release.mockRestore();
     await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
       .resolves.toBe(true);
     await server.stateManager.releaseRecordingReservation("session-a", validRecording.name);
+    expect(retryRegistry.count("session-a")).toBe(0);
   });
 
   it("returns a redacted correlated error for the wrong live owner without writing", async () => {
