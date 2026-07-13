@@ -1273,14 +1273,9 @@ describe("recording tools and persistence", () => {
       recordingsDir,
       recordingFileOps({ closeSync: close, fsyncSync: fsync }),
     )).toThrow("injected existing fsync failure");
-    expect(fsync).toHaveBeenCalledTimes(2);
-    expect(close).toHaveBeenCalledTimes(2);
-    const verifiedFileFd = open.mock.results[1]?.value;
-    const directoryFd = open.mock.results[2]?.value;
-    expect(fsync.mock.calls.map(([fd]) => fd)).toEqual([verifiedFileFd, directoryFd]);
-    expect(close.mock.calls.map(([fd]) => fd)).toEqual([verifiedFileFd, directoryFd]);
+    expect(fsync).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
     expect(fsync.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
-    expect(fsync.mock.invocationCallOrder[1]).toBeLessThan(close.mock.invocationCallOrder[1]!);
   });
 
   it("fsyncs and closes an identical existing artifact before durable retry succeeds", () => {
@@ -1313,9 +1308,14 @@ describe("recording tools and persistence", () => {
       recordingsDir,
       recordingFileOps({ closeSync: close, fsyncSync: fsync, openSync: open }),
     )).toBe("existing-identical");
-    expect(fsync).toHaveBeenCalledTimes(1);
-    expect(close).toHaveBeenCalledTimes(1);
+    expect(fsync).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(2);
+    const verifiedFileFd = open.mock.results[1]?.value;
+    const directoryFd = open.mock.results[2]?.value;
+    expect(fsync.mock.calls.map(([fd]) => fd)).toEqual([verifiedFileFd, directoryFd]);
+    expect(close.mock.calls.map(([fd]) => fd)).toEqual([verifiedFileFd, directoryFd]);
     expect(fsync.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
+    expect(fsync.mock.invocationCallOrder[1]).toBeLessThan(close.mock.invocationCallOrder[1]!);
     const existingOpenFlags = open.mock.calls[1]?.[1];
     expect(typeof existingOpenFlags).toBe("number");
     if (typeof fsConstants.O_NOFOLLOW === "number") {
