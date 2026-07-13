@@ -1252,6 +1252,17 @@ describe("runRecordedAction", () => {
     expectAbsent({ error, failure, issue: getRecentExtensionIssues(1)[0] });
   });
 
+  it("allowlists recording failure stages before writing diagnostics", () => {
+    const failure = reportToolFailure(
+      new RecordedStateFailure(`UNSAFE_STAGE_${SECRET_TEXT}`),
+      { requestId: "req-unsafe-stage", toolType: "browser_click" },
+    );
+
+    expect(failure.responseError).toBe("RECORDED_STATE_FAILED");
+    expect(getRecentExtensionIssues(1)[0]?.details).toMatchObject({ recordingStage: "unknown" });
+    expectAbsent({ failure, issue: getRecentExtensionIssues(1)[0] });
+  });
+
   it("preflights before invoking the browser handler", async () => {
     const { manager } = createManager({
       limits: { maxSteps: 0, maxRecordingBytes: 20_000, maxAggregateBytes: 30_000 },
@@ -1588,8 +1599,8 @@ describe("RecordingManager restart and stop persistence", () => {
     ]);
   });
 
-  it("cleans quarantined restart candidates on false or failed validation without recording", async () => {
-    for (const response of [{ ok: false }, new Error(`RENEW_FAILED_${SECRET_TEXT}`)]) {
+  it("cleans quarantined restart candidates on explicit rejection without recording", async () => {
+    for (const response of [{ ok: false }]) {
       const sessionStorage = new MemoryStorage();
       const first = createManager({ sessionStorage });
       await first.manager.start("session-a", "quarantine-reject", 11, "https://example.test");
@@ -1609,6 +1620,73 @@ describe("RecordingManager restart and stop persistence", () => {
       expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
       expectAbsent({ storage: sessionStorage.writes, requests: transport.requests });
     }
+  });
+
+  it("retains quarantined state after an ambiguous renewal failure and retries without side effects", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "renew-retry", 11, "https://example.test");
+
+    const transport = new FakeTransport();
+    transport.responses.push(new Error(`RENEW_FAILED_${SECRET_TEXT}`), { ok: true });
+    const restarted = createManager({ sessionStorage, transport });
+
+    await expect(restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).rejects.toMatchObject({ stage: "renew_transport" });
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+
+    expect(await restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).not.toBeNull();
+    expect(transport.requests.map((request) => request.type)).toEqual([
+      "renewRecordingReservation",
+      "renewRecordingReservation",
+    ]);
+    expectAbsent({ storage: sessionStorage.writes, requests: transport.requests });
+  });
+
+  it("retains quarantined state when promotion persistence fails and retries authority", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "promotion-retry", 11, "https://example.test");
+    sessionStorage.failSetManyOnCall = 2;
+
+    const restarted = createManager({ sessionStorage });
+    await expect(restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).rejects.toMatchObject({ stage: "promote_session" });
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+
+    sessionStorage.failSetManyOnCall = undefined;
+    expect(await restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).not.toBeNull();
+    expect(restarted.transport.requests.map((request) => request.type)).toEqual([
+      "renewRecordingReservation",
+      "renewRecordingReservation",
+    ]);
+  });
+
+  it("keeps quarantined state retryable when periodic renewal is ambiguous", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "periodic-retry", 11, "https://example.test");
+
+    const transport = new FakeTransport();
+    transport.responses.push(new Error("SERVER_UNAVAILABLE"), { ok: true });
+    const restarted = createManager({ sessionStorage, transport });
+    await restarted.manager.renewPersistedSessions();
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+
+    await restarted.manager.renewPersistedSessions();
+    expect(await restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).not.toBeNull();
+    expect(transport.requests.map((request) => request.type)).toEqual([
+      "renewRecordingReservation",
+      "renewRecordingReservation",
+    ]);
   });
 
   it("tombstones session closure before cleanup persistence and blocks current-worker renewal", async () => {

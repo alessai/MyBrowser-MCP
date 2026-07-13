@@ -1,6 +1,15 @@
 import { recordExtensionIssue } from './diagnostics';
 import { isRecordedActionFailure, isRecordedStateFailure } from './recorder';
 
+const SAFE_RECORDING_STAGES = new Set([
+  'unknown',
+  'restore_all',
+  'restore_session',
+  'renew_session',
+  'renew_transport',
+  'promote_session',
+]);
+
 export interface ToolFailureMetadata {
   requestId: string;
   toolType: string;
@@ -39,7 +48,9 @@ export function reportToolFailure(
     toolType: metadata.toolType,
     category,
     recorded: recorded || recordedState,
-    ...(recordedState ? { recordingStage: error.stage } : {}),
+    ...(recordedState ? {
+      recordingStage: SAFE_RECORDING_STAGES.has(error.stage) ? error.stage : 'unknown',
+    } : {}),
   });
   return {
     responseError: recorded || recordedState

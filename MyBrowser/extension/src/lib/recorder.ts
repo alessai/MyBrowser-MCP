@@ -862,28 +862,27 @@ export class RecordingManager {
           continue;
         }
         if (active.status !== 'active' && active.status !== 'quarantined') continue;
+        if (this.closedSessions.has(sessionId)) {
+          await this.finishStopUnlocked(sessionId);
+          continue;
+        }
+        if (active.status === 'quarantined') {
+          try {
+            await this.ensureSessionAuthorityUnlocked(sessionId);
+          } catch {
+            // Explicit rejection cleans the candidate; ambiguous failures retain it for retry.
+          }
+          continue;
+        }
         try {
           const response = await this.transport.request('renewRecordingReservation', {
             sessionId,
             name: active.recording.name,
           }, SERVER_TIMEOUT_MS);
-          if (this.closedSessions.has(sessionId)
-            || !isRecord(response)
-            || response.ok !== true) {
+          if (!isRecord(response) || response.ok !== true) {
             await this.finishStopUnlocked(sessionId);
-          } else if (active.status === 'quarantined') {
-            const promoted: ActiveRecording = { ...active, status: 'active' };
-            this.active.set(sessionId, promoted);
-            try {
-              await this.persistActiveUnlocked(promoted);
-            } catch {
-              await this.finishStopUnlocked(sessionId);
-            }
           }
         } catch {
-          if (active.status === 'quarantined' || this.closedSessions.has(sessionId)) {
-            await this.finishStopUnlocked(sessionId);
-          }
           // Same-worker active state retains its existing authority on transient renewal failure.
         }
       }
@@ -1061,17 +1060,16 @@ export class RecordingManager {
     const active = this.active.get(sessionId);
     if (!active || active.status !== 'quarantined') return active;
 
-    let renewed = false;
+    let response: unknown;
     try {
-      const response = await this.transport.request('renewRecordingReservation', {
+      response = await this.transport.request('renewRecordingReservation', {
         sessionId,
         name: active.recording.name,
       }, SERVER_TIMEOUT_MS);
-      renewed = isRecord(response) && response.ok === true;
     } catch {
-      renewed = false;
+      throw new RecordedStateFailure('renew_transport');
     }
-    if (!renewed) {
+    if (!isRecord(response) || response.ok !== true) {
       await this.finishStopUnlocked(sessionId);
       throw new RecordedStateFailure('renew_session');
     }
@@ -1081,7 +1079,7 @@ export class RecordingManager {
     try {
       await this.persistActiveUnlocked(promoted);
     } catch {
-      await this.finishStopUnlocked(sessionId);
+      this.active.set(sessionId, active);
       throw new RecordedStateFailure('promote_session');
     }
     return promoted;
