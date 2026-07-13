@@ -843,6 +843,107 @@ describe("RecordingManager privacy and ownership", () => {
     expectAbsent(manager.snapshot());
   });
 
+  it("preserves two cross-tab replay tokens across stop and replacement recording", async () => {
+    const { manager } = createManager();
+    await manager.start("session-a", "first-flow", 11, "https://example.test/first");
+    const firstTabReplay = manager.beginReplay("session-a");
+    const secondTabReplay = manager.beginReplay("session-a");
+
+    await expect(manager.stop("session-a")).resolves.toMatchObject({
+      extensionSaved: true,
+      serverSaved: true,
+    });
+    expect(manager.snapshot().replayingSessions).toEqual(["session-a"]);
+    await manager.start("session-a", "replacement-flow", 22, "https://example.test/replacement");
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+
+    manager.endReplay("session-a", firstTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", secondTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .not.toBeNull();
+  });
+
+  it("preserves replay tokens through hidden cleanup and its retry", async () => {
+    const { manager, sessionStorage } = createManager();
+    await manager.start("session-a", "cleanup-flow", 11, "https://example.test/cleanup");
+    const firstTabReplay = manager.beginReplay("session-a");
+    const secondTabReplay = manager.beginReplay("session-a");
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+
+    await expect(manager.stop("session-a")).resolves.toMatchObject({
+      error: "ACTIVE_STATE_CLEANUP_FAILED",
+    });
+    expect(manager.snapshot().replayingSessions).toEqual(["session-a"]);
+    await expect(manager.start(
+      "session-a",
+      "blocked-during-cleanup",
+      22,
+      "https://example.test/blocked",
+    )).rejects.toThrow("ACTIVE_RECORDING_EXISTS");
+
+    sessionStorage.failRemoveMany = undefined;
+    await manager.retryCleanupStates();
+    expect(manager.snapshot().replayingSessions).toEqual(["session-a"]);
+    await manager.start("session-a", "after-cleanup", 22, "https://example.test/after");
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", firstTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", secondTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .not.toBeNull();
+  });
+
+  it("preserves replay tokens through failed-start rollback", async () => {
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.failSetManyOnCall = 1;
+    const { manager } = createManager({ sessionStorage });
+    const firstTabReplay = manager.beginReplay("session-a");
+    const secondTabReplay = manager.beginReplay("session-a");
+
+    await expect(manager.start(
+      "session-a",
+      "failed-start",
+      11,
+      "https://example.test/failed",
+    )).rejects.toThrow("RECORDED_STATE_FAILED");
+    expect(manager.snapshot().replayingSessions).toEqual(["session-a"]);
+
+    sessionStorage.failSetManyOnCall = undefined;
+    await manager.start("session-a", "retry-start", 22, "https://example.test/retry");
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", firstTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", secondTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .not.toBeNull();
+  });
+
+  it("preserves replay tokens through reservation expiry cleanup", async () => {
+    const { manager } = createManager();
+    await manager.start("session-a", "expiring-flow", 11, "https://example.test/expiring");
+    const firstTabReplay = manager.beginReplay("session-a");
+    const secondTabReplay = manager.beginReplay("session-a");
+
+    await manager.expireReservation("session-a", "expiring-flow");
+    expect(manager.snapshot().replayingSessions).toEqual(["session-a"]);
+    await manager.start("session-a", "after-expiry", 22, "https://example.test/after");
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", firstTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-a", secondTabReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 22))
+      .not.toBeNull();
+  });
+
   it("stores and returns only placeholders and generic required-variable hints", async () => {
     const { manager, sessionStorage, localStorage, transport } = createManager();
     await manager.start("session-a", "checkout", 11, `https://example.test/start?token=${SECRET_URL}`);

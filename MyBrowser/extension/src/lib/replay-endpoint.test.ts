@@ -48,9 +48,14 @@ describe("browser_replay endpoint action privacy", () => {
 
   it.each([
     {
-      label: "placeholder",
-      action: "{{tool}}",
-      variables: { tool: VARIABLE_CANARY },
+      label: "supplied placeholder",
+      action: `{{${ACTION_CANARY}}}`,
+      variables: { [ACTION_CANARY]: VARIABLE_CANARY },
+    },
+    {
+      label: "missing placeholder",
+      action: `{{${ACTION_CANARY}}}`,
+      variables: {},
     },
     {
       label: "unknown",
@@ -97,11 +102,11 @@ describe("browser_replay endpoint action privacy", () => {
     expect(observable).not.toContain(VARIABLE_CANARY);
   });
 
-  it("reports all missing variables before rejecting an unknown action", async () => {
+  it("reports all missing variables from valid args in sorted order", async () => {
     const { context, getTabId } = effectTrackingContext();
 
     await expect(handleTool("browser_replay", {
-      recording: recordingWithAction(`browser_${ACTION_CANARY}`, {
+      recording: recordingWithAction("browser_type", {
         text: "{{zeta}}/{{alpha}}",
       }),
       tabId: 7,

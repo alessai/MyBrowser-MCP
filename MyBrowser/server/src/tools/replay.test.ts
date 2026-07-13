@@ -15,6 +15,7 @@ import { redactReplayArguments, replay } from "./replay.js";
 
 const SECRET_NAVIGATION = "https://example.test/private?token=SECRET_REPLAY_SERVER_9012";
 const SECRET_INPUT = "SECRET_REPLAY_SERVER_3478";
+const SECRET_SCOPE = "SECRET_REPLAY_ACTION_SCOPE_6428";
 
 function validRecording() {
   return {
@@ -101,6 +102,73 @@ describe("server replay preflight", () => {
       startFromStep: 2,
       stopAtStep: 2,
     })).rejects.toThrow("REPLAY_VARIABLES_MISSING: input_2,navigation_1");
+    expect(sendSocketMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["supplied", "missing"])(
+    "rejects a %s action placeholder generically without canary disclosure",
+    async (variableState) => {
+      const candidate = validRecording();
+      candidate.steps[0]!.action = `{{${SECRET_SCOPE}}}`;
+      mocks.loadRecordingFromFile.mockReturnValue(candidate);
+      const sendSocketMessage = vi.fn();
+      let message = "";
+
+      try {
+        await replay.handle(context(sendSocketMessage), {
+          name: "replay-test",
+          tabId: 7,
+          variables: variableState === "supplied"
+            ? { [SECRET_SCOPE]: SECRET_INPUT, input_2: SECRET_INPUT }
+            : {},
+        });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toBe("RECORDING_INVALID");
+      expect(JSON.stringify({ message, calls: sendSocketMessage.mock.calls }))
+        .not.toContain(SECRET_SCOPE);
+      expect(sendSocketMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not interpret nested args.action as a tab transition", async () => {
+    const candidate = validRecording();
+    (candidate.steps[1] as { args: Record<string, unknown> }).args = {
+      text: "{{input_2}}",
+      action: "close_tab",
+    };
+    mocks.loadRecordingFromFile.mockReturnValue(candidate);
+    const sendSocketMessage = vi.fn();
+
+    await expect(replay.handle(context(sendSocketMessage), {
+      name: "replay-test",
+      tabId: 7,
+      variables: { navigation_1: SECRET_NAVIGATION, input_2: SECRET_INPUT },
+    })).rejects.toThrowError("RECORDING_INVALID");
+    expect(sendSocketMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not report placeholders from recording metadata as missing variables", async () => {
+    const candidate = validRecording();
+    candidate.name = `{{${SECRET_SCOPE}}}`;
+    mocks.loadRecordingFromFile.mockReturnValue(candidate);
+    const sendSocketMessage = vi.fn();
+    let message = "";
+
+    try {
+      await replay.handle(context(sendSocketMessage), {
+        name: "replay-test",
+        tabId: 7,
+        variables: { navigation_1: SECRET_NAVIGATION, input_2: SECRET_INPUT },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toBe("RECORDING_INVALID");
+    expect(message).not.toContain(SECRET_SCOPE);
     expect(sendSocketMessage).not.toHaveBeenCalled();
   });
 

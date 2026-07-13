@@ -2,6 +2,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Tool } from "./types.js";
 import {
+  SERVER_RECORDING_STRING_METADATA,
   loadRecordingFromFile,
   sanitizeRecording,
   type SanitizedRecording,
@@ -55,23 +56,6 @@ function isSafeContainer(value: object): boolean {
     : prototype === Object.prototype || prototype === null;
 }
 
-function hasUnsupportedAction(value: unknown, active = new WeakSet<object>()): boolean {
-  if (typeof value !== "object" || value === null || active.has(value)) return false;
-  active.add(value);
-  try {
-    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-      if (!descriptor.enumerable || !("value" in descriptor)) continue;
-      if (key === "action"
-        && typeof descriptor.value === "string"
-        && UNSUPPORTED_TAB_ACTIONS.has(descriptor.value)) return true;
-      if (hasUnsupportedAction(descriptor.value, active)) return true;
-    }
-    return false;
-  } finally {
-    active.delete(value);
-  }
-}
-
 function collectPlaceholders(
   value: unknown,
   names: Set<string>,
@@ -109,6 +93,41 @@ function collectPlaceholders(
   }
 }
 
+function validateLiteralActions(recording: unknown): void {
+  if (typeof recording !== "object" || recording === null || Array.isArray(recording)) {
+    throw new Error("RECORDING_INVALID");
+  }
+  const stepsDescriptor = Object.getOwnPropertyDescriptor(recording, "steps");
+  if (!stepsDescriptor || !("value" in stepsDescriptor) || !Array.isArray(stepsDescriptor.value)) {
+    throw new Error("RECORDING_INVALID");
+  }
+  let malformed = false;
+  let unsupported = false;
+  for (let index = 0; index < stepsDescriptor.value.length; index += 1) {
+    const stepDescriptor = Object.getOwnPropertyDescriptor(stepsDescriptor.value, String(index));
+    if (!stepDescriptor || !("value" in stepDescriptor)
+      || typeof stepDescriptor.value !== "object"
+      || stepDescriptor.value === null
+      || Array.isArray(stepDescriptor.value)) {
+      malformed = true;
+      continue;
+    }
+    const actionDescriptor = Object.getOwnPropertyDescriptor(stepDescriptor.value, "action");
+    if (!actionDescriptor || !("value" in actionDescriptor)
+      || typeof actionDescriptor.value !== "string") {
+      malformed = true;
+      continue;
+    }
+    if (UNSUPPORTED_TAB_ACTIONS.has(actionDescriptor.value)) unsupported = true;
+    else if (!Object.prototype.hasOwnProperty.call(
+      SERVER_RECORDING_STRING_METADATA,
+      actionDescriptor.value,
+    )) malformed = true;
+  }
+  if (unsupported) throw new Error("RECORDING_UNSUPPORTED_MULTI_TAB");
+  if (malformed) throw new Error("RECORDING_INVALID");
+}
+
 function validateStepRange(
   totalSteps: number,
   startFromStep: number | undefined,
@@ -132,20 +151,18 @@ function preflightServerReplay(
   stopAtStep: number | undefined,
 ): SanitizedRecording {
   try {
-    if (hasUnsupportedAction(recording)) {
-      throw new Error("RECORDING_UNSUPPORTED_MULTI_TAB");
-    }
-    const placeholders = new Set<string>();
-    collectPlaceholders(recording, placeholders);
-    const supplied = new Set(Object.keys(variables ?? {}));
-    const missing = [...placeholders].filter((name) => !supplied.has(name)).sort();
-    if (missing.length > 0) throw new Error(`REPLAY_VARIABLES_MISSING: ${missing.join(",")}`);
+    validateLiteralActions(recording);
     let sanitized: SanitizedRecording;
     try {
       sanitized = sanitizeRecording(recording);
     } catch {
       throw new Error("RECORDING_INVALID");
     }
+    const placeholders = new Set<string>();
+    for (const step of sanitized.steps) collectPlaceholders(step.args, placeholders);
+    const supplied = new Set(Object.keys(variables ?? {}));
+    const missing = [...placeholders].filter((name) => !supplied.has(name)).sort();
+    if (missing.length > 0) throw new Error(`REPLAY_VARIABLES_MISSING: ${missing.join(",")}`);
     validateStepRange(sanitized.steps.length, startFromStep, stopAtStep);
     return sanitized;
   } catch (error) {

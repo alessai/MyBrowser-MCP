@@ -1101,7 +1101,6 @@ export class RecordingManager {
     this.persistedFootprints.delete(sessionId);
     this.cleanupFallbackSessions.delete(sessionId);
     this.active.delete(sessionId);
-    this.replayTokens.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1205,7 +1204,6 @@ export class RecordingManager {
   private hideSessionForCleanupUnlocked(sessionId: string): void {
     this.closedSessions.add(sessionId);
     this.active.delete(sessionId);
-    this.replayTokens.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }

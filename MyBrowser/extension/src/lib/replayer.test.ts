@@ -110,7 +110,7 @@ describe("replay preflight", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("reports every missing placeholder from the full recording in sorted order", async () => {
+  it("reports every missing placeholder from valid step args in sorted order", async () => {
     const candidate = recording([
       step("browser_type", { text: "{{zeta}}" }),
       step("browser_assert", {
@@ -132,14 +132,30 @@ describe("replay preflight", () => {
     expect(mocks.handleTool).not.toHaveBeenCalled();
   });
 
+  it("does not collect or substitute placeholders from recording metadata", () => {
+    const candidate = recording([step("browser_go_back")]);
+    candidate.name = `{{${SECRET_ALPHA}}}`;
+
+    expect(preflightReplay(candidate, {})).toEqual([step("browser_go_back")]);
+    expect(candidate.name).toBe(`{{${SECRET_ALPHA}}}`);
+  });
+
+  it("treats nested args.action as argument data rather than a tab transition", () => {
+    const candidate = recording([
+      step("browser_type", { text: "safe", action: "close_tab" }),
+    ]);
+
+    expect(() => preflightReplay(candidate, {})).toThrowError("RECORDING_INVALID");
+  });
+
   it("substitutes recursively into prototype-safe clones without changing the source", () => {
     const args = {
-      text: "{{alpha}} + {{beta}}",
-      nested: {
-        values: ["{{beta}}", { value: "before {{alpha}} after" }],
-      },
+      checks: [
+        { type: "text_contains", value: "{{alpha}} + {{beta}}" },
+        { type: "text_contains", value: "before {{alpha}} after" },
+      ],
     };
-    const candidate = recording([step("browser_type", args)]);
+    const candidate = recording([step("browser_assert", args)]);
     const original = structuredClone(candidate);
 
     const prepared = preflightReplay(candidate, {
@@ -148,18 +164,18 @@ describe("replay preflight", () => {
       ignored: "SECRET_UNUSED_7721",
     });
 
-    expect(prepared).toEqual([step("browser_type", {
-      text: `${SECRET_ALPHA} + ${SECRET_BETA}`,
-      nested: {
-        values: [SECRET_BETA, { value: `before ${SECRET_ALPHA} after` }],
-      },
+    expect(prepared).toEqual([step("browser_assert", {
+      checks: [
+        { type: "text_contains", value: `${SECRET_ALPHA} + ${SECRET_BETA}` },
+        { type: "text_contains", value: `before ${SECRET_ALPHA} after` },
+      ],
     })]);
     expect(candidate).toEqual(original);
     expect(prepared).not.toBe(candidate.steps);
     expect(prepared[0]).not.toBe(candidate.steps[0]);
     expect(prepared[0]?.args).not.toBe(candidate.steps[0]?.args);
     expect(Object.getPrototypeOf(prepared[0]?.args)).toBeNull();
-    expect(Object.getPrototypeOf(prepared[0]?.args.nested)).toBeNull();
+    expect(Object.getPrototypeOf((prepared[0]?.args.checks as unknown[])[0])).toBeNull();
   });
 
   it("rejects malformed placeholders and unsafe object shapes generically", () => {
