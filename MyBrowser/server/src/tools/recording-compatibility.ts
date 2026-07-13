@@ -24,6 +24,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 class RecordingActionScanner {
   private index = 0;
+  private malformed = false;
+  private unsupported = false;
 
   constructor(private readonly source: string) {}
 
@@ -33,26 +35,32 @@ class RecordingActionScanner {
       this.parseRoot();
       this.skipWhitespace();
       if (this.index !== this.source.length) throw new Error("invalid");
-      return { compatible: true };
-    } catch (error) {
-      return error instanceof Error && error.message === "unsupported"
-        ? { compatible: false, reason: "RECORDING_UNSUPPORTED_MULTI_TAB" }
-        : { compatible: false, reason: "RECORDING_INVALID" };
+    } catch {
+      this.malformed = true;
     }
+    if (this.unsupported) {
+      return { compatible: false, reason: "RECORDING_UNSUPPORTED_MULTI_TAB" };
+    }
+    return this.malformed
+      ? { compatible: false, reason: "RECORDING_INVALID" }
+      : { compatible: true };
   }
 
   private parseRoot(): void {
     this.expect("{");
     this.skipWhitespace();
     let sawSteps = false;
-    if (this.consume("}")) throw new Error("invalid");
+    if (this.consume("}")) {
+      this.malformed = true;
+      return;
+    }
     while (true) {
       const key = this.parseString(true);
       this.skipWhitespace();
       this.expect(":");
       this.skipWhitespace();
       if (key === "steps") {
-        if (sawSteps) throw new Error("invalid");
+        if (sawSteps) this.malformed = true;
         sawSteps = true;
         this.parseSteps();
       } else {
@@ -63,7 +71,7 @@ class RecordingActionScanner {
       this.expect(",");
       this.skipWhitespace();
     }
-    if (!sawSteps) throw new Error("invalid");
+    if (!sawSteps) this.malformed = true;
   }
 
   private parseSteps(): void {
@@ -71,7 +79,11 @@ class RecordingActionScanner {
     this.skipWhitespace();
     if (this.consume("]")) return;
     while (true) {
-      this.parseStep();
+      if (this.source[this.index] === "{") this.parseStep();
+      else {
+        this.malformed = true;
+        this.skipValue();
+      }
       this.skipWhitespace();
       if (this.consume("]")) return;
       this.expect(",");
@@ -83,17 +95,25 @@ class RecordingActionScanner {
     this.expect("{");
     this.skipWhitespace();
     let sawAction = false;
-    if (this.consume("}")) throw new Error("invalid");
+    if (this.consume("}")) {
+      this.malformed = true;
+      return;
+    }
     while (true) {
       const key = this.parseString(true);
       this.skipWhitespace();
       this.expect(":");
       this.skipWhitespace();
       if (key === "action") {
-        if (sawAction) throw new Error("invalid");
+        if (sawAction) this.malformed = true;
         sawAction = true;
-        const action = this.parseString(true);
-        if (UNSUPPORTED_REPLAY_ACTIONS.has(action)) throw new Error("unsupported");
+        if (this.source[this.index] === "\"") {
+          const action = this.parseString(true);
+          if (UNSUPPORTED_REPLAY_ACTIONS.has(action)) this.unsupported = true;
+        } else {
+          this.malformed = true;
+          this.skipValue();
+        }
       } else {
         this.skipValue();
       }
@@ -102,7 +122,7 @@ class RecordingActionScanner {
       this.expect(",");
       this.skipWhitespace();
     }
-    if (!sawAction) throw new Error("invalid");
+    if (!sawAction) this.malformed = true;
   }
 
   private skipValue(): void {
@@ -201,13 +221,22 @@ class RecordingActionScanner {
   }
 }
 
-export function inspectRecordingFile(filePath: string): Omit<RecordingListEntry, "name"> {
+export function inspectRecordingFile(
+  filePath: string,
+  expectedName: string,
+  validate: (value: unknown) => { name: string },
+): Omit<RecordingListEntry, "name"> {
   try {
     const source = readFileSync(filePath, "utf8");
     if (Buffer.byteLength(source, "utf8") > MAX_RECORDING_BYTES) {
       return { compatible: false, reason: "RECORDING_INVALID" };
     }
-    return new RecordingActionScanner(source).inspect();
+    const actionCompatibility = new RecordingActionScanner(source).inspect();
+    if (!actionCompatibility.compatible) return actionCompatibility;
+    const recording = validate(JSON.parse(source) as unknown);
+    return recording.name === expectedName
+      ? { compatible: true }
+      : { compatible: false, reason: "RECORDING_INVALID" };
   } catch {
     return { compatible: false, reason: "RECORDING_INVALID" };
   }

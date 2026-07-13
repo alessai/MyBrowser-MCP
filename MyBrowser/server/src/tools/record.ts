@@ -696,7 +696,10 @@ export function createRecordingTools(
           .filter((file) => file.endsWith(".json"))
           .map((file) => {
             const name = file.replace(/\.json$/, "");
-            return { name, ...inspectRecordingFile(join(recordingsDir, file)) };
+            return {
+              name,
+              ...inspectRecordingFile(join(recordingsDir, file), name, sanitizeRecording),
+            };
           });
       } catch {
         // Directory may not exist yet.

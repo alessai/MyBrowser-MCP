@@ -698,7 +698,7 @@ describe("RecordingManager privacy and ownership", () => {
     expect(storage.values.has("recording:canonical_name")).toBe(false);
   });
 
-  it("lists safe, incompatible legacy, and malformed recordings without reading legacy args", async () => {
+  it("lists only strict current recordings as compatible without deleting or exposing invalid data", async () => {
     const storage = new MemoryStorage();
     vi.spyOn(storage, "get").mockImplementation(async <T>(key: string) => (
       storage.values.get(key) as T | undefined
@@ -723,23 +723,48 @@ describe("RecordingManager privacy and ownership", () => {
       get: () => { throw new Error(SECRET_TEXT); },
     });
     storage.values.set("recording:safe-flow", valid);
-    storage.values.set("recording:legacy-tabs", {
-      name: "legacy-tabs",
-      steps: [{ action: "browser_new_tab", args: unreadArgs }],
+    storage.values.set("recording:action-precedence", {
+      name: "different-name",
+      steps: [
+        { action: 42, args: {} },
+        { action: "browser_new_tab", args: unreadArgs },
+      ],
     });
-    storage.values.set("recording:broken-flow", { steps: SECRET_FORM });
+    storage.values.set("recording:canary-args", {
+      ...valid,
+      name: "canary-args",
+      steps: [{ ...valid.steps[0], args: unreadArgs }],
+    });
+    storage.values.set("recording:key-mismatch", { ...valid, name: "different-name" });
+    storage.values.set("recording:malformed-envelope", {
+      name: "malformed-envelope",
+      steps: [{ action: "browser_go_back", args: {} }],
+    });
+    storage.values.set("recording:malformed-step", {
+      ...valid,
+      name: "malformed-step",
+      steps: [{ ...valid.steps[0], timestamp: -1 }],
+    });
 
-    await expect(listRecordingsFromStorage(storage)).resolves.toEqual([
-      { name: "broken-flow", compatible: false, reason: "RECORDING_INVALID" },
+    const entries = await listRecordingsFromStorage(storage);
+    expect(entries).toEqual([
       {
-        name: "legacy-tabs",
+        name: "action-precedence",
         compatible: false,
         reason: "RECORDING_UNSUPPORTED_MULTI_TAB",
       },
+      { name: "canary-args", compatible: false, reason: "RECORDING_INVALID" },
+      { name: "key-mismatch", compatible: false, reason: "RECORDING_INVALID" },
+      { name: "malformed-envelope", compatible: false, reason: "RECORDING_INVALID" },
+      { name: "malformed-step", compatible: false, reason: "RECORDING_INVALID" },
       { name: "safe-flow", compatible: true },
     ]);
-    expect(storage.values.has("recording:legacy-tabs")).toBe(true);
-    expect(storage.values.has("recording:broken-flow")).toBe(true);
+    expectAbsent(entries);
+    expect(storage.values.has("recording:action-precedence")).toBe(true);
+    expect(storage.values.has("recording:canary-args")).toBe(true);
+    expect(storage.values.has("recording:key-mismatch")).toBe(true);
+    expect(storage.values.has("recording:malformed-envelope")).toBe(true);
+    expect(storage.values.has("recording:malformed-step")).toBe(true);
   });
 
   it("rejects legacy multi-tab replay loading without transporting or deleting its args", async () => {
@@ -791,12 +816,28 @@ describe("RecordingManager privacy and ownership", () => {
 
     expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 99))
       .toBeNull();
-    manager.setReplaying("session-a", true);
+    const firstReplay = manager.beginReplay("session-a");
+    const secondReplay = manager.beginReplay("session-a");
+    const otherSessionReplay = manager.beginReplay("session-b");
     expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 11))
       .toBeNull();
     expect(await manager.prepareStep("session-b", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+
+    manager.endReplay("session-a", firstReplay);
+    manager.endReplay("session-a", firstReplay);
+    manager.endReplay("session-a", otherSessionReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 11))
+      .toBeNull();
+
+    manager.endReplay("session-a", secondReplay);
+    expect(await manager.prepareStep("session-a", "browser_type", { text: SECRET_TEXT }, 11))
       .not.toBeNull();
-    manager.setReplaying("session-a", false);
+    expect(await manager.prepareStep("session-b", "browser_type", { text: SECRET_TEXT }, 22))
+      .toBeNull();
+    manager.endReplay("session-b", otherSessionReplay);
+    expect(await manager.prepareStep("session-b", "browser_type", { text: SECRET_TEXT }, 22))
+      .not.toBeNull();
 
     await expect(manager.stop("session-c")).rejects.toThrow("NO_ACTIVE_RECORDING");
     expectAbsent(manager.snapshot());

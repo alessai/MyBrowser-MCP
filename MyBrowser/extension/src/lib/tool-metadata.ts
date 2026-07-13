@@ -66,6 +66,12 @@ export const TOOL_METADATA = {
   browser_list_handlers: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
 } as const satisfies Record<string, ToolMetadata>;
 
+export function isRecordableToolName(value: unknown): value is keyof typeof TOOL_METADATA {
+  if (typeof value !== 'string') return false;
+  const metadata = TOOL_METADATA[value as keyof typeof TOOL_METADATA];
+  return metadata?.recordable === true;
+}
+
 export type RecordingArgumentType = 'array' | 'boolean' | 'number' | 'object' | 'string';
 
 export const RECORDING_ARGUMENT_TYPES = {

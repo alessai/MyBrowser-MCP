@@ -862,6 +862,7 @@ const handlers: Record<string, ToolHandler> = {
 
   async browser_replay(args, ctx) {
     const recording = args.recording as Recording;
+    let recordingManager: ReturnType<typeof getRecordingManager> | undefined;
 
     const options: ReplayOptions = {
       recording,
@@ -871,9 +872,11 @@ const handlers: Record<string, ToolHandler> = {
       stopOnError: args.stopOnError as boolean | undefined,
       startFromStep: args.startFromStep as number | undefined,
       stopAtStep: args.stopAtStep as number | undefined,
-      setReplaySuppressed: (replaying) => {
-        getRecordingManager().setReplaying(ctx.sessionId, replaying);
+      beginReplay: () => {
+        recordingManager = getRecordingManager();
+        return recordingManager.beginReplay(ctx.sessionId);
       },
+      endReplay: (token) => recordingManager?.endReplay(ctx.sessionId, token),
     };
 
     return replayRecording(options, ctx);

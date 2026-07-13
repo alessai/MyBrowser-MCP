@@ -1,9 +1,10 @@
 // Replayer: preflighted, single-tab playback with runtime-only substitutions.
 
-import type { RecordedStep, Recording } from './recorder';
+import type { RecordedStep, Recording, ReplayToken } from './recorder';
 import type { ToolContext } from './tools';
 import { handleTool } from './tools';
 import type { StepResult } from './action-sequencer';
+import { isRecordableToolName } from './tool-metadata';
 
 export type { StepResult };
 
@@ -26,7 +27,8 @@ export interface ReplayOptions {
   stopOnError?: boolean;
   startFromStep?: number;  // 1-based
   stopAtStep?: number;     // 1-based
-  setReplaySuppressed?: (replaying: boolean) => void;
+  beginReplay?: () => ReplayToken;
+  endReplay?: (token: ReplayToken) => void;
 }
 
 export interface ReplayResult {
@@ -90,7 +92,6 @@ function runtimeVariables(variables: Record<string, string> | undefined): Map<st
 function substituteString(
   value: string,
   variables: ReadonlyMap<string, string>,
-  missing: Set<string>,
 ): string {
   PLACEHOLDER.lastIndex = 0;
   const residue = value.replace(PLACEHOLDER, '');
@@ -98,21 +99,82 @@ function substituteString(
   PLACEHOLDER.lastIndex = 0;
   return value.replace(PLACEHOLDER, (_placeholder, name: string) => {
     const supplied = variables.get(name);
-    if (supplied === undefined && !variables.has(name)) {
-      missing.add(name);
-      return `{{${name}}}`;
-    }
+    if (supplied === undefined && !variables.has(name)) invalidRecording();
     return supplied ?? '';
   });
+}
+
+function collectPlaceholders(
+  value: unknown,
+  names: Set<string>,
+  active = new WeakSet<object>(),
+): void {
+  if (typeof value === 'string') {
+    PLACEHOLDER.lastIndex = 0;
+    const residue = value.replace(PLACEHOLDER, '');
+    if (residue.includes('{{') || residue.includes('}}')) invalidRecording();
+    PLACEHOLDER.lastIndex = 0;
+    for (const match of value.matchAll(PLACEHOLDER)) names.add(match[1]!);
+    return;
+  }
+  if (value === null || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) invalidRecording();
+    return;
+  }
+  if (typeof value !== 'object' || !isSafeContainer(value) || active.has(value)) {
+    invalidRecording();
+  }
+  if (Object.getOwnPropertySymbols(value)
+    .some((symbol) => Object.getOwnPropertyDescriptor(value, symbol)?.enumerable)) {
+    invalidRecording();
+  }
+  active.add(value);
+  try {
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+      if (!descriptor.enumerable) continue;
+      if (!('value' in descriptor)) invalidRecording();
+      collectPlaceholders(descriptor.value, names, active);
+    }
+  } finally {
+    active.delete(value);
+  }
+}
+
+function validateLiteralActions(recording: unknown): WeakSet<object> {
+  if (typeof recording !== 'object' || recording === null || Array.isArray(recording)) {
+    invalidRecording();
+  }
+  const stepsDescriptor = Object.getOwnPropertyDescriptor(recording, 'steps');
+  if (!stepsDescriptor || !('value' in stepsDescriptor) || !Array.isArray(stepsDescriptor.value)) {
+    invalidRecording();
+  }
+  const stepObjects = new WeakSet<object>();
+  for (let index = 0; index < stepsDescriptor.value.length; index += 1) {
+    const stepDescriptor = Object.getOwnPropertyDescriptor(stepsDescriptor.value, String(index));
+    if (!stepDescriptor || !('value' in stepDescriptor)
+      || typeof stepDescriptor.value !== 'object'
+      || stepDescriptor.value === null
+      || Array.isArray(stepDescriptor.value)) {
+      invalidRecording();
+    }
+    const actionDescriptor = Object.getOwnPropertyDescriptor(stepDescriptor.value, 'action');
+    if (!actionDescriptor || !('value' in actionDescriptor)
+      || !isRecordableToolName(actionDescriptor.value)) {
+      invalidRecording();
+    }
+    stepObjects.add(stepDescriptor.value);
+  }
+  return stepObjects;
 }
 
 function cloneReplayValue(
   value: unknown,
   variables: ReadonlyMap<string, string>,
-  missing: Set<string>,
+  stepObjects: WeakSet<object>,
   active = new WeakSet<object>(),
 ): unknown {
-  if (typeof value === 'string') return substituteString(value, variables, missing);
+  if (typeof value === 'string') return substituteString(value, variables);
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) invalidRecording();
@@ -138,7 +200,9 @@ function cloneReplayValue(
         configurable: true,
         enumerable: true,
         writable: true,
-        value: cloneReplayValue(descriptor.value, variables, missing, active),
+        value: stepObjects.has(value) && key === 'action'
+          ? descriptor.value
+          : cloneReplayValue(descriptor.value, variables, stepObjects, active),
       });
     }
     return clone;
@@ -154,7 +218,7 @@ function validatePreparedSteps(value: unknown): asserts value is RecordedStep[] 
       invalidRecording();
     }
     const step = candidate as Record<string, unknown>;
-    if (typeof step.action !== 'string'
+    if (!isRecordableToolName(step.action)
       || typeof step.args !== 'object'
       || step.args === null
       || Array.isArray(step.args)
@@ -182,11 +246,14 @@ export function preflightReplay(
       throw new Error('RECORDING_UNSUPPORTED_MULTI_TAB');
     }
     const supplied = runtimeVariables(variables);
-    const missing = new Set<string>();
-    const clone = cloneReplayValue(recording, supplied, missing);
-    if (missing.size > 0) {
-      throw new Error(`REPLAY_VARIABLES_MISSING: ${[...missing].sort().join(',')}`);
+    const placeholders = new Set<string>();
+    collectPlaceholders(recording, placeholders);
+    const missing = [...placeholders].filter((name) => !supplied.has(name)).sort();
+    if (missing.length > 0) {
+      throw new Error(`REPLAY_VARIABLES_MISSING: ${missing.join(',')}`);
     }
+    const stepObjects = validateLiteralActions(recording);
+    const clone = cloneReplayValue(recording, supplied, stepObjects);
     if (typeof clone !== 'object' || clone === null || Array.isArray(clone)) invalidRecording();
     const steps = (clone as Record<string, unknown>).steps;
     validatePreparedSteps(steps);
@@ -269,10 +336,13 @@ export async function replayRecording(
   }
   const stopOnError = options.stopOnError ?? true;
 
+  if ((options.beginReplay === undefined) !== (options.endReplay === undefined)) {
+    throw new Error('REPLAY_OPTIONS_INVALID');
+  }
   const results: StepResult[] = [];
-  const setReplaySuppressed = options.setReplaySuppressed ?? (() => undefined);
+  let replayToken: ReplayToken | undefined;
   try {
-    setReplaySuppressed(true);
+    replayToken = options.beginReplay?.();
     ensureReplayActive(ctx);
 
     if (startIdx > 0) {
@@ -340,6 +410,6 @@ export async function replayRecording(
       results,
     };
   } finally {
-    setReplaySuppressed(false);
+    if (replayToken !== undefined) options.endReplay?.(replayToken);
   }
 }

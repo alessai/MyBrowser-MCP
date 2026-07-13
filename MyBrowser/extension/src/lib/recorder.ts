@@ -68,6 +68,9 @@ export interface PreparedStep {
   readonly finalReservedBytes: number;
 }
 
+declare const replayTokenBrand: unique symbol;
+export type ReplayToken = Readonly<{ [replayTokenBrand]: true }>;
+
 export class RecordedActionFailure extends Error {
   constructor() {
     super('RECORDED_TOOL_ACTION_FAILED');
@@ -383,7 +386,7 @@ export function isSanitizedRecording(
 export class RecordingManager {
   private readonly active = new Map<string, ActiveRecording>();
   private readonly persistedFootprints = new Map<string, number>();
-  private readonly replaying = new Set<string>();
+  private readonly replayTokens = new Map<string, Set<ReplayToken>>();
   private readonly closedSessions = new Set<string>();
   private readonly cleanupFallbackSessions = new Set<string>();
   private readonly pending = new Map<string, PendingReservation>();
@@ -504,7 +507,7 @@ export class RecordingManager {
       await this.restoreAllUnlocked();
       if (this.closedSessions.has(sessionId)) return null;
       const active = this.active.get(sessionId);
-      if (!active || this.replaying.has(sessionId) || active.tabId !== tabId) return null;
+      if (!active || this.replayTokens.has(sessionId) || active.tabId !== tabId) return null;
       if (active.status !== 'active') return null;
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
@@ -804,9 +807,18 @@ export class RecordingManager {
     return updated;
   }
 
-  setReplaying(sessionId: string, replaying: boolean): void {
-    if (replaying) this.replaying.add(sessionId);
-    else this.replaying.delete(sessionId);
+  beginReplay(sessionId: string): ReplayToken {
+    const token = Object.freeze({}) as ReplayToken;
+    const tokens = this.replayTokens.get(sessionId) ?? new Set<ReplayToken>();
+    tokens.add(token);
+    this.replayTokens.set(sessionId, tokens);
+    return token;
+  }
+
+  endReplay(sessionId: string, token: ReplayToken): void {
+    const tokens = this.replayTokens.get(sessionId);
+    if (!tokens || !tokens.delete(token)) return;
+    if (tokens.size === 0) this.replayTokens.delete(sessionId);
   }
 
   async abortSession(sessionId: string): Promise<void> {
@@ -906,7 +918,7 @@ export class RecordingManager {
       active: [...this.active.values()].filter((state) => (
         state.status === 'active' || state.status === 'stopping'
       )),
-      replayingSessions: [...this.replaying].sort(),
+      replayingSessions: [...this.replayTokens.keys()].sort(),
       prepared: [...this.pending].map(([id, reservation]) => ({
         id,
         sessionId: reservation.sessionId,
@@ -1089,7 +1101,7 @@ export class RecordingManager {
     this.persistedFootprints.delete(sessionId);
     this.cleanupFallbackSessions.delete(sessionId);
     this.active.delete(sessionId);
-    this.replaying.delete(sessionId);
+    this.replayTokens.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1193,7 +1205,7 @@ export class RecordingManager {
   private hideSessionForCleanupUnlocked(sessionId: string): void {
     this.closedSessions.add(sessionId);
     this.active.delete(sessionId);
-    this.replaying.delete(sessionId);
+    this.replayTokens.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1314,27 +1326,43 @@ const UNSUPPORTED_REPLAY_ACTIONS = new Set([
   'browser_close_tab',
 ]);
 
-function inspectStoredRecording(value: unknown): Omit<RecordingListEntry, 'name'> {
-  if (!isRecord(value)) return { compatible: false, reason: 'RECORDING_INVALID' };
-  const stepsDescriptor = Object.getOwnPropertyDescriptor(value, 'steps');
-  if (!stepsDescriptor || !('value' in stepsDescriptor) || !Array.isArray(stepsDescriptor.value)) {
+function inspectStoredRecording(
+  value: unknown,
+  expectedName: string,
+): Omit<RecordingListEntry, 'name'> {
+  try {
+    if (!isRecord(value)) return { compatible: false, reason: 'RECORDING_INVALID' };
+    const stepsDescriptor = Object.getOwnPropertyDescriptor(value, 'steps');
+    if (!stepsDescriptor || !('value' in stepsDescriptor) || !Array.isArray(stepsDescriptor.value)) {
+      return { compatible: false, reason: 'RECORDING_INVALID' };
+    }
+    let malformedAction = false;
+    for (let index = 0; index < stepsDescriptor.value.length; index += 1) {
+      const stepDescriptor = Object.getOwnPropertyDescriptor(stepsDescriptor.value, String(index));
+      if (!stepDescriptor || !('value' in stepDescriptor) || !isRecord(stepDescriptor.value)) {
+        malformedAction = true;
+        continue;
+      }
+      const actionDescriptor = Object.getOwnPropertyDescriptor(stepDescriptor.value, 'action');
+      if (!actionDescriptor || !('value' in actionDescriptor)
+        || typeof actionDescriptor.value !== 'string') {
+        malformedAction = true;
+        continue;
+      }
+      if (UNSUPPORTED_REPLAY_ACTIONS.has(actionDescriptor.value)) {
+        return { compatible: false, reason: 'RECORDING_UNSUPPORTED_MULTI_TAB' };
+      }
+    }
+    if (malformedAction
+      || canonicalizeRecordingName(expectedName) !== expectedName
+      || !isSanitizedRecording(value)
+      || value.name !== expectedName) {
+      return { compatible: false, reason: 'RECORDING_INVALID' };
+    }
+    return { compatible: true };
+  } catch {
     return { compatible: false, reason: 'RECORDING_INVALID' };
   }
-  for (let index = 0; index < stepsDescriptor.value.length; index += 1) {
-    const stepDescriptor = Object.getOwnPropertyDescriptor(stepsDescriptor.value, String(index));
-    if (!stepDescriptor || !('value' in stepDescriptor) || !isRecord(stepDescriptor.value)) {
-      return { compatible: false, reason: 'RECORDING_INVALID' };
-    }
-    const actionDescriptor = Object.getOwnPropertyDescriptor(stepDescriptor.value, 'action');
-    if (!actionDescriptor || !('value' in actionDescriptor)
-      || typeof actionDescriptor.value !== 'string') {
-      return { compatible: false, reason: 'RECORDING_INVALID' };
-    }
-    if (UNSUPPORTED_REPLAY_ACTIONS.has(actionDescriptor.value)) {
-      return { compatible: false, reason: 'RECORDING_UNSUPPORTED_MULTI_TAB' };
-    }
-  }
-  return { compatible: true };
 }
 
 export async function listRecordingsFromStorage(
@@ -1345,7 +1373,7 @@ export async function listRecordingsFromStorage(
     .sort();
   return Promise.all(keys.map(async (key) => {
     const name = key.slice(COMPLETED_PREFIX.length);
-    const compatibility = inspectStoredRecording(await storage.get<unknown>(key));
+    const compatibility = inspectStoredRecording(await storage.get<unknown>(key), name);
     return { name, ...compatibility };
   }));
 }
@@ -1358,7 +1386,7 @@ export async function loadRecordingForReplay(
   const key = `${COMPLETED_PREFIX}${canonicalName}`;
   const value = await storage.get<unknown>(key);
   if (value === undefined) return null;
-  const compatibility = inspectStoredRecording(value);
+  const compatibility = inspectStoredRecording(value, canonicalName);
   if (compatibility.reason === 'RECORDING_UNSUPPORTED_MULTI_TAB') {
     throw new Error('RECORDING_UNSUPPORTED_MULTI_TAB');
   }

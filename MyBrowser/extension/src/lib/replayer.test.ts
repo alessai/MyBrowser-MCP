@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Recording } from "./recorder";
+import type { Recording, ReplayToken } from "./recorder";
 import type { ToolContext } from "./tools";
 
 const mocks = vi.hoisted(() => ({
@@ -53,6 +53,20 @@ function context(tabId = 7): ToolContext {
   };
 }
 
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("replay preflight", () => {
   beforeEach(() => {
     mocks.handleTool.mockReset();
@@ -76,7 +90,8 @@ describe("replay preflight", () => {
       step("browser_type", { text: "{{missing_name}}" }),
       step(action, { nested: "{{{malformed}}}" }, 2),
     ]);
-    const suppress = vi.fn();
+    const beginReplay = vi.fn(() => ({} as ReplayToken));
+    const endReplay = vi.fn();
 
     expect(() => preflightReplay(candidate, {})).toThrowError(
       "RECORDING_UNSUPPORTED_MULTI_TAB",
@@ -86,10 +101,12 @@ describe("replay preflight", () => {
       variables: {},
       speed: 1,
       tabId: 7,
-      setReplaySuppressed: suppress,
+      beginReplay,
+      endReplay,
     }, context())).rejects.toThrowError("RECORDING_UNSUPPORTED_MULTI_TAB");
     expect(mocks.handleTool).not.toHaveBeenCalled();
-    expect(suppress).not.toHaveBeenCalled();
+    expect(beginReplay).not.toHaveBeenCalled();
+    expect(endReplay).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -201,7 +218,8 @@ describe("replay preflight", () => {
     [{ startFromStep: 2, stopAtStep: 1 }, "REPLAY_STEP_RANGE_INVALID"],
   ] as const)("validates replay range before execution: %o", async (range, code) => {
     vi.useFakeTimers();
-    const suppress = vi.fn();
+    const beginReplay = vi.fn(() => ({} as ReplayToken));
+    const endReplay = vi.fn();
     await expect(replayRecording({
       recording: recording([
         step("browser_go_back"),
@@ -209,16 +227,20 @@ describe("replay preflight", () => {
       ]),
       tabId: 7,
       speed: 0,
-      setReplaySuppressed: suppress,
+      beginReplay,
+      endReplay,
       ...range,
     }, context())).rejects.toThrowError(code);
     expect(mocks.handleTool).not.toHaveBeenCalled();
-    expect(suppress).not.toHaveBeenCalled();
+    expect(beginReplay).not.toHaveBeenCalled();
+    expect(endReplay).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
   it("reuses the authorized context and clears replay suppression after failure", async () => {
-    const suppress = vi.fn();
+    const token = {} as ReplayToken;
+    const beginReplay = vi.fn(() => token);
+    const endReplay = vi.fn();
     mocks.handleTool.mockImplementation(async (_action, args) => {
       expect(args).toMatchObject({ text: SECRET_ALPHA, tabId: 7 });
       throw new Error(`handler leaked ${SECRET_ALPHA}`);
@@ -231,10 +253,13 @@ describe("replay preflight", () => {
       })]),
       variables: { alpha: SECRET_ALPHA },
       tabId: 7,
-      setReplaySuppressed: suppress,
+      beginReplay,
+      endReplay,
     }, context(7));
 
-    expect(suppress.mock.calls).toEqual([[true], [false]]);
+    expect(beginReplay).toHaveBeenCalledOnce();
+    expect(endReplay).toHaveBeenCalledOnce();
+    expect(endReplay).toHaveBeenCalledWith(token);
     expect(result).toMatchObject({
       status: "failed",
       failedStep: 1,
@@ -242,6 +267,50 @@ describe("replay preflight", () => {
       results: [{ status: "failed", error: "REPLAY_STEP_FAILED" }],
     });
     expect(JSON.stringify(result)).not.toContain(SECRET_ALPHA);
+  });
+
+  it("releases only its own suppression token while another tab replay remains active", async () => {
+    const first = deferred();
+    const second = deferred();
+    const activeTokens = new Set<ReplayToken>();
+    const beginReplay = vi.fn(() => {
+      const token = {} as ReplayToken;
+      activeTokens.add(token);
+      return token;
+    });
+    const endReplay = vi.fn((token: ReplayToken) => {
+      activeTokens.delete(token);
+    });
+    mocks.handleTool.mockImplementation(async (_action, args) => {
+      if (args.tabId === 7) return first.promise;
+      return second.promise;
+    });
+
+    const firstRun = replayRecording({
+      recording: recording([step("browser_go_back")]),
+      tabId: 7,
+      beginReplay,
+      endReplay,
+    }, context(7));
+    const secondRun = replayRecording({
+      recording: recording([step("browser_go_forward")]),
+      tabId: 8,
+      beginReplay,
+      endReplay,
+    }, context(8));
+    await vi.waitFor(() => expect(mocks.handleTool).toHaveBeenCalledTimes(2));
+    expect(activeTokens.size).toBe(2);
+
+    first.reject(new Error("FIRST_REPLAY_FAILED"));
+    await firstRun;
+    expect(activeTokens.size).toBe(1);
+
+    second.resolve();
+    await secondRun;
+    expect(activeTokens.size).toBe(0);
+    expect(beginReplay).toHaveBeenCalledTimes(2);
+    expect(endReplay).toHaveBeenCalledTimes(2);
+    expect(endReplay.mock.calls[0]?.[0]).not.toBe(endReplay.mock.calls[1]?.[0]);
   });
 
   it("rejects a mismatched or unsafe authorized tab before execution", async () => {
