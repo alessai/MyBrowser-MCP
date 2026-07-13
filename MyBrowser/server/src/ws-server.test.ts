@@ -1502,6 +1502,48 @@ describe("acknowledged recording reservation messages", () => {
     expect(readFileSync(join(recordingsDir, "Checkout_Flow.json"), "utf8")).toBe(original);
   });
 
+  it("rejects a raw embedded alias without consuming reservation or retry state", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-ingress-alias-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const retryRegistry = new RecordingRetryRegistry();
+    expect(retryRegistry.retain(
+      "session-a",
+      validRecording.name,
+      JSON.stringify(validRecording),
+    )).toBe(true);
+    const { server, extension } = await setupReservedRecording(
+      recordingsDir,
+      undefined,
+      retryRegistry,
+    );
+
+    await expect(persistRecordingMessage(extension, "persist-alias", {
+      ...validRecording,
+      name: "Checkout Flow",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-alias",
+      ok: false,
+      error: "invalid request",
+    });
+    await expect(server.stateManager.hasRecordingReservation(
+      "session-a", validRecording.name,
+    )).resolves.toBe(true);
+    expect(retryRegistry.count("session-a")).toBe(1);
+
+    await expect(persistRecordingMessage(extension, "persist-canonical"))
+      .resolves.toEqual({
+        type: "persistRecordingResult",
+        id: "persist-canonical",
+        ok: true,
+      });
+    await expect(server.stateManager.hasRecordingReservation(
+      "session-a", validRecording.name,
+    )).resolves.toBe(false);
+    expect(retryRegistry.count()).toBe(0);
+  });
+
   it("keeps canonical retry retention at zero across many successful recordings", async () => {
     const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-long-session-"));
     tempDirs.push(base);

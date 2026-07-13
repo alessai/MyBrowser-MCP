@@ -430,7 +430,10 @@ export function sanitizeRecording(recording: unknown): SanitizedRecording {
   if (!hasSanitizedActionData(parsed)) {
     throw new Error("Recording contains unsanitized action data");
   }
-  return { ...parsed, name: normalizeRecordingName(parsed.name) };
+  if (normalizeRecordingName(parsed.name) !== parsed.name) {
+    throw new Error("Invalid recording name");
+  }
+  return parsed;
 }
 
 const RecordStopResultSchema = z.object({

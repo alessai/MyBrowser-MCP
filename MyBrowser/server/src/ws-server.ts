@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Context } from "./context.js";
 import { RECORDING_RESERVATION_LEASE_MS, isRecordingDirectorySyncError, type RecordingFileOps, sanitizeRecording, saveRecordingToFile } from './tools/record.js';
 import { saveNote, listNotes } from "./notes.js";
-import { LocalStateManager, type IStateManager } from "./state-manager.js";
+import { LocalStateManager, normalizeRecordingName, type IStateManager } from "./state-manager.js";
 import { HubStateManager } from "./hub-client.js";
 import { recordIssue } from "./logger.js";
 import {
@@ -619,9 +619,26 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           return;
         }
 
+        const rawRecordingName = msg.payload.name;
+        try {
+          if (typeof rawRecordingName !== "string"
+            || normalizeRecordingName(rawRecordingName) !== rawRecordingName) {
+            throw new Error("Invalid recording name");
+          }
+        } catch {
+          safeSend(ws, {
+            type: "persistRecordingResult",
+            id: msg.id,
+            ok: false,
+            error: "invalid request",
+          });
+          return;
+        }
+
         let recording;
         try {
           recording = sanitizeRecording(msg.payload);
+          if (recording.name !== rawRecordingName) throw new Error("Invalid recording name");
         } catch {
           safeSend(ws, {
             type: "persistRecordingResult",

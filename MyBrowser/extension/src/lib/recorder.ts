@@ -146,6 +146,11 @@ const COMPLETED_DIGEST_PREFIX = 'recording-digest:';
 const SERVER_TIMEOUT_MS = 10_000;
 const COMMIT_OVERHEAD_BYTES = 1_024;
 const COMMIT_DURATION_JSON_SLACK_BYTES = 32;
+const WORST_STOP_STATUS: CachedStopStatus = {
+  extensionSaved: false,
+  serverSaved: false,
+  error: 'ACTIVE_STATE_CLEANUP_FAILED',
+};
 
 class ChromeStorageAdapter implements RecordingStorage {
   constructor(private readonly area: chrome.storage.StorageArea) {}
@@ -366,6 +371,7 @@ export function isSanitizedRecording(
 
 export class RecordingManager {
   private readonly active = new Map<string, ActiveRecording>();
+  private readonly persistedFootprints = new Map<string, number>();
   private readonly replaying = new Set<string>();
   private readonly closedSessions = new Set<string>();
   private readonly pending = new Map<string, PendingReservation>();
@@ -376,6 +382,7 @@ export class RecordingManager {
   private readonly limits: RecordingLimits;
   private readonly now: () => number;
   private operationChain: Promise<void> = Promise.resolve();
+  private accountingChain: Promise<void> = Promise.resolve();
   private preparedCounter = 0;
 
   constructor(options: {
@@ -449,8 +456,7 @@ export class RecordingManager {
       if (byteLength(completedProjection) + COMMIT_OVERHEAD_BYTES > this.limits.maxRecordingBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
-      const aggregateBytes = this.aggregateBytesWith(state);
-      if (aggregateBytes + COMMIT_OVERHEAD_BYTES > this.limits.maxAggregateBytes) {
+      if (this.aggregateReservedBytesWith(state) > this.limits.maxAggregateBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
       this.active.set(sessionId, state);
@@ -514,14 +520,17 @@ export class RecordingManager {
         durationMs: 0,
         url: '\u0000'.repeat(MAX_RECORDED_URL_LENGTH),
       };
-      const projectedRecording: Recording & { stoppedAt: number } = {
+      const projectedActiveRecording: Recording = {
         ...active.recording,
-        stoppedAt: MAX_RECORDING_TIMESTAMP_MS,
         steps: [...active.recording.steps, conservativeStep],
         requiredVariables: [
           ...active.recording.requiredVariables,
           ...parameterized.requiredVariables,
         ],
+      };
+      const projectedRecording: Recording & { stoppedAt: number } = {
+        ...projectedActiveRecording,
+        stoppedAt: MAX_RECORDING_TIMESTAMP_MS,
       };
       const finalReservedBytes = byteLength(projectedRecording)
         + COMMIT_DURATION_JSON_SLACK_BYTES
@@ -533,17 +542,16 @@ export class RecordingManager {
       const projectedActive: ActiveRecording = {
         ...active,
         nextVariable: parameterState.nextVariable,
-        recording: projectedRecording,
+        recording: projectedActiveRecording,
       };
-      const currentBytes = byteLength(active);
-      const projectedBytes = byteLength(projectedActive);
-      const reservedAggregateDelta = Math.max(0, projectedBytes - currentBytes)
+      const reservedAggregateDelta = Math.max(
+        0,
+        this.reservedStateBytes(projectedActive) - this.reservedStateBytes(active),
+      )
         + COMMIT_DURATION_JSON_SLACK_BYTES
         + COMMIT_OVERHEAD_BYTES;
-      const pendingBytes = [...this.pending.values()]
-        .reduce((total, entry) => total + entry.reservedAggregateDelta, 0);
-      const aggregateBytes = this.aggregateBytesWith();
-      if (aggregateBytes + pendingBytes + reservedAggregateDelta > this.limits.maxAggregateBytes) {
+      if (this.aggregateReservedBytesWith() + reservedAggregateDelta
+        > this.limits.maxAggregateBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
 
@@ -619,6 +627,10 @@ export class RecordingManager {
       if (byteLength(completedProjection) > reservation.finalReservedBytes) {
         throw new Error('RECORDING_STATE_LIMIT');
       }
+      if (this.aggregateReservedBytesWith(updated, prepared.id)
+        > this.limits.maxAggregateBytes) {
+        throw new Error('RECORDING_STATE_LIMIT');
+      }
 
       this.active.set(sessionId, updated);
       this.pending.delete(prepared.id);
@@ -665,6 +677,9 @@ export class RecordingManager {
           status: 'stopping',
           recording,
         };
+        if (this.aggregateReservedBytesWith(stoppingState) > this.limits.maxAggregateBytes) {
+          throw new RecordedStateFailure();
+        }
         this.active.set(sessionId, stoppingState);
         try {
           await this.persistActiveUnlocked(stoppingState);
@@ -770,6 +785,9 @@ export class RecordingManager {
         ...(result.error ? { error: result.error } : {}),
       },
     };
+    if (this.aggregateReservedBytesWith(updated) > this.limits.maxAggregateBytes) {
+      throw new RecordedStateFailure();
+    }
     this.active.set(updated.sessionId, updated);
     try {
       await this.persistActiveUnlocked(updated);
@@ -927,6 +945,7 @@ export class RecordingManager {
     }
     const inMemory = this.active.get(sessionId);
     if (inMemory) {
+      this.persistedFootprints.set(sessionId, this.reservedStateBytes(inMemory));
       if (this.closedSessions.has(sessionId) && inMemory.status === 'cleanup') return true;
       if (inMemory.status === marker.status
         || (inMemory.status === 'quarantined' && marker.status === 'active')) return true;
@@ -947,37 +966,63 @@ export class RecordingManager {
     const restored: ActiveRecording = stored.status === 'active'
       ? { ...clone(stored), status: 'quarantined' }
       : clone(stored);
+    this.persistedFootprints.set(sessionId, this.reservedStateBytes(stored));
     this.active.set(sessionId, restored);
-    if (this.aggregateBytesWith() + COMMIT_OVERHEAD_BYTES
-      > this.limits.maxAggregateBytes) {
+    if (this.aggregateReservedBytesWith() > this.limits.maxAggregateBytes) {
       this.active.delete(sessionId);
       await this.removeActiveStateUnlocked(sessionId);
       return false;
     }
     if (stored.status === 'active') await this.scheduler.ensureRenewal();
     else if (stored.status === 'cleanup') {
-      await this.scheduler.ensureCleanup(sessionId);
+      try { await this.scheduler.ensureCleanup(sessionId); } catch { /* persisted cleanup is authoritative */ }
       await this.refreshRenewalAlarmUnlocked();
     } else await this.refreshRenewalAlarmUnlocked();
     return true;
   }
 
-  private aggregateBytesWith(replacement?: ActiveRecording): number {
-    let total = 0;
+  private reservedStateBytes(state: ActiveRecording): number {
+    const persisted = state.status === 'quarantined'
+      ? { ...state, status: 'active' as const }
+      : state;
+    const currentBytes = byteLength(persisted)
+      + byteLength({ sessionId: state.sessionId, status: persisted.status });
+    if (persisted.status === 'cleanup') return currentBytes;
+    const stopped: ActiveRecording = {
+      ...persisted,
+      status: 'stopping',
+      stopStatus: WORST_STOP_STATUS,
+      recording: {
+        ...persisted.recording,
+        stoppedAt: MAX_RECORDING_TIMESTAMP_MS,
+      },
+    };
+    const stoppedBytes = byteLength(stopped)
+      + byteLength({ sessionId: state.sessionId, status: stopped.status });
+    return Math.max(currentBytes, stoppedBytes);
+  }
+
+  private aggregateReservedBytesWith(
+    replacement?: ActiveRecording,
+    excludedPendingId?: string,
+  ): number {
+    const footprints = new Map(this.persistedFootprints);
     for (const [sessionId, state] of this.active) {
-      total += byteLength(replacement?.sessionId === sessionId ? replacement : state);
-      const markerState = replacement?.sessionId === sessionId ? replacement : state;
-      total += byteLength({ sessionId, status: markerState.status });
+      footprints.set(sessionId, this.reservedStateBytes(state));
     }
-    if (replacement && !this.active.has(replacement.sessionId)) {
-      total += byteLength(replacement);
-      total += byteLength({ sessionId: replacement.sessionId, status: replacement.status });
+    if (replacement) {
+      footprints.set(replacement.sessionId, this.reservedStateBytes(replacement));
+    }
+    let total = [...footprints.values()].reduce((sum, bytes) => sum + bytes, 0);
+    for (const [id, reservation] of this.pending) {
+      if (id !== excludedPendingId) total += reservation.reservedAggregateDelta;
     }
     return total;
   }
 
   private async persistActiveUnlocked(state: ActiveRecording): Promise<void> {
     if (state.status === 'quarantined') throw new RecordedStateFailure();
+    this.persistedFootprints.set(state.sessionId, this.reservedStateBytes(state));
     await this.sessionStorage.setMany({
       [`${ACTIVE_PREFIX}${state.sessionId}`]: clone(state),
       [`${ACTIVE_MARKER_PREFIX}${state.sessionId}`]: {
@@ -1034,6 +1079,7 @@ export class RecordingManager {
       `${ACTIVE_PREFIX}${sessionId}`,
       `${ACTIVE_MARKER_PREFIX}${sessionId}`,
     ]);
+    this.persistedFootprints.delete(sessionId);
     this.active.delete(sessionId);
     this.replaying.delete(sessionId);
     for (const [id, reservation] of this.pending) {
@@ -1074,6 +1120,9 @@ export class RecordingManager {
     try { await this.scheduler.ensureCleanup(sessionId); } catch { /* persisted cleanup is fallback */ }
     if (current.status !== 'cleanup') {
       const cleanupState: ActiveRecording = { ...current, status: 'cleanup' };
+      if (this.aggregateReservedBytesWith(cleanupState) > this.limits.maxAggregateBytes) {
+        return false;
+      }
       this.active.set(sessionId, cleanupState);
       try {
         await this.persistActiveUnlocked(cleanupState);
@@ -1149,8 +1198,15 @@ export class RecordingManager {
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationChain.then(operation, operation);
+    const run = () => this.withAccounting(operation);
+    const result = this.operationChain.then(run, run);
     this.operationChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private withAccounting<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.accountingChain.then(operation, operation);
+    this.accountingChain = result.then(() => undefined, () => undefined);
     return result;
   }
 }

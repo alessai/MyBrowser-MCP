@@ -920,6 +920,11 @@ export default defineBackground(() => {
   chrome.alarms.create('keepalive', { periodInMinutes: 25 / 60 });
   chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === 'keepalive') {
+      try {
+        await getRecordingManager().retryCleanupStates();
+      } catch {
+        recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
+      }
       await ensureAlive();
     } else if (alarm.name === RECORDING_RENEWAL_ALARM) {
       await getRecordingManager().renewPersistedSessions();

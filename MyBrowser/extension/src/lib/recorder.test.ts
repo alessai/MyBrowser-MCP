@@ -214,6 +214,76 @@ function createManager(options: {
   return { manager, sessionStorage, localStorage, transport, scheduler };
 }
 
+const AGGREGATE_BOUNDARY_ELEMENT = "x".repeat(8_000);
+
+async function minimumAggregateLimitForPreparedStep(sessionCount = 1): Promise<number> {
+  let lower = 1;
+  let upper = 100_000;
+  while (lower < upper) {
+    const candidate = Math.floor((lower + upper) / 2);
+    const { manager } = createManager({
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes: candidate },
+    });
+    let fits = true;
+    try {
+      for (let index = 0; index < sessionCount; index += 1) {
+        await manager.start(
+          `session-${index}`,
+          `flow-${index}`,
+          index + 1,
+          "https://example.test",
+        );
+      }
+      await manager.prepareStep(
+        "session-0",
+        "browser_click",
+        { element: AGGREGATE_BOUNDARY_ELEMENT },
+        1,
+      );
+    } catch {
+      fits = false;
+    }
+    if (fits) upper = candidate;
+    else lower = candidate + 1;
+  }
+  return lower;
+}
+
+async function minimumAggregateLimitForStarts(sessionCount: number): Promise<number> {
+  let lower = 1;
+  let upper = 100_000;
+  while (lower < upper) {
+    const candidate = Math.floor((lower + upper) / 2);
+    const { manager } = createManager({
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes: candidate },
+    });
+    let fits = true;
+    try {
+      for (let index = 0; index < sessionCount; index += 1) {
+        await manager.start(
+          `session-${index}`,
+          `flow-${index}`,
+          index + 1,
+          "https://example.test",
+        );
+      }
+    } catch {
+      fits = false;
+    }
+    if (fits) upper = candidate;
+    else lower = candidate + 1;
+  }
+  return lower;
+}
+
+function serializedStorageValueBytes(storage: MemoryStorage): number {
+  const encoder = new TextEncoder();
+  return [...storage.values.values()].reduce<number>(
+    (total, value) => total + encoder.encode(JSON.stringify(value)).byteLength,
+    0,
+  );
+}
+
 async function captureType(
   manager: RecordingManager,
   sessionId: string,
@@ -600,6 +670,135 @@ describe("RecordingManager limits", () => {
     expect(first).not.toBeNull();
     await expect(aggregate.prepareStep("session-b", "browser_click", { element: "safe" }, 22))
       .rejects.toThrow("RECORDING_STATE_LIMIT");
+  });
+
+  it("keeps pending aggregate headroom unavailable to another session until commit", async () => {
+    const maxAggregateBytes = await minimumAggregateLimitForPreparedStep();
+    const context = createManager({
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes },
+    });
+    await context.manager.start("session-0", "flow-0", 1, "https://example.test");
+    const prepared = await context.manager.prepareStep(
+      "session-0",
+      "browser_click",
+      { element: AGGREGATE_BOUNDARY_ELEMENT },
+      1,
+    );
+
+    await expect(context.manager.start(
+      "session-b", "flow-b", 2, "https://example.test/b",
+    )).rejects.toThrow("RECORDING_STATE_LIMIT");
+    await context.manager.commitStep("session-0", prepared!, {
+      durationMs: 0.0000012345678901234567,
+      currentUrl: `https://example.test/${"a".repeat(MAX_RECORDED_URL_LENGTH)}`,
+    });
+    expect(serializedStorageValueBytes(context.sessionStorage)).toBeLessThanOrEqual(maxAggregateBytes);
+  });
+
+  it("rejects restore promotion that would consume another session's pending reservation", async () => {
+    const maxAggregateBytes = await minimumAggregateLimitForPreparedStep();
+    const sessionStorage = new MemoryStorage();
+    const context = createManager({
+      sessionStorage,
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes },
+    });
+    await context.manager.start("session-0", "flow-0", 1, "https://example.test");
+    await context.manager.prepareStep(
+      "session-0",
+      "browser_click",
+      { element: AGGREGATE_BOUNDARY_ELEMENT },
+      1,
+    );
+    sessionStorage.values.set("active-recording:session-b", {
+      sessionId: "session-b",
+      tabId: 2,
+      nextVariable: 1,
+      status: "active",
+      recording: {
+        name: "flow-b",
+        startedAt: 1_700_000_000_000,
+        url: "https://example.test/b",
+        steps: [],
+        requiredVariables: [],
+      },
+    });
+    sessionStorage.values.set("active-recording-index:session-b", {
+      sessionId: "session-b",
+      status: "active",
+    });
+
+    await expect(context.manager.restoreSession("session-b")).resolves.toBe(false);
+    expect(sessionStorage.values.has("active-recording:session-b")).toBe(false);
+    expect(context.manager.snapshot().active.map((state) => state.sessionId)).toEqual(["session-0"]);
+  });
+
+  it("releases aggregate headroom when a prepared step is discarded", async () => {
+    const maxAggregateBytes = await minimumAggregateLimitForPreparedStep();
+    const { manager } = createManager({
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes },
+    });
+    await manager.start("session-0", "flow-0", 1, "https://example.test");
+    const prepared = await manager.prepareStep(
+      "session-0",
+      "browser_click",
+      { element: AGGREGATE_BOUNDARY_ELEMENT },
+      1,
+    );
+    await expect(manager.start("session-b", "flow-b", 2, "https://example.test/b"))
+      .rejects.toThrow("RECORDING_STATE_LIMIT");
+
+    await manager.discardStep("session-0", prepared!);
+    await expect(manager.start("session-b", "flow-b", 2, "https://example.test/b"))
+      .resolves.toBeUndefined();
+  });
+
+  it("serializes simultaneous aggregate reservations so only one consumes the remainder", async () => {
+    const maxAggregateBytes = await minimumAggregateLimitForPreparedStep(2);
+    const { manager } = createManager({
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes },
+    });
+    await manager.start("session-0", "flow-0", 1, "https://example.test");
+    await manager.start("session-1", "flow-1", 2, "https://example.test");
+
+    const outcomes = await Promise.allSettled([
+      manager.prepareStep(
+        "session-0", "browser_click", { element: AGGREGATE_BOUNDARY_ELEMENT }, 1,
+      ),
+      manager.prepareStep(
+        "session-1", "browser_click", { element: AGGREGATE_BOUNDARY_ELEMENT }, 2,
+      ),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+  });
+
+  it("reserves worst-case stop metadata for every active recording", async () => {
+    const sessionCount = 20;
+    const maxAggregateBytes = await minimumAggregateLimitForStarts(sessionCount);
+    const transport = new FakeTransport();
+    transport.responses.push(...Array.from(
+      { length: sessionCount },
+      () => new Error("SERVER_UNAVAILABLE"),
+    ));
+    const context = createManager({
+      transport,
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes },
+    });
+    for (let index = 0; index < sessionCount; index += 1) {
+      await context.manager.start(
+        `session-${index}`,
+        `flow-${index}`,
+        index + 1,
+        "https://example.test",
+      );
+    }
+
+    for (let index = 0; index < sessionCount; index += 1) {
+      const result = await context.manager.stop(`session-${index}`);
+      expect(result.error).toBe("SERVER_PERSIST_FAILED");
+    }
+    expect(serializedStorageValueBytes(context.sessionStorage)).toBeLessThanOrEqual(maxAggregateBytes);
   });
 
   it("guarantees a prepared 2 MiB boundary step fits fractional commit metadata", async () => {
@@ -1463,6 +1662,34 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expectAbsent({ partial, writes: sessionStorage.writes, snapshot: restarted.manager.snapshot() });
+  });
+
+  it("lets the global keepalive retry persisted cleanup after alarm and removal failures", async () => {
+    const sessionStorage = new MemoryStorage();
+    const scheduler = new FakeScheduler();
+    scheduler.failCleanupEnsure = new Error(`ALARM_FAILED_${SECRET_TEXT}`);
+    const context = createManager({ sessionStorage, scheduler });
+    await context.manager.start("session-a", "keepalive-cleanup", 11, "https://example.test");
+    sessionStorage.failRemoveMany = new Error(`REMOVE_FAILED_${SECRET_FORM}`);
+
+    await context.manager.abortSession("session-a");
+
+    expect(scheduler.cleanupSessions).toEqual(new Set());
+    expect(sessionStorage.values.get("active-recording:session-a")).toMatchObject({
+      status: "cleanup",
+    });
+    expect(context.manager.snapshot().active).toEqual([]);
+    expect(context.transport.requests).toEqual([]);
+
+    sessionStorage.failRemoveMany = undefined;
+    await context.manager.retryCleanupStates();
+    await context.manager.renewPersistedSessions();
+
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+    expect(scheduler.cleanupCleared).toBeGreaterThan(0);
+    expect(context.manager.snapshot().active).toEqual([]);
+    expect(context.transport.requests).toEqual([]);
   });
 
   it("treats a cleanup alarm as authoritative over a stale stopping snapshot", async () => {

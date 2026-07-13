@@ -95,6 +95,16 @@ function extensionRecordingMetadata(): {
 }
 
 describe("recording argument privacy", () => {
+  it("requires the embedded recording name to already be canonical", () => {
+    const canonical = recording();
+    canonical.name = "Checkout_Flow";
+    expect(sanitizeRecording(canonical).name).toBe("Checkout_Flow");
+
+    const alias = recording();
+    alias.name = "Checkout Flow";
+    expect(() => sanitizeRecording(alias)).toThrow("Invalid recording name");
+  });
+
   it("keeps the server action map conformant with extension metadata", () => {
     const extension = extensionRecordingMetadata();
     expect(SERVER_RECORDING_STRING_METADATA).toEqual(extension.strings);
