@@ -30,7 +30,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^13.1.0",
-    "ws": "^8.20.0",
+    "ws": "^8.21.0",
     "zod": "^3.24.2",
     "zod-to-json-schema": "^3.25.2"
   },
@@ -41,6 +41,7 @@
     "vitest": "3.2.7"
   },
   "overrides": {
-    "vite": "6.4.1"
+    "esbuild": "0.28.1",
+    "vite": "6.4.3"
   }
 }
