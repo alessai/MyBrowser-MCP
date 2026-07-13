@@ -344,3 +344,10 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Server persistence requires embedded `recording.name` to already equal its canonical filename identity; normalized aliases reject while exact canonical retries remain idempotent.
 - Pre-commit extension `npm test && npm run check && npm run build`: `12 passed files`, `132 passed tests`; check/build passed.
 - Pre-commit server `npm test && npm run check && npm run build`: `6 passed files`, `158 passed tests`; check/build passed.
+
+### Final HEAD Correction
+
+- A concurrent source commit retained two stale directory-fsync assertions; final-HEAD server verification exposed `2 failed` and `156 passed` before correction.
+- Corrected failure-path expectations to one file fsync/close and successful idempotent-path expectations to file plus directory fsync/close with descriptor ordering.
+- Final correction server `npm test && npm run check && npm run build`: `6 passed files`, `162 passed tests`; check/build passed.
+- Final-HEAD extension `npm test && npm run check && npm run build`: `12 passed files`, `130 passed tests`; check/build passed.
