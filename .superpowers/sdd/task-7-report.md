@@ -333,3 +333,14 @@ All three subsequent Task 7 findings were fixed in a separate follow-up change.
 - Pre-commit server `npm test && npm run check && npm run build`: `6 passed files`, `162 passed tests`; check/build passed.
 - Pre-commit extension `npm test && npm run check && npm run build`: `12 passed files`, `130 passed tests`; check/build passed.
 - `git diff --check`: passed before staging.
+
+## Durable Cleanup Tombstones And Exact Final Bounds
+
+- Cleanup intent now uses restart-persistent per-session `recording-cleanup:<sessionId>` alarms, scheduled immediately on `session_closed` before serialized restore/storage work.
+- Restore/start/startup paths process alarm tombstones before normal state restoration; stale active or stopping snapshots are removed without renewal, recording, or recovery exposure.
+- Failed atomic removal reschedules/retains the tombstone; successful removal atomically clears snapshot/marker and then clears the alarm.
+- Commit preparation now reserves a maximum sanitized URL, explicit 24-byte duration representation allowance, and one-sided real slack. Commit compares actual final bytes directly to the stored bound.
+- Near-2-MiB table tests prove prepare-pass implies commit-pass for long fractional durations and maximum sanitized URLs.
+- Server persistence requires embedded `recording.name` to already equal its canonical filename identity; normalized aliases reject while exact canonical retries remain idempotent.
+- Pre-commit extension `npm test && npm run check && npm run build`: `12 passed files`, `132 passed tests`; check/build passed.
+- Pre-commit server `npm test && npm run check && npm run build`: `6 passed files`, `158 passed tests`; check/build passed.
