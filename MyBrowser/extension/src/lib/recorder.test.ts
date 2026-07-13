@@ -72,6 +72,7 @@ class MemoryStorage implements RecordingStorage {
   failSetKey: string | undefined;
   failSetKeyOnCall: number | undefined;
   failSetManyOnCall: number | undefined;
+  readonly failSetManyOnCalls = new Set<number>();
   failRemoveKey: string | undefined;
   failRemoveMany: Error | undefined;
   readonly removeManyCalls: string[][] = [];
@@ -131,6 +132,7 @@ class MemoryStorage implements RecordingStorage {
     this.setManyCount += 1;
     const entries = Object.entries(values);
     if (this.failSet || this.failSetManyOnCall === this.setManyCount
+      || this.failSetManyOnCalls.has(this.setManyCount)
       || entries.some(([key]) => this.failSetKey === key)) {
       throw this.failSet ?? new Error("SET_FAILED");
     }
@@ -535,6 +537,67 @@ describe("RecordingManager privacy and ownership", () => {
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
     expect(current.transport.requests).toEqual([]);
+  });
+
+  it("keeps an in-memory cleanup fallback when both durable rollback mechanisms fail", async () => {
+    const maxAggregateBytes = await minimumAggregateLimitForStarts(1);
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.failSetManyOnCalls.add(1);
+    sessionStorage.failSetManyOnCalls.add(2);
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const scheduler = new FakeScheduler();
+    scheduler.failCleanupEnsure = new Error("ALARM_FAILED");
+    const context = createManager({
+      sessionStorage,
+      scheduler,
+      limits: { maxSteps: 1_000, maxRecordingBytes: 70_000, maxAggregateBytes },
+    });
+
+    await expect(context.manager.start(
+      "session-0", "flow-0", 1, "https://example.test",
+    )).rejects.toThrow("RECORDED_STATE_FAILED");
+    expect(sessionStorage.values.size).toBe(0);
+    expect(scheduler.cleanupSessions.size).toBe(0);
+    expect(sessionStorage.removeManyCalls).toHaveLength(1);
+    await expect(context.manager.start(
+      "session-1", "flow-1", 2, "https://example.test",
+    )).rejects.toThrow("RECORDING_STATE_LIMIT");
+    const attemptsBeforeKeepalive = sessionStorage.removeManyCalls.length;
+
+    sessionStorage.failRemoveMany = undefined;
+    scheduler.failCleanupEnsure = undefined;
+    await context.manager.retryCleanupStates();
+    expect(sessionStorage.removeManyCalls).toHaveLength(attemptsBeforeKeepalive + 1);
+    await expect(context.manager.start(
+      "session-1", "flow-1", 2, "https://example.test",
+    )).resolves.toBeUndefined();
+  });
+
+  it("accounts and retries a fresh markerless snapshot without reading its contents", async () => {
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.values.set("active-recording:session-a", {
+      untrusted: "snapshot contents must not be read",
+    });
+    sessionStorage.bytesInUseOverride = MAX_AGGREGATE_RECORDING_BYTES - 1;
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const context = createManager({ sessionStorage });
+
+    await context.manager.retryCleanupStates();
+    expect(sessionStorage.reads).not.toContain("active-recording:session-a");
+    expect(sessionStorage.getBytesInUseCalls).toContainEqual([
+      "active-recording-index:session-a",
+      "active-recording:session-a",
+    ]);
+    await expect(context.manager.start(
+      "session-b", "blocked-by-orphan", 2, "https://example.test/b",
+    )).rejects.toThrow("RECORDING_STATE_LIMIT");
+
+    sessionStorage.failRemoveMany = undefined;
+    await context.manager.retryCleanupStates();
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    await expect(context.manager.start(
+      "session-b", "after-orphan", 2, "https://example.test/b",
+    )).resolves.toBeUndefined();
   });
 
   it("rejects completed recordings with reverse maps or raw sensitive args", () => {

@@ -379,6 +379,7 @@ export class RecordingManager {
   private readonly persistedFootprints = new Map<string, number>();
   private readonly replaying = new Set<string>();
   private readonly closedSessions = new Set<string>();
+  private readonly cleanupFallbackSessions = new Set<string>();
   private readonly pending = new Map<string, PendingReservation>();
   private readonly sessionStorage: RecordingStorage;
   private readonly localStorage: RecordingStorage;
@@ -1031,6 +1032,7 @@ export class RecordingManager {
   }
 
   private async rollbackFailedStartPersistenceUnlocked(state: ActiveRecording): Promise<void> {
+    this.cleanupFallbackSessions.add(state.sessionId);
     const cleanupState: ActiveRecording = { ...state, status: 'cleanup' };
     this.closedSessions.add(state.sessionId);
     this.active.delete(state.sessionId);
@@ -1056,12 +1058,16 @@ export class RecordingManager {
       .map((key) => key.slice(ACTIVE_MARKER_PREFIX.length))
       .filter(isValidV2SessionId));
     if (keys.includes(LEGACY_ACTIVE_INDEX_KEY)) {
-      const orphanSnapshots = keys.filter((key) => {
-        if (!key.startsWith(ACTIVE_PREFIX)) return false;
-        const sessionId = key.slice(ACTIVE_PREFIX.length);
-        return isValidV2SessionId(sessionId) && !keys.includes(`${ACTIVE_MARKER_PREFIX}${sessionId}`);
-      });
-      await this.sessionStorage.removeMany([LEGACY_ACTIVE_INDEX_KEY, ...orphanSnapshots]);
+      await this.sessionStorage.removeMany([LEGACY_ACTIVE_INDEX_KEY]);
+    }
+    const orphanSnapshotSessionIds = keys.flatMap((key) => {
+      if (!key.startsWith(ACTIVE_PREFIX)) return [];
+      const sessionId = key.slice(ACTIVE_PREFIX.length);
+      return keys.includes(`${ACTIVE_MARKER_PREFIX}${sessionId}`) ? [] : [sessionId];
+    });
+    for (const sessionId of orphanSnapshotSessionIds) {
+      this.cleanupFallbackSessions.add(sessionId);
+      await this.retryCleanupSessionUnlocked(sessionId);
     }
     return [...sessionIds].sort();
   }
@@ -1072,6 +1078,7 @@ export class RecordingManager {
       `${ACTIVE_MARKER_PREFIX}${sessionId}`,
     ]);
     this.persistedFootprints.delete(sessionId);
+    this.cleanupFallbackSessions.delete(sessionId);
     this.active.delete(sessionId);
     this.replaying.delete(sessionId);
     for (const [id, reservation] of this.pending) {
@@ -1139,6 +1146,7 @@ export class RecordingManager {
 
   private async retryCleanupAlarmsUnlocked(): Promise<Set<string>> {
     const cleanupSessions = new Set(await this.scheduler.getCleanupSessionIds());
+    for (const sessionId of this.cleanupFallbackSessions) cleanupSessions.add(sessionId);
     for (const sessionId of cleanupSessions) {
       await this.retryCleanupSessionUnlocked(sessionId);
     }

@@ -87,11 +87,7 @@ export class RecordingRetryRegistry {
     return existing?.name === name && existing.canonical === canonical;
   }
 
-  clearSession(sessionId: string): void {
-    this.bySession.delete(sessionId);
-  }
-
-  clearExpired(sessionId: string, name: string): void {
+  clearTerminated(sessionId: string, name: string): void {
     if (this.bySession.get(sessionId)?.name === name) this.bySession.delete(sessionId);
   }
 
@@ -197,7 +193,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const stateManager = new LocalStateManager();
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
   stateManager.onRecordingReservationTerminated(({ sessionId, name }) => {
-    recordingRetryRegistry.clearExpired(sessionId, name);
+    recordingRetryRegistry.clearTerminated(sessionId, name);
   });
 
   // Wire up browser listing to context
@@ -673,10 +669,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             if (!recordingRetryRegistry.canRetain(sessionId, recording.name, canonicalRecording)) {
               throw new Error("Recording recovery payload changed");
             }
-            let durableWriteSucceeded = false;
             try {
               saveRecordingToFile(recording, options.recordingsDir, options.recordingFileOps);
-              durableWriteSucceeded = true;
               recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
               const released = await stateManager.releaseRecordingReservation(
                 sessionId,
@@ -692,8 +686,6 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             } catch (error) {
               if (isRecordingDirectorySyncError(error)) {
                 recordingRetryRegistry.retain(sessionId, recording.name, canonicalRecording);
-              } else if (!durableWriteSucceeded) {
-                recordingRetryRegistry.clearSession(sessionId);
               }
               throw error;
             }

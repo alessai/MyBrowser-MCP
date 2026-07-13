@@ -551,11 +551,24 @@ export function createRecordingTools(
     handle: async (context, params) => {
       const { name, tabId } = RecordStartArgs.parse(params);
       return runLifecycleOperation(async () => {
+        const sessionId = getSessionId();
         if (failedStartCleanupPending) await releaseActiveRecording();
         if (activeRecordingName) {
-          throw new Error("A recording reservation is already active for this session");
+          const currentName = activeRecordingName;
+          let stillLive: boolean;
+          try {
+            stillLive = await stateManager.hasRecordingReservation(sessionId, currentName);
+          } catch {
+            throw new Error("Recording reservation state unavailable");
+          }
+          if (stillLive) {
+            throw new Error("A recording reservation is already active for this session");
+          }
+          if (activeRecordingName === currentName) {
+            activeRecordingName = undefined;
+            failedStartCleanupPending = false;
+          }
         }
-        const sessionId = getSessionId();
         const canonicalName = normalizeRecordingName(name);
         const recordingsDir = options.recordingsDir ?? RECORDINGS_DIR;
         if (existsSync(join(recordingsDir, `${canonicalName}.json`))) {

@@ -491,6 +491,114 @@ describe("recording tools and persistence", () => {
     expect(state.releaseRecordingReservation).toHaveBeenCalledWith("session-a", "Checkout_Flow");
   });
 
+  it("reconciles a stale active name after ordinary reservation timer expiry", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = new LocalStateManager();
+      const sendSocketMessage = vi.fn().mockResolvedValue({ status: "recording" });
+      const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+      await recordStart.handle(
+        { sendSocketMessage } as unknown as Context,
+        { name: "first", tabId: 7 },
+      );
+
+      await vi.advanceTimersByTimeAsync(1_800_000);
+      await expect(recordStart.handle(
+        { sendSocketMessage } as unknown as Context,
+        { name: "after expiry", tabId: 8 },
+      )).resolves.toMatchObject({ content: [{ text: 'Recording started: "after_expiry"' }] });
+      await state.removeSession("session-a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconciles a stale active name after removeSession cleanup", async () => {
+    const state = new LocalStateManager();
+    const sendSocketMessage = vi.fn().mockResolvedValue({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+    await recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "first", tabId: 7 },
+    );
+    await state.removeSession("session-a");
+
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "after remove", tabId: 8 },
+    )).resolves.toMatchObject({ content: [{ text: 'Recording started: "after_remove"' }] });
+    await state.removeSession("session-a");
+  });
+
+  it("clears a failed extension-start name after authoritative abort cleanup", async () => {
+    const state = createRecordingState();
+    state.releaseRecordingReservation.mockResolvedValueOnce(false);
+    state.hasRecordingReservation.mockResolvedValueOnce(false);
+    state.reserveRecording
+      .mockResolvedValueOnce({
+        ok: true,
+        reservation: {
+          name: "Checkout_Flow",
+          sessionId: "session-a",
+          expiresAt: Date.now() + 1_800_000,
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        reservation: {
+          name: "after_abort",
+          sessionId: "session-a",
+          expiresAt: Date.now() + 1_800_000,
+        },
+      });
+    const sendSocketMessage = vi.fn()
+      .mockRejectedValueOnce(new Error("extension aborted"))
+      .mockResolvedValueOnce({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Checkout Flow", tabId: 7 },
+    )).rejects.toThrow("extension aborted");
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "after abort", tabId: 8 },
+    )).resolves.toBeDefined();
+    expect(state.reserveRecording).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed and retains the stale active name when reconciliation rejects", async () => {
+    const state = createRecordingState();
+    state.hasRecordingReservation.mockRejectedValue(new Error("state exposed"));
+    const sendSocketMessage = vi.fn().mockResolvedValue({ status: "recording" });
+    const { recordStart } = getRecordingApi().createRecordingTools(state, () => "session-a");
+    await recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "Checkout Flow", tabId: 7 },
+    );
+
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "second", tabId: 8 },
+    )).rejects.toThrow("Recording reservation state unavailable");
+    expect(state.reserveRecording).toHaveBeenCalledTimes(1);
+    expect(sendSocketMessage).toHaveBeenCalledTimes(1);
+
+    state.hasRecordingReservation.mockResolvedValue(false);
+    state.reserveRecording.mockResolvedValue({
+      ok: true,
+      reservation: {
+        name: "second",
+        sessionId: "session-a",
+        expiresAt: Date.now() + 1_800_000,
+      },
+    });
+    await expect(recordStart.handle(
+      { sendSocketMessage } as unknown as Context,
+      { name: "second", tabId: 8 },
+    )).resolves.toBeDefined();
+  });
+
   it("retains a failed-start reservation after false live release and cleans it before another start", async () => {
     const state = createRecordingState();
     state.releaseRecordingReservation
@@ -1442,12 +1550,9 @@ describe("acknowledged recording reservation messages", () => {
     expect(registry.retain("session-a", "flow-b", "canonical-b")).toBe(false);
     expect(registry.count("session-a")).toBe(1);
     expect(registry.match("session-a", "flow-a", "canonical-a")).toBe(true);
-    registry.clearExpired("session-a", "other");
+    registry.clearTerminated("session-a", "other");
     expect(registry.count("session-a")).toBe(1);
-    registry.clearExpired("session-a", "flow-a");
-    expect(registry.count("session-a")).toBe(0);
-    expect(registry.retain("session-a", "flow-a", "canonical-a")).toBe(true);
-    registry.clearSession("session-a");
+    registry.clearTerminated("session-a", "flow-a");
     expect(registry.count("session-a")).toBe(0);
     expect(registry.count()).toBe(0);
   });
@@ -1821,7 +1926,13 @@ describe("acknowledged recording reservation messages", () => {
     tempDirs.push(base);
     const recordingsDir = join(base, "recordings");
     const retryRegistry = new RecordingRetryRegistry();
-    const { server, extension } = await setupReservedRecording(recordingsDir, undefined, retryRegistry);
+    let failExistingDescriptor = false;
+    const { server, extension } = await setupReservedRecording(recordingsDir, {
+      fstatSync: ((fd: number) => {
+        if (failExistingDescriptor) throw new Error("generic descriptor failure");
+        return fstatSync(fd);
+      }) as typeof fstatSync,
+    }, retryRegistry);
     const releaseOriginal = server.stateManager.releaseRecordingReservation.bind(server.stateManager);
     const release = vi.spyOn(server.stateManager, "releaseRecordingReservation")
       .mockResolvedValueOnce(false)
@@ -1836,6 +1947,15 @@ describe("acknowledged recording reservation messages", () => {
     expect(retryRegistry.count("session-a")).toBe(1);
     const filePath = join(recordingsDir, "Checkout_Flow.json");
     const original = readFileSync(filePath, "utf8");
+    failExistingDescriptor = true;
+    await expect(persistRecordingMessage(extension, "persist-identical-descriptor-failure"))
+      .resolves.toEqual({
+        type: "persistRecordingResult",
+        id: "persist-identical-descriptor-failure",
+        ok: false,
+        error: "persistence failed",
+      });
+    expect(retryRegistry.count("session-a")).toBe(1);
     await expect(persistRecordingMessage(extension, "persist-different", {
       ...validRecording,
       url: "https://different.test/",
@@ -1849,15 +1969,9 @@ describe("acknowledged recording reservation messages", () => {
     expect(release).toHaveBeenCalledTimes(1);
     expect(retryRegistry.count("session-a")).toBe(1);
 
-    await expect(persistRecordingMessage(extension, "persist-identical-retry")).resolves.toEqual({
-      type: "persistRecordingResult",
-      id: "persist-identical-retry",
-      ok: true,
-    });
-    expect(readFileSync(filePath, "utf8")).toBe(original);
-    expect(release).toHaveBeenCalledTimes(2);
-    await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
-      .resolves.toBe(false);
+    failExistingDescriptor = false;
+    await expect(server.stateManager.releaseRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(true);
     expect(retryRegistry.count("session-a")).toBe(0);
   });
 
