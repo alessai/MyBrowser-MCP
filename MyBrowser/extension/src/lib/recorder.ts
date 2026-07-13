@@ -388,6 +388,8 @@ export class RecordingManager {
   private readonly active = new Map<string, ActiveRecording>();
   private readonly authorityTokens = new Map<string, object>();
   private readonly renewingSessions = new Set<string>();
+  private readonly deferredRenewalSessions = new Set<string>();
+  private readonly deferredRenewalSchedules = new Map<string, Promise<void>>();
   private readonly persistedFootprints = new Map<string, number>();
   private readonly replayTokens = new Map<string, Set<ReplayToken>>();
   private readonly closedSessions = new Set<string>();
@@ -515,6 +517,10 @@ export class RecordingManager {
         throw new RecordedStateFailure('restore_all');
       }
       if (this.closedSessions.has(sessionId)) return null;
+      if (this.deferredRenewalSessions.has(sessionId)) {
+        this.scheduleDeferredRenewal(sessionId);
+        throw new RecordedStateFailure('renewal_in_progress');
+      }
       if (this.renewingSessions.has(sessionId)) {
         throw new RecordedStateFailure('renewal_in_progress');
       }
@@ -657,6 +663,7 @@ export class RecordingManager {
       this.active.set(sessionId, updated);
       this.pending.delete(prepared.id);
       await this.persistActiveUnlocked(updated);
+      this.scheduleDeferredRenewal(sessionId);
     });
   }
 
@@ -664,6 +671,7 @@ export class RecordingManager {
     return this.enqueue(async () => {
       const reservation = this.pending.get(prepared.id);
       if (reservation?.sessionId === sessionId) this.pending.delete(prepared.id);
+      this.scheduleDeferredRenewal(sessionId);
     });
   }
 
@@ -673,6 +681,10 @@ export class RecordingManager {
         await this.restoreSessionUnlocked(sessionId);
       } catch {
         throw new RecordedStateFailure('restore_session');
+      }
+      if (this.deferredRenewalSessions.has(sessionId)) {
+        this.scheduleDeferredRenewal(sessionId);
+        throw new RecordedStateFailure('renewal_in_progress');
       }
       if (this.renewingSessions.has(sessionId)) {
         throw new RecordedStateFailure('renewal_in_progress');
@@ -892,11 +904,17 @@ export class RecordingManager {
           await this.finishStopUnlocked(sessionId);
           continue;
         }
-        if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) continue;
+        if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
+          this.deferredRenewalSessions.add(sessionId);
+          continue;
+        }
         const authorityToken = this.authorityTokenFor(sessionId);
         found.push({ sessionId, name: active.recording.name, authorityToken });
       }
-      for (const candidate of found) this.renewingSessions.add(candidate.sessionId);
+      for (const candidate of found) {
+        this.renewingSessions.add(candidate.sessionId);
+        this.deferredRenewalSessions.delete(candidate.sessionId);
+      }
       return found;
     });
 
@@ -1205,6 +1223,7 @@ export class RecordingManager {
     this.active.delete(sessionId);
     this.authorityTokens.delete(sessionId);
     this.renewingSessions.delete(sessionId);
+    this.deferredRenewalSessions.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1310,6 +1329,7 @@ export class RecordingManager {
     this.active.delete(sessionId);
     this.authorityTokens.delete(sessionId);
     this.renewingSessions.delete(sessionId);
+    this.deferredRenewalSessions.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1343,6 +1363,30 @@ export class RecordingManager {
     const created = {};
     this.authorityTokens.set(sessionId, created);
     return created;
+  }
+
+  private scheduleDeferredRenewal(sessionId: string): void {
+    if (!this.deferredRenewalSessions.has(sessionId)
+      || this.deferredRenewalSchedules.has(sessionId)) return;
+    const currentPass = this.renewalPass;
+    const scheduled = (async () => {
+      try {
+        await currentPass;
+      } catch {
+        // A fresh pass below retries after candidate-gather failures.
+      }
+      if (!this.deferredRenewalSessions.has(sessionId)) return;
+      try {
+        await this.renewPersistedSessions();
+      } catch {
+        // Keep the deferred marker; the next action or alarm retries it.
+      }
+    })().finally(() => {
+      if (this.deferredRenewalSchedules.get(sessionId) === scheduled) {
+        this.deferredRenewalSchedules.delete(sessionId);
+      }
+    });
+    this.deferredRenewalSchedules.set(sessionId, scheduled);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {

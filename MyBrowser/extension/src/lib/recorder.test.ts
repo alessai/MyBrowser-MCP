@@ -1783,13 +1783,16 @@ describe("RecordingManager restart and stop persistence", () => {
     );
     expect(prepared).not.toBeNull();
 
-    await current.manager.renewPersistedSessions();
+    for (let pass = 0; pass < 6; pass += 1) {
+      await current.manager.renewPersistedSessions();
+    }
 
     expect(current.transport.requests).toEqual([]);
     await current.manager.commitStep("session-a", prepared!, {
       durationMs: 1,
       currentUrl: "https://example.test",
     });
+    await vi.waitFor(() => expect(current.transport.requests).toHaveLength(1));
     expect(current.manager.snapshot().active).toHaveLength(1);
   });
 
