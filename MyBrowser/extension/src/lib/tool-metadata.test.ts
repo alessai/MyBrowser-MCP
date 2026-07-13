@@ -36,7 +36,12 @@ describe("TOOL_METADATA", () => {
       mutatesTab: false,
       recordable: false,
     });
-    expect(TOOL_METADATA.browser_replay.queue).toBe("tab");
+    expect(TOOL_METADATA.browser_replay).toEqual({
+      tab: "required",
+      queue: "tab",
+      mutatesTab: true,
+      recordable: false,
+    });
   });
 
   it("defines exhaustive string metadata for every recordable tool", () => {

@@ -42,7 +42,7 @@ import { ensureDirectories } from "./site-knowledge.js";
 import { createRecordingTools } from "./tools/record.js";
 
 // ULTRA Phase 3: Replay tools
-import { replay } from "./tools/replay.js";
+import { redactReplayArguments, replay } from "./tools/replay.js";
 
 // ULTRA Phase 4: Session tools
 import { createSessionTools } from "./tools/sessions.js";
@@ -304,7 +304,9 @@ export async function createServerWithTools(options: ServerOptions) {
         toolName,
         sessionId,
         details: {
-          arguments: request.params.arguments,
+          arguments: toolName === "browser_replay"
+            ? redactReplayArguments(request.params.arguments)
+            : request.params.arguments,
           stack: error instanceof Error ? error.stack : undefined,
         },
       });

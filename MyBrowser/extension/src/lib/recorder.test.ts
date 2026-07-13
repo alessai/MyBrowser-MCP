@@ -16,6 +16,8 @@ import {
   RECORDING_RENEWAL_ALARM,
   ChromeRecordingAlarmScheduler,
   isSanitizedRecording,
+  listRecordingsFromStorage,
+  loadRecordingForReplay,
   loadRecordingFromStorage,
   recordingCleanupAlarmName,
   recordingCleanupSessionId,
@@ -694,6 +696,72 @@ describe("RecordingManager privacy and ownership", () => {
     storage.values.set("recording:canonical_name", { ...valid, name: "different_name" });
     await expect(loadRecordingFromStorage("canonical name", storage)).resolves.toBeNull();
     expect(storage.values.has("recording:canonical_name")).toBe(false);
+  });
+
+  it("lists safe, incompatible legacy, and malformed recordings without reading legacy args", async () => {
+    const storage = new MemoryStorage();
+    vi.spyOn(storage, "get").mockImplementation(async <T>(key: string) => (
+      storage.values.get(key) as T | undefined
+    ));
+    const valid = {
+      name: "safe-flow",
+      startedAt: 1,
+      stoppedAt: 2,
+      url: "https://example.test/path",
+      steps: [{
+        action: "browser_go_back",
+        args: {},
+        timestamp: 1,
+        durationMs: 0,
+        url: "https://example.test/path",
+      }],
+      requiredVariables: [],
+    };
+    const unreadArgs = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(unreadArgs, "secret", {
+      enumerable: true,
+      get: () => { throw new Error(SECRET_TEXT); },
+    });
+    storage.values.set("recording:safe-flow", valid);
+    storage.values.set("recording:legacy-tabs", {
+      name: "legacy-tabs",
+      steps: [{ action: "browser_new_tab", args: unreadArgs }],
+    });
+    storage.values.set("recording:broken-flow", { steps: SECRET_FORM });
+
+    await expect(listRecordingsFromStorage(storage)).resolves.toEqual([
+      { name: "broken-flow", compatible: false, reason: "RECORDING_INVALID" },
+      {
+        name: "legacy-tabs",
+        compatible: false,
+        reason: "RECORDING_UNSUPPORTED_MULTI_TAB",
+      },
+      { name: "safe-flow", compatible: true },
+    ]);
+    expect(storage.values.has("recording:legacy-tabs")).toBe(true);
+    expect(storage.values.has("recording:broken-flow")).toBe(true);
+  });
+
+  it("rejects legacy multi-tab replay loading without transporting or deleting its args", async () => {
+    const storage = new MemoryStorage();
+    vi.spyOn(storage, "get").mockImplementation(async <T>(key: string) => (
+      storage.values.get(key) as T | undefined
+    ));
+    const unreadArgs = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(unreadArgs, "secret", {
+      enumerable: true,
+      get: () => { throw new Error(SECRET_TEXT); },
+    });
+    const legacy = {
+      name: "legacy-tabs",
+      steps: [{ action: "browser_new_tab", args: unreadArgs }],
+    };
+    storage.values.set("recording:legacy-tabs", legacy);
+
+    await expect(loadRecordingForReplay("legacy-tabs", storage)).rejects.toThrowError(
+      "RECORDING_UNSUPPORTED_MULTI_TAB",
+    );
+    expect(storage.values.get("recording:legacy-tabs")).toBe(legacy);
   });
 
   it("uses canonical names for active/completed state and rejects local aliases at start", async () => {

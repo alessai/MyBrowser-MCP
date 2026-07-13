@@ -31,7 +31,7 @@ import {
 } from './events';
 import { runActionSequence, type ActionStep } from './action-sequencer';
 import {
-  loadRecordingFromStorage,
+  loadRecordingForReplay,
   listRecordingsFromStorage,
   type Recording,
 } from './recorder';
@@ -381,6 +381,7 @@ async function captureScreenshot(tabId: number): Promise<string> {
 
 export interface ToolContext {
   readonly sessionId: string;
+  readonly expiresAt?: number;
   input: InputDevice;
   services: RequestToolServices;
   getTabId: () => number;
@@ -845,14 +846,14 @@ const handlers: Record<string, ToolHandler> = {
   },
 
   async browser_record_list() {
-    const names = await listRecordingsFromStorage();
-    return { recordings: names };
+    const recordings = await listRecordingsFromStorage();
+    return { recordings };
   },
 
   async loadRecording(args) {
     const name = args.name as string;
     if (!name) throw new Error('Recording name is required.');
-    const recording = await loadRecordingFromStorage(name);
+    const recording = await loadRecordingForReplay(name);
     if (!recording) throw new Error(`Recording "${name}" not found.`);
     return recording;
   },
@@ -861,27 +862,21 @@ const handlers: Record<string, ToolHandler> = {
 
   async browser_replay(args, ctx) {
     const recording = args.recording as Recording;
-    if (!Array.isArray(recording?.steps)) throw new Error('Invalid recording: steps must be an array.');
-    for (const step of recording.steps) {
-      if (!step.action || typeof step.action !== 'string')
-        throw new Error('Invalid recording: each step must have an action string.');
-    }
 
     const options: ReplayOptions = {
       recording,
+      tabId: args.tabId as number,
       variables: args.variables as Record<string, string> | undefined,
       speed: args.speed as number | undefined,
       stopOnError: args.stopOnError as boolean | undefined,
       startFromStep: args.startFromStep as number | undefined,
       stopAtStep: args.stopAtStep as number | undefined,
+      setReplaySuppressed: (replaying) => {
+        getRecordingManager().setReplaying(ctx.sessionId, replaying);
+      },
     };
 
-    getRecordingManager().setReplaying(ctx.sessionId, true);
-    try {
-      return await replayRecording(options, ctx);
-    } finally {
-      getRecordingManager().setReplaying(ctx.sessionId, false);
-    }
+    return replayRecording(options, ctx);
   },
 
   // === ULTRA Phase 3: Page Object Model generation ===

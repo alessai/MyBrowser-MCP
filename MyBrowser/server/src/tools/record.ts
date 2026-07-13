@@ -25,6 +25,12 @@ import {
   RECORDING_RESERVATION_LEASE_MS,
   type IStateManager,
 } from "../state-manager.js";
+import {
+  inspectRecordingFile,
+  mergeRecordingEntries,
+  parseExtensionRecordingList,
+  type RecordingListEntry,
+} from "./recording-compatibility.js";
 import type { Tool } from "./types.js";
 
 const RECORDINGS_DIR = join(homedir(), ".mybrowser", "recordings");
@@ -673,32 +679,40 @@ export function createRecordingTools(
     },
     handle: async (context, params) => {
       RecordListArgs.parse(params);
-      let extensionRecordings: string[] = [];
+      let extensionRecordings: RecordingListEntry[] = [];
       try {
-        const extResult = (await context.sendSocketMessage("browser_record_list", {})) as {
-          recordings: string[];
-        };
-        extensionRecordings = extResult.recordings;
+        extensionRecordings = parseExtensionRecordingList(
+          await context.sendSocketMessage("browser_record_list", {}),
+        );
       } catch {
         // Extension may not be connected.
       }
 
-      let serverRecordings: string[] = [];
+      let serverRecordings: RecordingListEntry[] = [];
       try {
-        ensureRecordingsDir();
-        serverRecordings = readdirSync(RECORDINGS_DIR)
+        const recordingsDir = options.recordingsDir ?? RECORDINGS_DIR;
+        ensureRecordingsDir(recordingsDir);
+        serverRecordings = readdirSync(recordingsDir)
           .filter((file) => file.endsWith(".json"))
-          .map((file) => file.replace(/\.json$/, ""));
+          .map((file) => {
+            const name = file.replace(/\.json$/, "");
+            return { name, ...inspectRecordingFile(join(recordingsDir, file)) };
+          });
       } catch {
         // Directory may not exist yet.
       }
 
-      const allNames = [...new Set([...extensionRecordings, ...serverRecordings])].sort();
+      const recordings = mergeRecordingEntries([...extensionRecordings, ...serverRecordings]);
       return {
+        recordings,
         content: [{
           type: "text",
-          text: allNames.length > 0
-            ? `Saved recordings (${allNames.length}):\n${allNames.map((name) => `  - ${name}`).join("\n")}`
+          text: recordings.length > 0
+            ? `Saved recordings (${recordings.length}):\n${recordings.map((entry) => (
+                entry.compatible
+                  ? `  - ${entry.name}`
+                  : `  - ${entry.name} (${entry.reason})`
+              )).join("\n")}`
             : "No recordings found.",
         }],
       };

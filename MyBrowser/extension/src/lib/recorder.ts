@@ -28,6 +28,12 @@ export interface Recording {
   requiredVariables: RequiredVariable[];
 }
 
+export interface RecordingListEntry {
+  name: string;
+  compatible: boolean;
+  reason?: 'RECORDING_UNSUPPORTED_MULTI_TAB' | 'RECORDING_INVALID';
+}
+
 export interface RecordingStorage {
   get<T>(key: string): Promise<T | undefined>;
   has(key: string): Promise<boolean>;
@@ -1299,11 +1305,71 @@ export async function loadRecordingFromStorage(
   return recording;
 }
 
-export async function listRecordingsFromStorage(): Promise<string[]> {
-  const keys = await completedStorage().getKeys();
-  return keys
+const UNSUPPORTED_REPLAY_ACTIONS = new Set([
+  'new_tab',
+  'select_tab',
+  'close_tab',
+  'browser_new_tab',
+  'browser_select_tab',
+  'browser_close_tab',
+]);
+
+function inspectStoredRecording(value: unknown): Omit<RecordingListEntry, 'name'> {
+  if (!isRecord(value)) return { compatible: false, reason: 'RECORDING_INVALID' };
+  const stepsDescriptor = Object.getOwnPropertyDescriptor(value, 'steps');
+  if (!stepsDescriptor || !('value' in stepsDescriptor) || !Array.isArray(stepsDescriptor.value)) {
+    return { compatible: false, reason: 'RECORDING_INVALID' };
+  }
+  for (let index = 0; index < stepsDescriptor.value.length; index += 1) {
+    const stepDescriptor = Object.getOwnPropertyDescriptor(stepsDescriptor.value, String(index));
+    if (!stepDescriptor || !('value' in stepDescriptor) || !isRecord(stepDescriptor.value)) {
+      return { compatible: false, reason: 'RECORDING_INVALID' };
+    }
+    const actionDescriptor = Object.getOwnPropertyDescriptor(stepDescriptor.value, 'action');
+    if (!actionDescriptor || !('value' in actionDescriptor)
+      || typeof actionDescriptor.value !== 'string') {
+      return { compatible: false, reason: 'RECORDING_INVALID' };
+    }
+    if (UNSUPPORTED_REPLAY_ACTIONS.has(actionDescriptor.value)) {
+      return { compatible: false, reason: 'RECORDING_UNSUPPORTED_MULTI_TAB' };
+    }
+  }
+  return { compatible: true };
+}
+
+export async function listRecordingsFromStorage(
+  storage: RecordingStorage = completedStorage(),
+): Promise<RecordingListEntry[]> {
+  const keys = (await storage.getKeys())
     .filter((key) => key.startsWith(COMPLETED_PREFIX))
-    .map((key) => key.slice(COMPLETED_PREFIX.length));
+    .sort();
+  return Promise.all(keys.map(async (key) => {
+    const name = key.slice(COMPLETED_PREFIX.length);
+    const compatibility = inspectStoredRecording(await storage.get<unknown>(key));
+    return { name, ...compatibility };
+  }));
+}
+
+export async function loadRecordingForReplay(
+  name: string,
+  storage: RecordingStorage = completedStorage(),
+): Promise<Recording | null> {
+  const canonicalName = canonicalizeRecordingName(name);
+  const key = `${COMPLETED_PREFIX}${canonicalName}`;
+  const value = await storage.get<unknown>(key);
+  if (value === undefined) return null;
+  const compatibility = inspectStoredRecording(value);
+  if (compatibility.reason === 'RECORDING_UNSUPPORTED_MULTI_TAB') {
+    throw new Error('RECORDING_UNSUPPORTED_MULTI_TAB');
+  }
+  if (!compatibility.compatible
+    || !isSanitizedRecording(value)
+    || value.name !== canonicalName) {
+    await storage.remove(key);
+    await storage.remove(`${COMPLETED_DIGEST_PREFIX}${canonicalName}`);
+    throw new Error('RECORDING_INVALID');
+  }
+  return value;
 }
 
 export async function deleteRecordingFromStorage(name: string): Promise<void> {
