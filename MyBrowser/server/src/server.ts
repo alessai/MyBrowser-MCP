@@ -4,6 +4,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Context } from "./context.js";
+import { VERSION } from "./version.js";
 import { createWebSocketServer } from "./ws-server.js";
 import { makeTabKey, type IStateManager } from "./state-manager.js";
 import type { Tool } from "./tools/types.js";
@@ -167,7 +168,7 @@ export async function createServerWithTools(options: ServerOptions) {
     context,
     getActiveBrowser,
     serverInfo: {
-      version: "1.1.4",
+      version: VERSION,
       host,
       port,
       getSessionId: () => sessionId,
@@ -218,7 +219,7 @@ export async function createServerWithTools(options: ServerOptions) {
   ];
 
   const server = new Server(
-    { name: "MyBrowser MCP", version: "1.1.4" },
+    { name: "MyBrowser MCP", version: VERSION },
     { capabilities: { tools: {} } }
   );
 

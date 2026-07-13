@@ -1,6 +1,6 @@
 {
   "name": "@alessai/mybrowser-mcp",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "MCP server for MyBrowser - remote browser automation over Tailscale",
   "type": "module",
   "homepage": "https://github.com/alessai/MyBrowser-MCP",
@@ -22,10 +22,12 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts && chmod +x dist/*.js",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsup src/index.ts --format esm --dts && node -e \"require('node:fs').chmodSync('dist/index.js',0o755)\"",
     "dev": "tsup src/index.ts --format esm --watch",
     "test": "vitest run",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "prepack": "npm run clean && npm run check && npm test && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
