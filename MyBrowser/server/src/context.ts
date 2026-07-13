@@ -47,6 +47,8 @@ export class Context {
   private _hubWs: WebSocket | undefined;
   private _isClientMode = false;
   private _resolveTargetBrowserId: (() => Promise<string | undefined>) | undefined;
+  private shuttingDown = false;
+  private shutdownCancellations = new Set<() => void>();
 
   // ---- Client mode (WS to hub, not direct browsers) ----
 
@@ -65,6 +67,12 @@ export class Context {
 
   setTargetBrowserResolver(fn: () => Promise<string | undefined>): void {
     this._resolveTargetBrowserId = fn;
+  }
+
+  beginShutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    for (const cancel of [...this.shutdownCancellations]) cancel();
   }
 
   // ---- Browser registry (hub mode) ----
@@ -231,6 +239,7 @@ export class Context {
     payload: unknown,
     options: { timeoutMs: number },
   ): Promise<any> {
+    if (this.shuttingDown) throw new Error("SERVER_SHUTTING_DOWN");
     const { timeoutMs } = options;
     const id = generateId();
     // Include the timeout in the envelope so a hub-mode proxy can honor
@@ -250,6 +259,7 @@ export class Context {
 
     return new Promise((resolve, reject) => {
       const cleanup = () => {
+        this.shutdownCancellations.delete(cancelForShutdown);
         ws.removeEventListener("message", messageHandler);
         ws.removeEventListener("error", errorHandler);
         ws.removeEventListener("close", closeHandler);
@@ -294,9 +304,15 @@ export class Context {
         reject(new Error("Browser disconnected during request"));
       };
 
+      const cancelForShutdown = () => {
+        cleanup();
+        reject(new Error("SERVER_SHUTTING_DOWN"));
+      };
+
       ws.addEventListener("message", messageHandler);
       ws.addEventListener("error", errorHandler);
       ws.addEventListener("close", closeHandler);
+      this.shutdownCancellations.add(cancelForShutdown);
 
       if (ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify(message));

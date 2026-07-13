@@ -318,11 +318,11 @@ export async function createServerWithTools(options: ServerOptions) {
   const originalClose = server.close.bind(server);
   let closePromise: Promise<void> | undefined;
   server.close = () => {
+    wss.beginShutdown();
     if (closePromise) return closePromise;
     closePromise = (async () => {
       const errors: unknown[] = [];
       for (const step of [
-        () => wss.finalizeSession(sessionId),
         () => originalClose(),
         () => wss.close(),
         () => context.close(),

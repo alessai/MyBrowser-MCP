@@ -153,8 +153,8 @@ export class RecordingRetryRegistry {
 }
 
 export interface WsServerResult {
+  beginShutdown: () => void;
   close: () => Promise<void>;
-  finalizeSession: (sessionId: string) => Promise<void>;
   stateManager: IStateManager;
   isHub: boolean;
   boundPort: number;
@@ -252,6 +252,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
   const recordingPersistQueues = new Map<string, RecordingPersistQueue>();
   const sessionFinalizations = new Map<string, Promise<boolean>>();
+  const destructiveFinalizerOwners = new Map<string, number>();
   const sessionReconnectGraceMs = options.sessionReconnectGraceMs
     ?? SESSION_RECONNECT_GRACE_MS;
   const finalizedSessions = new FinalizedSessionRegistry({
@@ -323,18 +324,21 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     expectedGeneration?: number,
     allowConnectedGeneration = false,
   ): Promise<boolean> {
-    const activeFinalization = sessionFinalizations.get(sessionId);
+    const generation = expectedGeneration ?? sessionGenerations.get(sessionId) ?? 0;
+    const finalizationKey = `${sessionId}\0${generation}`;
+    const activeFinalization = sessionFinalizations.get(finalizationKey);
     if (activeFinalization) return activeFinalization;
     if (finalizedSessions.has(sessionId)) return Promise.resolve(false);
     const finalization = runSessionFinalizer(
       sessionId,
-      expectedGeneration,
-      allowConnectedGeneration,
+      generation,
+      expectedGeneration !== undefined || sessionGenerations.has(sessionId),
+      allowConnectedGeneration || expectedGeneration === undefined,
     );
-    sessionFinalizations.set(sessionId, finalization);
+    sessionFinalizations.set(finalizationKey, finalization);
     const forget = () => {
-      if (sessionFinalizations.get(sessionId) === finalization) {
-        sessionFinalizations.delete(sessionId);
+      if (sessionFinalizations.get(finalizationKey) === finalization) {
+        sessionFinalizations.delete(finalizationKey);
       }
     };
     void finalization.then(forget, forget);
@@ -343,7 +347,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
   async function runSessionFinalizer(
     sessionId: string,
-    expectedGeneration?: number,
+    generation: number,
+    generationAware: boolean,
     allowConnectedGeneration = false,
   ): Promise<boolean> {
     cancelSessionCleanup(sessionId);
@@ -356,32 +361,40 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       }
     };
     await step(() => drainRecordingPersists(sessionId));
-    if (
-      expectedGeneration !== undefined
-      && (
-        sessionGenerations.get(sessionId) !== expectedGeneration
-        || (
-          !allowConnectedGeneration
-          && connectionSessions.hasLiveSession(sessionId)
-        )
-      )
-    ) {
-      return false;
+    const ownsGeneration = (): boolean => !generationAware || (
+      sessionGenerations.get(sessionId) === generation
+      && (allowConnectedGeneration || !connectionSessions.hasLiveSession(sessionId))
+    );
+    if (!ownsGeneration()) return false;
+    const destructiveOwner = destructiveFinalizerOwners.get(sessionId);
+    if (destructiveOwner !== undefined && destructiveOwner !== generation) return false;
+    destructiveFinalizerOwners.set(sessionId, generation);
+    try {
+      for (const destructiveStep of [
+        () => stateManager.releaseAllTabs(sessionId),
+        () => stateManager.releaseLocksForSession(sessionId),
+        () => stateManager.clearEventHandlersForSession(
+          sessionId,
+          { notifyExtension: false },
+        ),
+        () => stateManager.removeSession(sessionId),
+      ]) {
+        if (!ownsGeneration()) return false;
+        await step(destructiveStep);
+      }
+      recordingRetryRegistry.clearSession(sessionId);
+      if (generationAware && sessionGenerations.get(sessionId) !== generation) return false;
+      sessionGenerations.delete(sessionId);
+      finalizedSessions.add(sessionId);
+      if (errors.length > 0) {
+        throw new AggregateError(errors, `finalizeSession(${sessionId})`);
+      }
+      return true;
+    } finally {
+      if (destructiveFinalizerOwners.get(sessionId) === generation) {
+        destructiveFinalizerOwners.delete(sessionId);
+      }
     }
-    await step(() => stateManager.releaseAllTabs(sessionId));
-    await step(() => stateManager.releaseLocksForSession(sessionId));
-    await step(() => stateManager.clearEventHandlersForSession(
-      sessionId,
-      { notifyExtension: false },
-    ));
-    await step(() => stateManager.removeSession(sessionId));
-    recordingRetryRegistry.clearSession(sessionId);
-    sessionGenerations.delete(sessionId);
-    finalizedSessions.add(sessionId);
-    if (errors.length > 0) {
-      throw new AggregateError(errors, `finalizeSession(${sessionId})`);
-    }
-    return true;
   }
 
   const connectionSessions = new SessionConnectionRegistry<WebSocket>();
@@ -389,6 +402,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const connectionBrowsers = new Map<WebSocket, string>();
   const pendingSessionCleanup = new Map<string, ReturnType<typeof setTimeout>>();
   const sessionGenerations = new Map<string, number>();
+  const pendingProxyCancellations = new Set<() => void>();
   let shuttingDown = false;
   let proxyRequestSequence = 0;
 
@@ -519,6 +533,14 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         error: "SERVER_SHUTTING_DOWN",
       },
     });
+  }
+
+  function beginShutdown(): void {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    context.beginShutdown();
+    stateManager.cancelPendingForShutdown();
+    for (const cancel of [...pendingProxyCancellations]) cancel();
   }
 
   const livenessSweep = setInterval(() => {
@@ -698,7 +720,10 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             });
             return;
           }
-          if (finalizedSessions.has(sessionId)) {
+          if (
+            finalizedSessions.has(sessionId)
+            || destructiveFinalizerOwners.has(sessionId)
+          ) {
             safeSend(ws, {
               type: "hub_rpc_result",
               id: msg.id,
@@ -1241,6 +1266,13 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           } catch { /* client gone */ }
           return;
         }
+        if (shuttingDown) {
+          safeSend(ws, {
+            type: MESSAGE_RESPONSE_TYPE,
+            payload: { requestId: msg.id, error: "SERVER_SHUTTING_DOWN" },
+          });
+          return;
+        }
 
         const browserWs = browser.ws;
         const requestedTimeoutMs =
@@ -1266,6 +1298,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         const cleanup = () => {
           if (settled) return;
           settled = true;
+          pendingProxyCancellations.delete(cancelForShutdown);
           browserWs.removeListener("message", responseHandler);
           browserWs.removeListener("close", closeHandler);
           ws.removeListener("close", clientCloseHandler);
@@ -1275,6 +1308,15 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         const safeSendToClient = (data: string) => {
           try { ws.send(data); } catch { /* client gone */ }
         };
+
+        const cancelForShutdown = () => {
+          cleanup();
+          safeSendToClient(JSON.stringify({
+            type: MESSAGE_RESPONSE_TYPE,
+            payload: { requestId: msg.id, error: "SERVER_SHUTTING_DOWN" },
+          }));
+        };
+        pendingProxyCancellations.add(cancelForShutdown);
 
         const responseHandler = (respData: Buffer | string) => {
           let resp: any;
@@ -1410,7 +1452,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   let shutdownPromise: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
-    shuttingDown = true;
+    beginShutdown();
     shutdownPromise = (async () => {
       const errors: unknown[] = [];
       clearInterval(livenessSweep);
@@ -1459,10 +1501,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   };
 
   return {
+    beginShutdown,
     close,
-    finalizeSession: async (sessionId) => {
-      await finalizeSession(sessionId);
-    },
     stateManager,
     isHub: true,
     boundPort,
@@ -1485,6 +1525,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
   let heartbeatSocket: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closePromise: Promise<void> | undefined;
+  let shutdownStarted = false;
 
   const stateManager = new HubStateManager(() => ws);
   let reconnectCb: (() => Promise<void>) | null = null;
@@ -1512,6 +1553,19 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     }
     clearHeartbeatTimeout();
     heartbeatSocket = null;
+  };
+
+  const beginShutdown = () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    closed = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    stopHeartbeat();
+    context.beginShutdown();
+    stateManager.beginShutdown();
   };
 
   const startHeartbeat = (socket: WebSocket) => {
@@ -1670,30 +1724,36 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
   }
 
   return {
+    beginShutdown,
     close: () => {
       if (closePromise) return closePromise;
-      closed = true;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      stopHeartbeat();
-      closePromise = new Promise<void>((resolve) => {
-        if (!ws || ws.readyState === WebSocket.CLOSED) {
-          resolve();
-          return;
+      beginShutdown();
+      closePromise = (async () => {
+        const errors: unknown[] = [];
+        try {
+          await stateManager.removeSessionForShutdown(context.sessionId);
+        } catch (error) {
+          errors.push(error);
         }
-        const forceClose = setTimeout(() => ws?.terminate(), 1_000);
-        forceClose.unref();
-        ws.once("close", () => {
-          clearTimeout(forceClose);
-          resolve();
+        await new Promise<void>((resolve) => {
+          if (!ws || ws.readyState === WebSocket.CLOSED) {
+            resolve();
+            return;
+          }
+          const forceClose = setTimeout(() => ws?.terminate(), 1_000);
+          forceClose.unref();
+          ws.once("close", () => {
+            clearTimeout(forceClose);
+            resolve();
+          });
+          try { ws.close(); } catch { resolve(); }
         });
-        try { ws.close(); } catch { resolve(); }
-      });
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Client shutdown failed");
+        }
+      })();
       return closePromise;
     },
-    finalizeSession: (sessionId) => stateManager.removeSession(sessionId),
     stateManager,
     isHub: false,
     boundPort: port,

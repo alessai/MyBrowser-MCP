@@ -3011,6 +3011,66 @@ describe("real loopback session topology", () => {
       .toEqual([]);
   }, 5_000);
 
+  it("lets the current generation finalize while a stale generation drains", async () => {
+    const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-generation-finalizers-"));
+    tempDirs.push(recordingsDir);
+    const server = await startHub(
+      recordingsDir,
+      undefined,
+      undefined,
+      { sessionReconnectGraceMs: 20 },
+    );
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const sessionClosed = waitForMatchingMessage(
+      extension,
+      ({ type }) => type === "session_closed",
+      2_000,
+    );
+    const first = await connect(server);
+    await authenticate(first, "client");
+    await callHubRpc(first, "register-first", "registerSession", { sessionId: "session-a" });
+    await callHubRpc(first, "reserve-a", "reserveRecording", {
+      name: validRecording.name,
+      leaseMs: 1_800_000,
+    });
+    const persistStarted = deferred<void>();
+    const allowPersist = deferred<boolean>();
+    vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockImplementation(async () => {
+        persistStarted.resolve();
+        return allowPersist.promise;
+      });
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "persist-generation-overlap",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    await persistStarted.promise;
+    const firstClosed = waitForClose(first);
+    first.close();
+    await firstClosed;
+    await new Promise((resolve) => setTimeout(resolve, 35));
+
+    const current = await connect(server);
+    await authenticate(current, "client");
+    await expect(callHubRpc(current, "register-current", "registerSession", {
+      sessionId: "session-a",
+    })).resolves.toMatchObject({ result: { ok: true } });
+    const unregister = callHubRpc(current, "unregister-current", "removeSession");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    allowPersist.resolve(true);
+
+    await expect(unregister).resolves.toMatchObject({ result: { ok: true } });
+    await expect(sessionClosed).resolves.toMatchObject({
+      type: "session_closed",
+      payload: { sessionId: "session-a" },
+    });
+    expect((await server.stateManager.listSessions()).map(({ id }) => id))
+      .not.toContain("session-a");
+  }, 5_000);
+
   it("retains an ID within grace and rejects it after finalization", async () => {
     const server = await startHub(undefined, undefined, undefined, {
       sessionReconnectGraceMs: 30,
@@ -3130,6 +3190,41 @@ describe("real loopback session topology", () => {
       .toEqual([handler!.id]);
   });
 
+  it.each([
+    ["negative", { ok: false }],
+    ["malformed", { removed: 1 }],
+  ])("keeps a handler when the extension returns a %s acknowledgement", async (_label, ack) => {
+    const server = await startHub();
+    const extension = await connect(server);
+    const auth = await authenticate(extension, "extension");
+    const browserId = auth.browserId as string;
+    const { context, server: clientServer } = await startClientProcess(server, "session-a");
+    extension.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (typeof message.id !== "string" || !String(message.type).startsWith("browser_")) return;
+      extension.send(JSON.stringify({
+        type: "messageResponse",
+        payload: { requestId: message.id, result: ack },
+      }));
+    });
+    const { browserOn, browserOff } = createEventsTools(
+      clientServer.stateManager,
+      () => "session-a",
+      async () => browserId,
+    );
+    await browserOn.handle(context, { event: "new_tab", action: "ignore", browserId });
+    const [handler] = await server.stateManager.listEventHandlers("session-a");
+
+    const result = await browserOff.handle(context, { handlerId: handler!.id });
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "EVENT_HANDLER_MIRROR_FAILED" }],
+      isError: true,
+    });
+    expect((await server.stateManager.listEventHandlers("session-a")).map(({ id }) => id))
+      .toEqual([handler!.id]);
+  });
+
   it("clears all handler mirrors through one acknowledged v2 control request", async () => {
     const server = await startHub();
     const extension = await connect(server);
@@ -3172,6 +3267,88 @@ describe("real loopback session topology", () => {
     });
     expect(unregisters[0]?.id).toEqual(expect.any(String));
     expect(await server.stateManager.listEventHandlers("session-a")).toEqual([]);
+  });
+
+  it("keeps every authoritative handler when a bulk mirror acknowledgement is malformed", async () => {
+    const server = await startHub();
+    const extension = await connect(server);
+    const auth = await authenticate(extension, "extension");
+    const browserId = auth.browserId as string;
+    const { context, server: clientServer } = await startClientProcess(server, "session-a");
+    extension.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (typeof message.id !== "string" || !String(message.type).startsWith("browser_")) return;
+      extension.send(JSON.stringify({
+        type: "messageResponse",
+        payload: {
+          requestId: message.id,
+          result: message.type === "browser_unregister_handler" ? null : { ok: true },
+        },
+      }));
+    });
+    const { browserOn, browserOff } = createEventsTools(
+      clientServer.stateManager,
+      () => "session-a",
+      async () => browserId,
+    );
+    await browserOn.handle(context, { event: "new_tab", action: "ignore", browserId });
+    await browserOn.handle(context, { event: "dialog", action: "dismiss", browserId });
+    const handlerIds = (await server.stateManager.listEventHandlers("session-a"))
+      .map(({ id }) => id);
+
+    const result = await browserOff.handle(context, {});
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "EVENT_HANDLER_MIRROR_FAILED" }],
+      isError: true,
+    });
+    expect((await server.stateManager.listEventHandlers("session-a")).map(({ id }) => id))
+      .toEqual(handlerIds);
+  });
+
+  it("keeps all bulk records when only one of multiple browsers positively acknowledges", async () => {
+    const server = await startHub();
+    const extensionA = await connect(server);
+    const browserA = (await authenticate(extensionA, "extension")).browserId as string;
+    const extensionB = await connect(server);
+    const browserB = (await authenticate(extensionB, "extension")).browserId as string;
+    for (const [extension, unregisterResult] of [
+      [extensionA, { ok: true }],
+      [extensionB, { ok: false }],
+    ] as const) {
+      extension.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (typeof message.id !== "string" || !String(message.type).startsWith("browser_")) return;
+        extension.send(JSON.stringify({
+          type: "messageResponse",
+          payload: {
+            requestId: message.id,
+            result: message.type === "browser_unregister_handler"
+              ? unregisterResult
+              : { ok: true },
+          },
+        }));
+      });
+    }
+    const { context, server: clientServer } = await startClientProcess(server, "session-a");
+    const { browserOn, browserOff } = createEventsTools(
+      clientServer.stateManager,
+      () => "session-a",
+      async () => browserA,
+    );
+    await browserOn.handle(context, { event: "new_tab", action: "ignore", browserId: browserA });
+    await browserOn.handle(context, { event: "dialog", action: "dismiss", browserId: browserB });
+    const handlerIds = (await server.stateManager.listEventHandlers("session-a"))
+      .map(({ id }) => id);
+
+    const result = await browserOff.handle(context, {});
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "EVENT_HANDLER_MIRROR_FAILED" }],
+      isError: true,
+    });
+    expect((await server.stateManager.listEventHandlers("session-a")).map(({ id }) => id))
+      .toEqual(handlerIds);
   });
 
   it("drains in-flight persistence before explicit client unregister", async () => {
@@ -3263,6 +3440,109 @@ describe("real loopback session topology", () => {
     expect(internals.recordingReservations.size).toBe(0);
     expect(internals.recordingReservationTimers.size).toBe(0);
     expect(await server.stateManager.listSessions()).toEqual([]);
+  }, 5_000);
+
+  it("cancels long-lived waiters and pending proxies before shutdown quiescence", async () => {
+    const server = await startHub();
+    const extension = await connect(server);
+    const auth = await authenticate(extension, "extension");
+    const browserId = auth.browserId as string;
+    const clientA = await connect(server);
+    await authenticate(clientA, "client");
+    await callHubRpc(clientA, "register-a", "registerSession", { sessionId: "session-a" });
+    const clientB = await connect(server);
+    await authenticate(clientB, "client");
+    await callHubRpc(clientB, "register-b", "registerSession", { sessionId: "session-b" });
+    await callHubRpc(clientA, "lock-owner", "acquireLock", {
+      name: "shutdown-lock",
+      timeoutMs: 60_000,
+      ttlMs: 60_000,
+    });
+
+    const eventResponse = waitForMatchingMessage(
+      clientB,
+      ({ id }) => id === "event-wait",
+      2_000,
+    ).catch((error) => ({ transportError: String(error) }));
+    clientB.send(JSON.stringify({
+      type: "hub_rpc",
+      id: "event-wait",
+      method: "waitForEvent",
+      params: { queueName: "shutdown-events", timeoutMs: 60_000 },
+    }));
+    const lockResponse = waitForMatchingMessage(
+      clientB,
+      ({ id }) => id === "lock-wait",
+      2_000,
+    ).catch((error) => ({ transportError: String(error) }));
+    clientB.send(JSON.stringify({
+      type: "hub_rpc",
+      id: "lock-wait",
+      method: "acquireLock",
+      params: { name: "shutdown-lock", timeoutMs: 60_000, ttlMs: 60_000 },
+    }));
+    const proxyRequest = waitForMatchingMessage(
+      extension,
+      ({ type }) => type === "browser_click",
+      2_000,
+    );
+    const proxyResponse = waitForMatchingMessage(
+      clientB,
+      ({ payload }) => (payload as { requestId?: string } | undefined)?.requestId === "proxy-wait",
+      2_000,
+    ).catch((error) => ({ transportError: String(error) }));
+    clientB.send(JSON.stringify({
+      type: "browser_click",
+      id: "proxy-wait",
+      payload: { tabId: 1 },
+      timeoutMs: 60_000,
+    }));
+    await proxyRequest;
+    const internals = server.stateManager as unknown as {
+      lockWaiters: Map<string, unknown>;
+      lockTtlTimers: Map<string, unknown>;
+      eventWaiters: Map<string, unknown>;
+    };
+    await vi.waitFor(() => {
+      expect(internals.eventWaiters.size).toBe(1);
+      expect(internals.lockWaiters.size).toBe(1);
+    });
+
+    const closing = server.close();
+    const shutdownResults = Promise.all([
+      eventResponse,
+      lockResponse,
+      proxyResponse,
+      closing.then(() => ({ closed: true })),
+    ]);
+    const resolvedWithoutCallerTimeouts = await Promise.race([
+      shutdownResults.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 200)),
+    ]);
+    if (!resolvedWithoutCallerTimeouts) {
+      await server.stateManager.pushEvent(
+        "session-b",
+        browserId,
+        "new_tab",
+        "shutdown-events",
+        {},
+      );
+      await server.stateManager.releaseLock("session-a", "shutdown-lock");
+    }
+    const [eventResult, lockResult, proxyResult] = await shutdownResults;
+
+    expect(resolvedWithoutCallerTimeouts).toBe(true);
+    expect(eventResult).toMatchObject({ error: "SERVER_SHUTTING_DOWN" });
+    expect(lockResult).toMatchObject({ error: "SERVER_SHUTTING_DOWN" });
+    expect(proxyResult).toMatchObject({
+      type: "messageResponse",
+      payload: { requestId: "proxy-wait", error: "SERVER_SHUTTING_DOWN" },
+    });
+    expect(internals.eventWaiters.size).toBe(0);
+    expect(internals.lockWaiters.size).toBe(0);
+    expect(internals.lockTtlTimers.size).toBe(0);
+    expect(await server.stateManager.listSessions()).toEqual([]);
+    expect(await server.stateManager.listLocks()).toEqual([]);
   }, 5_000);
 
   it("rejects every admission while shutdown drains and clears all session resources", async () => {

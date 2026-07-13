@@ -311,6 +311,7 @@ export class LocalStateManager implements IStateManager {
     string,
     Array<{
       resolve: (v: { ok: true; event: QueuedEvent }) => void;
+      reject: (error: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }>
   >();
@@ -324,6 +325,7 @@ export class LocalStateManager implements IStateManager {
       sessionId: string;
       ttlMs: number | undefined;
       resolve: (v: AcquireLockResult) => void;
+      reject: (error: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }>
   >();
@@ -1026,7 +1028,7 @@ export class LocalStateManager implements IStateManager {
       return { ok: true, event: next };
     }
     // Otherwise, install a promise-based waiter.
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const list = this.eventWaiters.get(key);
         if (list) {
@@ -1038,7 +1040,7 @@ export class LocalStateManager implements IStateManager {
       }, timeoutMs);
 
       const list = this.eventWaiters.get(key);
-      const entry = { resolve, timer };
+      const entry = { resolve, reject, timer };
       if (list) {
         list.push(entry);
       } else {
@@ -1149,7 +1151,7 @@ export class LocalStateManager implements IStateManager {
       }
 
       // Held by another session — install a FIFO waiter with timeout.
-      return new Promise<AcquireLockResult>((resolve) => {
+      return new Promise<AcquireLockResult>((resolve, reject) => {
         const timer = setTimeout(() => {
           const list = this.lockWaiters.get(name);
           if (list) {
@@ -1166,7 +1168,7 @@ export class LocalStateManager implements IStateManager {
           });
         }, timeoutMs);
 
-        const entry = { sessionId, ttlMs, resolve, timer };
+        const entry = { sessionId, ttlMs, resolve, reject, timer };
         const list = this.lockWaiters.get(name);
         if (list) {
           list.push(entry);
@@ -1255,5 +1257,23 @@ export class LocalStateManager implements IStateManager {
         this.lockWaiters.set(name, filtered);
       }
     }
+  }
+
+  cancelPendingForShutdown(): void {
+    const error = new Error("SERVER_SHUTTING_DOWN");
+    for (const waiters of this.eventWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
+      }
+    }
+    this.eventWaiters.clear();
+    for (const waiters of this.lockWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
+      }
+    }
+    this.lockWaiters.clear();
   }
 }

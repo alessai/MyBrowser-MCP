@@ -14,6 +14,10 @@ import type { Tool } from "./types.js";
 const EventNames = ["dialog", "beforeunload", "new_tab", "network_timeout"] as const;
 const ActionNames = ["dismiss", "accept", "emit", "ignore"] as const;
 
+function isPositiveMirrorAck(value: unknown): value is { ok: true } {
+  return typeof value === "object" && value !== null && (value as { ok?: unknown }).ok === true;
+}
+
 const HandlerOptionsSchema = z
   .object({
     promptText: z
@@ -280,12 +284,15 @@ export function createEventsTools(
           };
         }
         try {
-          await context.sendSocketMessageToBrowser(
+          const acknowledgement = await context.sendSocketMessageToBrowser(
             existing.browserId,
             "browser_unregister_handler",
             { handlerId: args.handlerId },
             { timeoutMs: 5_000 },
           );
+          if (!isPositiveMirrorAck(acknowledgement)) {
+            throw new Error("EVENT_HANDLER_MIRROR_FAILED");
+          }
         } catch {
           return {
             content: [
@@ -320,7 +327,7 @@ export function createEventsTools(
       const existing = await sm.listEventHandlers(sessionId);
       const browserIds = [...new Set(existing.map(({ browserId }) => browserId))];
       try {
-        await Promise.all(browserIds.map((browserId) =>
+        const acknowledgements = await Promise.all(browserIds.map((browserId) =>
           context.sendSocketMessageToBrowser(
             browserId,
             "browser_unregister_handler",
@@ -328,6 +335,9 @@ export function createEventsTools(
             { timeoutMs: 5_000 },
           )
         ));
+        if (!acknowledgements.every(isPositiveMirrorAck)) {
+          throw new Error("EVENT_HANDLER_MIRROR_FAILED");
+        }
       } catch {
         return {
           content: [{ type: "text", text: "EVENT_HANDLER_MIRROR_FAILED" }],

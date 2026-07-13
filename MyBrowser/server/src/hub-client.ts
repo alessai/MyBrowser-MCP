@@ -46,6 +46,7 @@ interface PendingRpc {
 export class HubStateManager implements IStateManager {
   private pending = new Map<string, PendingRpc>();
   private installedOn: WebSocket | null = null;
+  private shuttingDown = false;
 
   constructor(private getWs: () => WebSocket | null) {}
 
@@ -105,8 +106,13 @@ export class HubStateManager implements IStateManager {
     method: string,
     params: Record<string, unknown> = {},
     timeoutMs = RPC_TIMEOUT_MS,
+    allowDuringShutdown = false,
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (this.shuttingDown && !allowDuringShutdown) {
+        reject(new Error("SERVER_SHUTTING_DOWN"));
+        return;
+      }
       this.ensureListener();
       const ws = this.getWs();
       if (!ws || ws.readyState !== ws.OPEN) {
@@ -129,6 +135,16 @@ export class HubStateManager implements IStateManager {
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
+  }
+
+  beginShutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    this.rejectAll("SERVER_SHUTTING_DOWN");
+  }
+
+  async removeSessionForShutdown(sessionId: string): Promise<void> {
+    await this.sendRpc("removeSession", { sessionId }, RPC_TIMEOUT_MS, true);
   }
 
   // -- Sessions --
