@@ -198,6 +198,40 @@ describe("RequestScheduler", () => {
     await expect(globalQueued).rejects.toThrow("SESSION_NOT_REGISTERED");
   });
 
+  it("closes a session without interrupting running work or starting later work", async () => {
+    const scheduler = new RequestScheduler({ now: () => 0 });
+    const running = deferred<string>();
+    const active = scheduler.runSession("target", meta({ sessionId: "target" }), () => (
+      running.promise
+    ));
+    let queuedStarted = false;
+    const queued = scheduler.runSession(
+      "target",
+      meta({ sessionId: "target", requestId: "queued" }),
+      async () => {
+        queuedStarted = true;
+      },
+    );
+
+    scheduler.cancelSession("target", "SESSION_CLOSED");
+
+    await expect(queued).rejects.toThrow("SESSION_CLOSED");
+    expect(queuedStarted).toBe(false);
+    let laterStarted = false;
+    const later = scheduler.runTab(
+      2,
+      meta({ sessionId: "target", requestId: "later" }),
+      async () => {
+        laterStarted = true;
+      },
+    );
+    await expect(later).rejects.toThrow("SESSION_CLOSED");
+    expect(laterStarted).toBe(false);
+
+    running.resolve("finished");
+    await expect(active).resolves.toBe("finished");
+  });
+
   it("does not invoke queued work after it expires", async () => {
     let now = 0;
     const scheduler = new RequestScheduler({ now: () => now });

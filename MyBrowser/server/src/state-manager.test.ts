@@ -162,6 +162,8 @@ describe("LocalStateManager recording reservations", () => {
     await state.removeSession("session-a");
 
     expect(broadcast).toHaveBeenCalledWith("session_closed", { sessionId: "session-a" });
+    await state.removeSession("session-a");
+    expect(broadcast).toHaveBeenCalledTimes(1);
     await expect(state.hasRecordingReservation("session-a", "first")).resolves.toBe(false);
     await expect(state.hasRecordingReservation("session-a", "second")).resolves.toBe(false);
     await expect(state.hasRecordingReservation("session-b", "other")).resolves.toBe(true);

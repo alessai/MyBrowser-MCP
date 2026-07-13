@@ -43,6 +43,8 @@ import {
   dispatchNetworkTimeout,
   getNetworkTimeoutThresholdForTab,
   listHandlers,
+  cleanupClosedSession,
+  clearHandlersForSession,
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
@@ -229,12 +231,16 @@ export default defineBackground(() => {
     const termination = getRecordingTermination(parsed);
     if (termination) {
       if (termination.reason === 'session_closed') {
-        try {
-          await getRecordingManager().abortSession(termination.sessionId);
-        } catch {
-          recordExtensionIssue('recording_cleanup', 'SESSION_CLEANUP_FAILED');
-          console.error('[MyBrowser] SESSION_CLEANUP_FAILED');
-        }
+        await cleanupClosedSession(termination.sessionId, {
+          scheduler,
+          sessionState,
+          recordings: getRecordingManager(),
+          clearEventMirrors: clearHandlersForSession,
+          reportFailure: (code) => {
+            recordExtensionIssue('session_cleanup', code);
+            console.error(`[MyBrowser] ${code}`);
+          },
+        });
       } else {
         await getRecordingManager().expireReservation(termination.sessionId, termination.name!);
       }

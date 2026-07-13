@@ -493,7 +493,7 @@ describe("authenticated hub routing", () => {
     const routed = await routedRequest;
     routed.browser.send(JSON.stringify({
       type: "messageResponse",
-      payload: { requestId: "tool-ordinary", result: { ok: true } },
+      payload: { requestId: routed.message.id, result: { ok: true } },
     }));
     await expect(clientResponse).resolves.toEqual({
       type: "messageResponse",
@@ -501,7 +501,7 @@ describe("authenticated hub routing", () => {
     });
     expect(routed.browser).toBe(browserB);
     expect(routed.message).toEqual({
-      id: "tool-ordinary",
+      id: expect.any(String),
       type: "browser_screenshot",
       payload: { tabId: 7 },
       sessionId: "actual",
@@ -533,11 +533,14 @@ describe("authenticated hub routing", () => {
     const forwarded = await browserRequest;
     browserB.send(JSON.stringify({
       type: "messageResponse",
-      payload: { requestId: "tool-control", result: { ok: true } },
+      payload: { requestId: forwarded.id, result: { ok: true } },
     }));
-    await clientResponse;
+    await expect(clientResponse).resolves.toEqual({
+      type: "messageResponse",
+      payload: { requestId: "tool-control", result: { ok: true } },
+    });
     expect(forwarded).toEqual({
-      id: "tool-control",
+      id: expect.any(String),
       type: "browser_register_handler",
       payload: { handler: "handler-1" },
       sessionId: "actual",

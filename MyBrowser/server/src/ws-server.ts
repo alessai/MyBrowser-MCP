@@ -58,6 +58,7 @@ export interface WsServerOptions {
   recordingsDir?: string;
   recordingFileOps?: Partial<RecordingFileOps>;
   recordingRetryRegistry?: RecordingRetryRegistry;
+  sessionReconnectGraceMs?: number;
 }
 
 interface RecordingRetryPayload {
@@ -107,6 +108,7 @@ export interface WsServerResult {
   stateManager: IStateManager;
   isHub: boolean;
   boundPort: number;
+  pendingRecordingPersistCount: (sessionId?: string) => number;
   /** Register a callback to be called when a client reconnects to the hub */
   onReconnect?: (cb: () => Promise<void>) => void;
 }
@@ -199,6 +201,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const stateManager = new LocalStateManager();
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
   const recordingPersistQueues = new Map<string, RecordingPersistQueue>();
+  const sessionReconnectGraceMs = options.sessionReconnectGraceMs
+    ?? SESSION_RECONNECT_GRACE_MS;
   stateManager.onRecordingReservationTerminated(({ sessionId, name }) => {
     recordingRetryRegistry.clearTerminated(sessionId, name);
   });
@@ -231,6 +235,13 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     }
   }
 
+  function pendingRecordingPersistCount(sessionId?: string): number {
+    if (sessionId !== undefined) return recordingPersistQueues.get(sessionId)?.pending ?? 0;
+    let count = 0;
+    for (const queue of recordingPersistQueues.values()) count += queue.pending;
+    return count;
+  }
+
   async function drainRecordingPersists(sessionId: string): Promise<void> {
     const queue = recordingPersistQueues.get(sessionId);
     if (!queue) return;
@@ -249,10 +260,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
    * Errors are captured and re-thrown at the end so callers still see
    * the first failure, but cleanup runs to completion first.
    *
-   * Note: `clearEventHandlersForSession` already broadcasts the
-   * session-scoped unregister to all connected browsers via the
-   * broadcaster installed above, so this cleanup path does not
-   * need a separate broadcast step.
+   * `removeSession` is the single extension notification point and
+   * broadcasts `session_closed` only after all hub-owned state is gone.
    */
   async function cleanupSession(sessionId: string): Promise<void> {
     const errors: unknown[] = [];
@@ -277,6 +286,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   // Track browserId per extension WS for cleanup
   const connectionBrowsers = new Map<WebSocket, string>();
   const pendingSessionCleanup = new Map<string, ReturnType<typeof setTimeout>>();
+  let proxyRequestSequence = 0;
 
   function cancelSessionCleanup(sessionId: string): void {
     const timer = pendingSessionCleanup.get(sessionId);
@@ -291,7 +301,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
   function scheduleSessionCleanup(
     sessionId: string,
-    delayMs = SESSION_RECONNECT_GRACE_MS,
+    delayMs = sessionReconnectGraceMs,
   ): void {
     cancelSessionCleanup(sessionId);
     pendingSessionCleanup.set(
@@ -985,8 +995,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           Math.max(requestedTimeoutMs, 1_000),
           MAX_PROXY_TIMEOUT_MS,
         );
+        const extensionRequestId = `hub_${++proxyRequestSequence}`;
         const forwarded: ToolRequestV2 = {
-          id: msg.id,
+          id: extensionRequestId,
           type: msg.type,
           payload: isRecord(msg.payload) ? msg.payload : {},
           sessionId: clientSessionId,
@@ -1012,9 +1023,18 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         const responseHandler = (respData: Buffer | string) => {
           let resp: any;
           try { resp = JSON.parse(respData.toString()); } catch { return; }
-          if (resp.type === MESSAGE_RESPONSE_TYPE && resp.payload?.requestId === msg.id) {
+          if (
+            resp.type === MESSAGE_RESPONSE_TYPE
+            && resp.payload?.requestId === extensionRequestId
+          ) {
             cleanup();
-            safeSendToClient(JSON.stringify(resp));
+            safeSendToClient(JSON.stringify({
+              ...resp,
+              payload: {
+                ...resp.payload,
+                requestId: msg.id,
+              },
+            }));
           }
         };
 
@@ -1081,7 +1101,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       if (closedSessionId) {
         scheduleSessionCleanup(closedSessionId);
         console.error(
-          `[MyBrowser MCP] Client session "${closedSessionId}" disconnected — waiting ${SESSION_RECONNECT_GRACE_MS / 1000}s for reconnect before cleanup`,
+          `[MyBrowser MCP] Client session "${closedSessionId}" disconnected — waiting ${sessionReconnectGraceMs / 1000}s for reconnect before cleanup`,
         );
       }
 
@@ -1129,6 +1149,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     stateManager,
     isHub: true,
     boundPort,
+    pendingRecordingPersistCount,
   };
 }
 
@@ -1332,6 +1353,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     stateManager,
     isHub: false,
     boundPort: port,
+    pendingRecordingPersistCount: () => 0,
     onReconnect: (cb: () => Promise<void>) => { reconnectCb = cb; },
   };
 }

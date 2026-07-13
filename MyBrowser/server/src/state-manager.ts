@@ -372,13 +372,16 @@ export class LocalStateManager implements IStateManager {
   }
 
   async removeSession(sessionId: string): Promise<void> {
+    let removedOwnedState = this.sessions.delete(sessionId);
     for (const reservation of this.recordingReservations.values()) {
       if (reservation.sessionId === sessionId) {
+        removedOwnedState = true;
         this.terminateRecordingReservation(reservation, "session_removed");
       }
     }
-    this.sessions.delete(sessionId);
-    this._broadcastToBrowsersFn("session_closed", { sessionId });
+    if (removedOwnedState) {
+      this._broadcastToBrowsersFn("session_closed", { sessionId });
+    }
   }
 
   async touchSession(sessionId: string): Promise<void> {
@@ -877,26 +880,9 @@ export class LocalStateManager implements IStateManager {
 
   async clearEventHandlersForSession(sessionId: string): Promise<void> {
     // Drop handlers installed by this session.
-    let droppedAny = false;
     for (const [id, h] of this.eventHandlers) {
       if (h.sessionId === sessionId) {
         this.eventHandlers.delete(id);
-        droppedAny = true;
-      }
-    }
-    // Tell every connected browser to drop its local handler mirror
-    // for this session. The broadcaster is set by ws-server and
-    // iterates raw browser WS connections; it doesn't depend on
-    // context.activeBrowserId, so it works even for sessions that
-    // registered handlers via implicit single-browser resolution.
-    // Fire-and-forget; errors are already swallowed by the broadcaster.
-    if (droppedAny) {
-      try {
-        this._broadcastToBrowsersFn("browser_unregister_handler", {
-          sessionId,
-        });
-      } catch {
-        /* best-effort */
       }
     }
     // Drain any event queues and waiters belonging to this session so

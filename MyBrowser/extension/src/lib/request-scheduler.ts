@@ -28,6 +28,7 @@ export class RequestScheduler {
   private readonly tabQueues = new Map<number, WorkQueue>();
   private readonly sessionQueues = new Map<string, WorkQueue>();
   private readonly globalQueues = new Map<string, WorkQueue>();
+  private readonly closedSessions = new Set<string>();
   private readonly maxPendingPerTab: number;
   private readonly maxPendingGlobal: number;
   private readonly now: () => number;
@@ -65,6 +66,7 @@ export class RequestScheduler {
   }
 
   cancelSession(sessionId: string, code: ProtocolErrorCode): void {
+    if (code === 'SESSION_CLOSED') this.closedSessions.add(sessionId);
     const matches = (entry: QueueEntry): boolean => entry.meta.sessionId === sessionId;
     for (const queue of this.tabQueues.values()) this.rejectQueued(queue, matches, code);
     for (const queue of this.sessionQueues.values()) this.rejectQueued(queue, matches, code);
@@ -78,6 +80,9 @@ export class RequestScheduler {
     meta: RequestMeta,
     work: () => Promise<T>,
   ): Promise<T> {
+    if (this.closedSessions.has(meta.sessionId)) {
+      return Promise.reject(new Error('SESSION_CLOSED'));
+    }
     let queue = queues.get(key);
     if (!queue) {
       queue = { running: false, entries: [] };

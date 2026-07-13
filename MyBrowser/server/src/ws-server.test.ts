@@ -43,6 +43,10 @@ type CloseEvent = {
   reason: string;
 };
 
+type TestWsServerOptions = Partial<WsServerOptions> & {
+  sessionReconnectGraceMs?: number;
+};
+
 const servers: WsServerResult[] = [];
 const sockets: WebSocket[] = [];
 const fakeHubs: WebSocketServer[] = [];
@@ -156,10 +160,17 @@ function waitForMessage(ws: WebSocket, timeoutMs = 1_000): Promise<Record<string
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       ws.off("message", onMessage);
+      ws.off("error", onError);
       reject(new Error("Timed out waiting for WebSocket message"));
     }, timeoutMs);
+    const onError = (error: Error) => {
+      clearTimeout(timer);
+      ws.off("message", onMessage);
+      reject(error);
+    };
     const onMessage = (data: RawData) => {
       clearTimeout(timer);
+      ws.off("error", onError);
       try {
         resolve(JSON.parse(data.toString()) as Record<string, unknown>);
       } catch (error) {
@@ -167,7 +178,7 @@ function waitForMessage(ws: WebSocket, timeoutMs = 1_000): Promise<Record<string
       }
     };
     ws.once("message", onMessage);
-    ws.once("error", reject);
+    ws.once("error", onError);
   });
 }
 
@@ -207,10 +218,41 @@ function waitForClose(ws: WebSocket): Promise<CloseEvent> {
   });
 }
 
+function createMessageInbox(ws: WebSocket) {
+  const messages: Record<string, unknown>[] = [];
+  const waiters: Array<(message: Record<string, unknown>) => void> = [];
+  ws.on("message", (data) => {
+    const message = JSON.parse(data.toString()) as Record<string, unknown>;
+    const waiter = waiters.shift();
+    if (waiter) waiter(message);
+    else messages.push(message);
+  });
+  return {
+    all: messages,
+    next(timeoutMs = 1_000): Promise<Record<string, unknown>> {
+      const message = messages.shift();
+      if (message) return Promise.resolve(message);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const index = waiters.indexOf(onMessage);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(new Error("Timed out waiting for WebSocket inbox message"));
+        }, timeoutMs);
+        const onMessage = (nextMessage: Record<string, unknown>) => {
+          clearTimeout(timer);
+          resolve(nextMessage);
+        };
+        waiters.push(onMessage);
+      });
+    },
+  };
+}
+
 async function startHub(
   recordingsDir?: string,
   recordingFileOps?: WsServerOptions["recordingFileOps"],
   recordingRetryRegistry?: RecordingRetryRegistry,
+  extraOptions: TestWsServerOptions = {},
 ): Promise<WsServerResult> {
   const result = await createWebSocketServer({
     host: "127.0.0.1",
@@ -220,7 +262,8 @@ async function startHub(
     recordingsDir,
     recordingFileOps,
     recordingRetryRegistry,
-  });
+    ...extraOptions,
+  } as WsServerOptions);
   servers.push(result);
   expect(result.isHub).toBe(true);
   expect(result.boundPort).toBeGreaterThan(0);
@@ -2580,4 +2623,251 @@ describe("WebSocket connection roles and session binding", () => {
     await expect(callHubRpc(second, "rpc-4", "registerSession", { sessionId: "s1" }))
       .resolves.toEqual({ type: "hub_rpc_result", id: "rpc-4", result: { ok: true } });
   });
+});
+
+describe("real loopback session topology", () => {
+  it.each(["client", "extension"] as const)(
+    "rejects old and unversioned %s peers",
+    async (role) => {
+      const server = await startHub();
+      for (const protocolVersion of [undefined, PROTOCOL_VERSION - 1]) {
+        const ws = await connect(server);
+        const closed = waitForClose(ws);
+        ws.send(JSON.stringify({
+          type: "auth",
+          token: TOKEN,
+          role,
+          ...(protocolVersion === undefined ? {} : { protocolVersion }),
+        }));
+        expect((await closed).code).toBe(WS_CLOSE.versionMismatch);
+      }
+    },
+  );
+
+  it("isolates two clients through reconnect and performs one final cleanup", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-topology-"));
+    tempDirs.push(base);
+    const retryRegistry = new RecordingRetryRegistry();
+    const server = await startHub(
+      join(base, "recordings"),
+      undefined,
+      retryRegistry,
+      { sessionReconnectGraceMs: 40 },
+    );
+    const extension = await connect(server);
+    const extensionAuth = await authenticate(extension, "extension");
+    const browserId = extensionAuth.browserId as string;
+    const extensionInbox = createMessageInbox(extension);
+    const clientA = await connect(server);
+    const clientB = await connect(server);
+    await authenticate(clientA, "client");
+    await authenticate(clientB, "client");
+
+    await expect(callHubRpc(clientA, "invalid", "registerSession", { sessionId: "bad id" }))
+      .resolves.toMatchObject({ error: "INVALID_SESSION_ID" });
+    await expect(callHubRpc(clientA, "register-a", "registerSession", { sessionId: "session-a" }))
+      .resolves.toMatchObject({ result: { ok: true } });
+    await expect(callHubRpc(clientB, "duplicate-a", "registerSession", { sessionId: "session-a" }))
+      .resolves.toMatchObject({ error: "SESSION_IDENTITY_MISMATCH" });
+    await expect(callHubRpc(clientA, "switch-a", "registerSession", { sessionId: "session-b" }))
+      .resolves.toMatchObject({ error: "SESSION_IDENTITY_MISMATCH" });
+
+    const unregisteredProxy = waitForMessage(clientB);
+    clientB.send(JSON.stringify({ id: "unregistered", type: "browser_click", payload: {} }));
+    await expect(unregisteredProxy).resolves.toEqual({
+      type: "messageResponse",
+      payload: { requestId: "unregistered", error: "SESSION_NOT_REGISTERED" },
+    });
+    await expect(callHubRpc(clientB, "register-b", "registerSession", { sessionId: "session-b" }))
+      .resolves.toMatchObject({ result: { ok: true } });
+
+    const forbiddenPersistence = waitForMessage(clientA);
+    clientA.send(JSON.stringify({
+      type: "persistRecording",
+      id: "client-persist",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    await expect(forbiddenPersistence).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "client-persist",
+      ok: false,
+      error: "not authorized",
+    });
+
+    await callHubRpc(clientA, "select-a", "selectBrowser", { browserId });
+    await callHubRpc(clientB, "select-b", "selectBrowser", { browserId });
+    await callHubRpc(clientA, "claim-a", "claimTab", { tabKey: `${browserId}:11` });
+    await callHubRpc(clientB, "claim-b", "claimTab", { tabKey: `${browserId}:22` });
+    await callHubRpc(clientA, "lock-a", "acquireLock", {
+      name: "session-a-lock",
+      timeoutMs: 100,
+      ttlMs: 10_000,
+    });
+    await callHubRpc(clientA, "handler-a", "registerEventHandler", {
+      browserId,
+      event: "dialog",
+      action: "dismiss",
+    });
+    const clientAInbox = createMessageInbox(clientA);
+    const clientBInbox = createMessageInbox(clientB);
+    clientA.send(JSON.stringify({
+      id: "shared-request",
+      type: "browser_click",
+      payload: { client: "a" },
+      sessionId: "session-b",
+      targetBrowserId: "spoofed-browser",
+    }));
+    clientB.send(JSON.stringify({
+      id: "shared-request",
+      type: "browser_click",
+      payload: { client: "b" },
+      sessionId: "session-a",
+      targetBrowserId: "spoofed-browser",
+    }));
+    const forwarded = [await extensionInbox.next(), await extensionInbox.next()];
+    const forwardedA = forwarded.find((message) => message.sessionId === "session-a")!;
+    const forwardedB = forwarded.find((message) => message.sessionId === "session-b")!;
+    expect(forwardedA).toMatchObject({
+      type: "browser_click",
+      payload: { client: "a" },
+      sessionId: "session-a",
+    });
+    expect(forwardedB).toMatchObject({
+      type: "browser_click",
+      payload: { client: "b" },
+      sessionId: "session-b",
+    });
+    expect(forwardedA).not.toHaveProperty("targetBrowserId");
+    expect(forwardedB).not.toHaveProperty("targetBrowserId");
+    expect(forwardedA.id).not.toBe(forwardedB.id);
+
+    extension.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: forwardedA.id, result: "result-a" },
+    }));
+    await expect(clientAInbox.next()).resolves.toEqual({
+      type: "messageResponse",
+      payload: { requestId: "shared-request", result: "result-a" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(clientBInbox.all).toEqual([]);
+    extension.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: forwardedB.id, result: "result-b" },
+    }));
+    await expect(clientBInbox.next()).resolves.toEqual({
+      type: "messageResponse",
+      payload: { requestId: "shared-request", result: "result-b" },
+    });
+
+    clientA.send(JSON.stringify({
+      id: "internal-route",
+      type: "browser_register_handler",
+      payload: { handlerId: "handler-a" },
+      targetBrowserId: browserId,
+    }));
+    const internalForward = await extensionInbox.next();
+    expect(internalForward).toMatchObject({
+      type: "browser_register_handler",
+      sessionId: "session-a",
+    });
+    extension.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: internalForward.id, result: { ok: true } },
+    }));
+    await expect(clientAInbox.next()).resolves.toMatchObject({
+      payload: { requestId: "internal-route", result: { ok: true } },
+    });
+
+    const firstClose = waitForClose(clientA);
+    clientA.close();
+    await firstClose;
+    const reclaimedA = await connect(server);
+    await authenticate(reclaimedA, "client");
+    await expect(callHubRpc(reclaimedA, "reclaim-a", "registerSession", { sessionId: "session-a" }))
+      .resolves.toMatchObject({ result: { ok: true } });
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect((await server.stateManager.listSessions()).map((session) => session.id))
+      .toContain("session-a");
+    expect(extensionInbox.all.filter((message) => message.type === "session_closed"))
+      .toEqual([]);
+
+    await callHubRpc(reclaimedA, "reserve-queue", "reserveRecording", {
+      name: validRecording.name,
+      leaseMs: 1_800_000,
+    });
+    const persistCheckStarted = deferred<void>();
+    const persistCheck = deferred<boolean>();
+    const reservationSpy = vi.spyOn(server.stateManager, "hasRecordingReservation")
+      .mockImplementation(async () => {
+        persistCheckStarted.resolve();
+        return persistCheck.promise;
+      });
+    const releaseSpy = vi.spyOn(server.stateManager, "releaseRecordingReservation")
+      .mockRejectedValueOnce(new Error("release failed"));
+    extension.send(JSON.stringify({
+      type: "persistRecording",
+      id: "queued-persist",
+      sessionId: "session-a",
+      payload: validRecording,
+    }));
+    await persistCheckStarted.promise;
+    const persistenceCount = (server as WsServerResult & {
+      pendingRecordingPersistCount: (sessionId: string) => number;
+    }).pendingRecordingPersistCount;
+    expect(persistenceCount("session-a")).toBe(1);
+
+    const reclaimedClose = waitForClose(reclaimedA);
+    reclaimedA.close();
+    await reclaimedClose;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(extensionInbox.all.filter((message) => message.type === "session_closed"))
+      .toEqual([]);
+    persistCheck.resolve(true);
+    await expect(extensionInbox.next()).resolves.toMatchObject({
+      type: "persistRecordingResult",
+      id: "queued-persist",
+      ok: false,
+      error: "persistence failed",
+    });
+    reservationSpy.mockRestore();
+    releaseSpy.mockRestore();
+    await expect(extensionInbox.next()).resolves.toEqual({
+      id: expect.any(String),
+      type: "session_closed",
+      payload: { sessionId: "session-a" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 70));
+
+    expect(persistenceCount("session-a")).toBe(0);
+    expect(retryRegistry.count("session-a")).toBe(0);
+    expect((await server.stateManager.listSessions()).map((session) => session.id))
+      .toEqual(["session-b"]);
+    await expect(server.stateManager.getSessionBrowser("session-a")).resolves.toBeUndefined();
+    await expect(server.stateManager.getTabOwner(`${browserId}:11`)).resolves.toBeUndefined();
+    await expect(server.stateManager.getTabOwner(`${browserId}:22`)).resolves.toBe("session-b");
+    await expect(server.stateManager.listEventHandlers("session-a")).resolves.toEqual([]);
+    await expect(server.stateManager.hasRecordingReservation("session-a", validRecording.name))
+      .resolves.toBe(false);
+    expect((await server.stateManager.listLocks()).map((lock) => lock.name))
+      .not.toContain("session-a-lock");
+    expect(extensionInbox.all.filter((message) => message.type === "session_closed"))
+      .toEqual([]);
+    expect(extensionInbox.all.filter((message) => message.type === "browser_unregister_handler"))
+      .toEqual([]);
+
+    const extensionClosed = waitForClose(extension);
+    extension.send(JSON.stringify({
+      type: "hub_rpc",
+      id: "extension-rpc",
+      method: "listSessions",
+    }));
+    await expect(extensionInbox.next()).resolves.toEqual({
+      type: "hub_rpc_result",
+      id: "extension-rpc",
+      error: "AUTH_ROLE_VIOLATION",
+    });
+    expect((await extensionClosed).code).toBe(WS_CLOSE.forbiddenRole);
+  }, 5_000);
 });

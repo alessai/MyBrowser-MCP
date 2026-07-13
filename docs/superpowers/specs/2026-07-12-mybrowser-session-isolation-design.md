@@ -372,6 +372,7 @@ Errors use stable categories suitable for tests and diagnostics:
 - `PROTOCOL_VERSION_MISMATCH`;
 - `AUTH_ROLE_VIOLATION`;
 - `SESSION_NOT_REGISTERED`;
+- `SESSION_CLOSED`;
 - `SESSION_IDENTITY_MISMATCH`;
 - `REQUEST_EXPIRED`;
 - `QUEUE_OVERLOADED`;

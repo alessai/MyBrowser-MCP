@@ -4,7 +4,7 @@
 // hub's registry so event dispatch can be synchronous (dialogs need an
 // immediate response before the browser hangs). Handlers are pushed
 // from the hub via the `browser_register_handler` tool message and
-// cleared on `browser_unregister_handler`.
+// cleared on `browser_unregister_handler` or final `session_closed` cleanup.
 //
 // When an event fires (dialog intercept, tab creation, network timeout),
 // `dispatchEvent()` finds matching handlers and returns the action they
@@ -80,8 +80,67 @@ export function clearHandlers(): void {
   handlers.length = 0;
 }
 
+export function clearHandlersForSession(sessionId: string): void {
+  for (let index = handlers.length - 1; index >= 0; index -= 1) {
+    if (handlers[index]?.sessionId === sessionId) handlers.splice(index, 1);
+  }
+}
+
 export function listHandlers(): EventHandler[] {
   return handlers.slice();
+}
+
+type SessionCleanupFailureCode =
+  | "SESSION_CLEANUP_SCHEDULER_FAILED"
+  | "SESSION_CLEANUP_STATE_FAILED"
+  | "SESSION_CLEANUP_RECORDINGS_FAILED"
+  | "SESSION_CLEANUP_EVENTS_FAILED";
+
+export interface SessionCleanupDependencies {
+  scheduler: {
+    cancelSession(sessionId: string, code: "SESSION_CLOSED"): void;
+  };
+  sessionState: {
+    clearSession(sessionId: string): Promise<void>;
+  };
+  recordings: {
+    abortSession(sessionId: string): Promise<void>;
+  };
+  clearEventMirrors(sessionId: string): void;
+  reportFailure(code: SessionCleanupFailureCode): void;
+}
+
+export async function cleanupClosedSession(
+  sessionId: string,
+  dependencies: SessionCleanupDependencies,
+): Promise<void> {
+  const run = async (
+    code: SessionCleanupFailureCode,
+    operation: () => Promise<unknown> | unknown,
+  ): Promise<void> => {
+    try {
+      await operation();
+    } catch {
+      try {
+        dependencies.reportFailure(code);
+      } catch {
+        // Diagnostics must not prevent the remaining cleanup steps.
+      }
+    }
+  };
+
+  await run("SESSION_CLEANUP_SCHEDULER_FAILED", () => (
+    dependencies.scheduler.cancelSession(sessionId, "SESSION_CLOSED")
+  ));
+  await run("SESSION_CLEANUP_STATE_FAILED", () => (
+    dependencies.sessionState.clearSession(sessionId)
+  ));
+  await run("SESSION_CLEANUP_RECORDINGS_FAILED", () => (
+    dependencies.recordings.abortSession(sessionId)
+  ));
+  await run("SESSION_CLEANUP_EVENTS_FAILED", () => (
+    dependencies.clearEventMirrors(sessionId)
+  ));
 }
 
 // ---------------------------------------------------------------------------

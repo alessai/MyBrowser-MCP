@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionStateStore, type SessionStorageAdapter } from "./session-state";
 import { resolveTabId } from "./tab-manager";
+import * as eventRegistry from "./events";
 
 class MemoryStorage implements SessionStorageAdapter {
   readonly values = new Map<string, unknown>();
@@ -278,6 +279,112 @@ describe("SessionStateStore", () => {
     removal.resolve();
     await pending;
     await expect(state.getLastTab("session-a")).resolves.toBeUndefined();
+  });
+});
+
+describe("session_closed cleanup", () => {
+  type CleanupDependencies = {
+    scheduler: { cancelSession: (sessionId: string, code: "SESSION_CLOSED") => void };
+    sessionState: { clearSession: (sessionId: string) => Promise<void> };
+    recordings: { abortSession: (sessionId: string) => Promise<void> };
+    clearEventMirrors: (sessionId: string) => void;
+    reportFailure: (code: string) => void;
+  };
+  const cleanupClosedSession = (eventRegistry as unknown as {
+    cleanupClosedSession: (sessionId: string, dependencies: CleanupDependencies) => Promise<void>;
+  }).cleanupClosedSession;
+
+  it("runs every cleanup step in order and reports only stable diagnostics", async () => {
+    expect(cleanupClosedSession).toBeTypeOf("function");
+    const order: string[] = [];
+    const failures: string[] = [];
+    const dependencies: CleanupDependencies = {
+      scheduler: {
+        cancelSession: () => {
+          order.push("scheduler.cancelSession");
+          throw new Error("CANARY_SCHEDULER_SECRET");
+        },
+      },
+      sessionState: {
+        clearSession: async () => {
+          order.push("sessionState.clearSession");
+        },
+      },
+      recordings: {
+        abortSession: async () => {
+          order.push("recordings.abortSession");
+          throw new Error("CANARY_RECORDING_SECRET");
+        },
+      },
+      clearEventMirrors: () => {
+        order.push("events.clearSession");
+      },
+      reportFailure: (code) => failures.push(code),
+    };
+
+    await expect(cleanupClosedSession("session-a", dependencies)).resolves.toBeUndefined();
+
+    expect(order).toEqual([
+      "scheduler.cancelSession",
+      "sessionState.clearSession",
+      "recordings.abortSession",
+      "events.clearSession",
+    ]);
+    expect(failures).toEqual([
+      "SESSION_CLEANUP_SCHEDULER_FAILED",
+      "SESSION_CLEANUP_RECORDINGS_FAILED",
+    ]);
+    expect(JSON.stringify(failures)).not.toContain("CANARY");
+  });
+
+  it("is harmless for repeated cleanup and missing state", async () => {
+    expect(cleanupClosedSession).toBeTypeOf("function");
+    eventRegistry.clearHandlers();
+    eventRegistry.addHandler({
+      id: "handler-a",
+      sessionId: "session-a",
+      browserId: "b1",
+      event: "dialog",
+      action: "dismiss",
+      createdAt: 1,
+    });
+    eventRegistry.addHandler({
+      id: "handler-b",
+      sessionId: "session-b",
+      browserId: "b1",
+      event: "dialog",
+      action: "accept",
+      createdAt: 2,
+    });
+    const storage = new MemoryStorage();
+    const state = new SessionStateStore(storage);
+    const recordingSessions = new Set(["session-a"]);
+    const failures: string[] = [];
+    const dependencies: CleanupDependencies = {
+      scheduler: { cancelSession: () => undefined },
+      sessionState: { clearSession: (sessionId) => state.clearSession(sessionId) },
+      recordings: {
+        abortSession: async (sessionId) => {
+          recordingSessions.delete(sessionId);
+        },
+      },
+      clearEventMirrors: (sessionId) => {
+        (eventRegistry as unknown as {
+          clearHandlersForSession: (id: string) => void;
+        }).clearHandlersForSession(sessionId);
+      },
+      reportFailure: (code) => failures.push(code),
+    };
+
+    await state.setLastTab("session-a", 7);
+    await cleanupClosedSession("session-a", dependencies);
+    await cleanupClosedSession("session-a", dependencies);
+
+    await expect(state.getLastTab("session-a")).resolves.toBeUndefined();
+    expect(recordingSessions).toEqual(new Set());
+    expect(eventRegistry.listHandlers().map((handler) => handler.id)).toEqual(["handler-b"]);
+    expect(failures).toEqual([]);
+    eventRegistry.clearHandlers();
   });
 });
 

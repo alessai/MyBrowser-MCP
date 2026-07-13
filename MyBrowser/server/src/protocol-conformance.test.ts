@@ -31,6 +31,7 @@ describe("protocol v2 conformance", () => {
       "PROTOCOL_VERSION_MISMATCH",
       "AUTH_ROLE_VIOLATION",
       "SESSION_NOT_REGISTERED",
+      "SESSION_CLOSED",
       "SESSION_IDENTITY_MISMATCH",
       "INVALID_SESSION_ID",
       "REQUEST_EXPIRED",
