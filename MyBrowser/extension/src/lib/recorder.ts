@@ -79,7 +79,7 @@ export class RecordedActionFailure extends Error {
 }
 
 export class RecordedStateFailure extends Error {
-  constructor() {
+  constructor(public readonly stage = 'unknown') {
     super('RECORDED_STATE_FAILED');
     this.name = 'RecordedStateFailure';
   }
@@ -504,9 +504,13 @@ export class RecordingManager {
     tabId: number,
   ): Promise<PreparedStep | null> {
     return this.enqueue(async () => {
-      await this.restoreAllUnlocked();
+      try {
+        await this.restoreAllUnlocked();
+      } catch {
+        throw new RecordedStateFailure('restore_all');
+      }
       if (this.closedSessions.has(sessionId)) return null;
-      const active = this.active.get(sessionId);
+      const active = await this.ensureSessionAuthorityUnlocked(sessionId);
       if (!active || this.replayTokens.has(sessionId) || active.tabId !== tabId) return null;
       if (active.status !== 'active') return null;
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
@@ -660,14 +664,13 @@ export class RecordingManager {
       try {
         await this.restoreSessionUnlocked(sessionId);
       } catch {
-        throw new RecordedStateFailure();
+        throw new RecordedStateFailure('restore_session');
       }
-      let state = this.active.get(sessionId);
+      let state = await this.ensureSessionAuthorityUnlocked(sessionId);
       if (!state && this.closedSessions.has(sessionId)) {
         throw new Error('RECORDING_CLEANUP_PENDING');
       }
       if (!state) throw new Error('NO_ACTIVE_RECORDING');
-      if (state.status === 'quarantined') throw new RecordedStateFailure();
       if (state.status === 'cleanup') throw new Error('RECORDING_CLEANUP_PENDING');
       if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) {
         throw new Error('RECORDING_ACTION_IN_PROGRESS');
@@ -1052,6 +1055,38 @@ export class RecordingManager {
     });
   }
 
+  private async ensureSessionAuthorityUnlocked(
+    sessionId: string,
+  ): Promise<ActiveRecording | undefined> {
+    const active = this.active.get(sessionId);
+    if (!active || active.status !== 'quarantined') return active;
+
+    let renewed = false;
+    try {
+      const response = await this.transport.request('renewRecordingReservation', {
+        sessionId,
+        name: active.recording.name,
+      }, SERVER_TIMEOUT_MS);
+      renewed = isRecord(response) && response.ok === true;
+    } catch {
+      renewed = false;
+    }
+    if (!renewed) {
+      await this.finishStopUnlocked(sessionId);
+      throw new RecordedStateFailure('renew_session');
+    }
+
+    const promoted: ActiveRecording = { ...active, status: 'active' };
+    this.active.set(sessionId, promoted);
+    try {
+      await this.persistActiveUnlocked(promoted);
+    } catch {
+      await this.finishStopUnlocked(sessionId);
+      throw new RecordedStateFailure('promote_session');
+    }
+    return promoted;
+  }
+
   private async rollbackFailedStartPersistenceUnlocked(state: ActiveRecording): Promise<void> {
     this.cleanupFallbackSessions.add(state.sessionId);
     const cleanupState: ActiveRecording = { ...state, status: 'cleanup' };
@@ -1265,6 +1300,7 @@ export async function runRecordedAction<T>(options: {
   } catch (error) {
     options.args = {};
     if (error instanceof Error && error.message === 'RECORDING_STATE_LIMIT') throw error;
+    if (isRecordedStateFailure(error)) throw error;
     throw new RecordedStateFailure();
   }
   options.args = {};

@@ -39,6 +39,7 @@ export function reportToolFailure(
     toolType: metadata.toolType,
     category,
     recorded: recorded || recordedState,
+    ...(recordedState ? { recordingStage: error.stage } : {}),
   });
   return {
     responseError: recorded || recordedState

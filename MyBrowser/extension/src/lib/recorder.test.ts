@@ -15,6 +15,7 @@ import {
   MAX_REQUIRED_VARIABLES,
   RECORDING_RENEWAL_ALARM,
   ChromeRecordingAlarmScheduler,
+  RecordedStateFailure,
   isSanitizedRecording,
   listRecordingsFromStorage,
   loadRecordingForReplay,
@@ -1234,6 +1235,23 @@ describe("RecordingManager limits", () => {
 });
 
 describe("runRecordedAction", () => {
+  it("reports restore-stage diagnostics without exposing the storage error", async () => {
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.failGetKeys = new Error(`RESTORE_SECRET_${SECRET_TEXT}`);
+    const { manager } = createManager({ sessionStorage });
+
+    const error = await manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    ).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(RecordedStateFailure);
+    expect(error).toMatchObject({ message: "RECORDED_STATE_FAILED", stage: "restore_all" });
+    const failure = reportToolFailure(error, { requestId: "req-stage", toolType: "browser_click" });
+    expect(failure.responseError).toBe("RECORDED_STATE_FAILED");
+    expect(getRecentExtensionIssues(1)[0]?.details).toMatchObject({ recordingStage: "restore_all" });
+    expectAbsent({ error, failure, issue: getRecentExtensionIssues(1)[0] });
+  });
+
   it("preflights before invoking the browser handler", async () => {
     const { manager } = createManager({
       limits: { maxSteps: 0, maxRecordingBytes: 20_000, maxAggregateBytes: 30_000 },
@@ -1534,31 +1552,40 @@ describe("RecordingManager restart and stop persistence", () => {
     expectAbsent({ storage: sessionStorage.writes, requests: renewedTransport.requests });
   });
 
-  it("quarantines restored active state until authoritative renewal promotes it", async () => {
+  it("authoritatively renews quarantined state before the first post-restart action", async () => {
     const sessionStorage = new MemoryStorage();
     const first = createManager({ sessionStorage });
     await first.manager.start("session-a", "quarantine-promote", 11, "https://example.test");
 
     const restarted = createManager({ sessionStorage });
-    expect(await restarted.manager.prepareStep(
+    const prepared = await restarted.manager.prepareStep(
       "session-a", "browser_click", { element: "Account" }, 11,
-    )).toBeNull();
-    expect(restarted.manager.snapshot().active).toEqual([]);
-    expect(restarted.transport.requests).toEqual([]);
+    );
 
-    await restarted.manager.renewPersistedSessions();
-
+    expect(prepared).not.toBeNull();
     expect(restarted.transport.requests).toEqual([
       expect.objectContaining({
         type: "renewRecordingReservation",
         payload: { sessionId: "session-a", name: "quarantine-promote" },
       }),
     ]);
-    expect(await restarted.manager.prepareStep(
-      "session-a", "browser_click", { element: "Account" }, 11,
-    )).not.toBeNull();
     expect(sessionStorage.values.get("active-recording:session-a")).toMatchObject({ status: "active" });
     expectAbsent({ storage: sessionStorage.writes, requests: restarted.transport.requests });
+  });
+
+  it("authoritatively renews quarantined state before an immediate post-restart stop", async () => {
+    const sessionStorage = new MemoryStorage();
+    const first = createManager({ sessionStorage });
+    await first.manager.start("session-a", "restart-stop", 11, "https://example.test");
+
+    const restarted = createManager({ sessionStorage });
+    const result = await restarted.manager.stop("session-a");
+
+    expect(result).toMatchObject({ extensionSaved: true, serverSaved: true });
+    expect(restarted.transport.requests.map((request) => request.type)).toEqual([
+      "renewRecordingReservation",
+      "persistRecording",
+    ]);
   });
 
   it("cleans quarantined restart candidates on false or failed validation without recording", async () => {
@@ -1569,11 +1596,13 @@ describe("RecordingManager restart and stop persistence", () => {
       const transport = new FakeTransport();
       transport.responses.push(response);
       const restarted = createManager({ sessionStorage, transport });
-      expect(await restarted.manager.prepareStep(
+      await expect(restarted.manager.prepareStep(
         "session-a", "browser_type", { element: "Account", text: SECRET_FORM }, 11,
-      )).toBeNull();
-
-      await restarted.manager.renewPersistedSessions();
+      )).rejects.toMatchObject({
+        name: "RecordedStateFailure",
+        message: "RECORDED_STATE_FAILED",
+        stage: "renew_session",
+      });
 
       expect(restarted.manager.snapshot().active).toEqual([]);
       expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
