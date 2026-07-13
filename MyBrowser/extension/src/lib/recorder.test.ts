@@ -69,6 +69,7 @@ class MemoryStorage implements RecordingStorage {
   readonly events: string[];
   failSet: Error | undefined;
   failGet: Error | undefined;
+  failGetKey: string | undefined;
   failGetKeys: Error | undefined;
   failGetBytesInUse: Error | undefined;
   failHas: Error | undefined;
@@ -90,7 +91,7 @@ class MemoryStorage implements RecordingStorage {
 
   async get<T>(key: string): Promise<T | undefined> {
     this.reads.push(key);
-    if (this.failGet) throw this.failGet;
+    if (this.failGet || this.failGetKey === key) throw this.failGet ?? new Error("GET_FAILED");
     const value = this.values.get(key);
     return value === undefined ? undefined : clone(value as T);
   }
@@ -1790,6 +1791,22 @@ describe("RecordingManager restart and stop persistence", () => {
       currentUrl: "https://example.test",
     });
     expect(current.manager.snapshot().active).toHaveLength(1);
+  });
+
+  it("does not leak renewal gates when gathering a later session fails", async () => {
+    const sessionStorage = new MemoryStorage();
+    const source = createManager({ sessionStorage });
+    await source.manager.start("session-a", "flow-a", 11, "https://example.test");
+    await source.manager.start("session-b", "flow-b", 12, "https://example.test");
+
+    sessionStorage.failGetKey = "active-recording-index:session-b";
+    const restarted = createManager({ sessionStorage });
+    await expect(restarted.manager.renewPersistedSessions()).rejects.toThrow("GET_FAILED");
+
+    sessionStorage.failGetKey = undefined;
+    await expect(restarted.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    )).resolves.not.toBeNull();
   });
 
   it("tombstones session closure before cleanup persistence and blocks current-worker renewal", async () => {

@@ -894,9 +894,9 @@ export class RecordingManager {
         }
         if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) continue;
         const authorityToken = this.authorityTokenFor(sessionId);
-        this.renewingSessions.add(sessionId);
         found.push({ sessionId, name: active.recording.name, authorityToken });
       }
+      for (const candidate of found) this.renewingSessions.add(candidate.sessionId);
       return found;
     });
 
