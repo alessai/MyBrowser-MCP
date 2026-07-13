@@ -130,6 +130,7 @@ class FakeScheduler implements RecordingAlarmScheduler {
   cleanupEnsured = 0;
   cleanupCleared = 0;
   failClear = false;
+  failCleanupEnsure: Error | undefined;
   readonly cleanupSessions = new Set<string>();
 
   async ensureRenewal(): Promise<void> {
@@ -143,6 +144,7 @@ class FakeScheduler implements RecordingAlarmScheduler {
 
   async ensureCleanup(sessionId: string): Promise<void> {
     this.cleanupEnsured += 1;
+    if (this.failCleanupEnsure) throw this.failCleanupEnsure;
     this.cleanupSessions.add(sessionId);
   }
 
@@ -837,6 +839,7 @@ describe("RecordingManager restart and stop persistence", () => {
     const renewing = current.manager.renewPersistedSessions();
     await vi.waitFor(() => expect(transport.requests).toHaveLength(1));
     const closing = current.manager.abortSession("session-a");
+    expect(current.scheduler.cleanupSessions.has("session-a")).toBe(true);
     resolveRenew({ ok: true });
     await renewing;
     await closing;
@@ -864,6 +867,45 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(restarted.manager.snapshot().active).toEqual([]);
     expect(failedStorage.values.has("active-recording:session-a")).toBe(false);
     expectAbsent({ storage: failedStorage.writes, requests: rejectedTransport.requests });
+  });
+
+  it("keeps the closure alarm when queued restore fails and clears it after cleanup", async () => {
+    const sessionStorage = new MemoryStorage();
+    const scheduler = new FakeScheduler();
+    const { manager } = createManager({ sessionStorage, scheduler });
+    await manager.start("session-a", "restore-failure", 11, "https://example.test");
+    sessionStorage.failGet = new Error(`RESTORE_EXPOSED_${SECRET_TEXT}`);
+
+    const error = await manager.abortSession("session-a").catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({
+      name: "RecordedStateFailure",
+      message: "RECORDED_STATE_FAILED",
+    });
+    expect(JSON.stringify(error)).not.toContain(SECRET_TEXT);
+    expect(scheduler.cleanupSessions.has("session-a")).toBe(true);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(true);
+
+    sessionStorage.failGet = undefined;
+    await manager.retryCleanupSession("session-a");
+    expect(scheduler.cleanupSessions.has("session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+  });
+
+  it("attempts queued closure cleanup after immediate alarm scheduling rejects", async () => {
+    const sessionStorage = new MemoryStorage();
+    const scheduler = new FakeScheduler();
+    const { manager } = createManager({ sessionStorage, scheduler });
+    await manager.start("session-a", "alarm-failure", 11, "https://example.test");
+    scheduler.failCleanupEnsure = new Error(`ALARM_EXPOSED_${SECRET_FORM}`);
+
+    await expect(manager.abortSession("session-a")).resolves.toBeUndefined();
+
+    expect(scheduler.cleanupEnsured).toBeGreaterThanOrEqual(2);
+    expect(manager.snapshot().active).toEqual([]);
+    expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
+    expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
   });
 
   it("persists server-failed stop recovery without renewal or expiry deletion", async () => {

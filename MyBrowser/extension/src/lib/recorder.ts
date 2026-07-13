@@ -784,9 +784,14 @@ export class RecordingManager {
     else this.replaying.delete(sessionId);
   }
 
-  abortSession(sessionId: string): Promise<void> {
+  async abortSession(sessionId: string): Promise<void> {
     this.closedSessions.add(sessionId);
-    return this.enqueue(() => this.abortSessionUnlocked(sessionId));
+    try { await this.scheduler.ensureCleanup(sessionId); } catch { /* queued cleanup still runs */ }
+    try {
+      await this.enqueue(() => this.abortSessionUnlocked(sessionId));
+    } catch {
+      throw new RecordedStateFailure();
+    }
   }
 
   expireReservation(sessionId: string, name: string): Promise<void> {
@@ -1139,7 +1144,7 @@ export class RecordingManager {
   }
 
   private async abortSessionUnlocked(sessionId: string): Promise<void> {
-    await this.restoreSessionUnlocked(sessionId);
+    await this.restoreSessionUnlocked(sessionId, false);
     await this.finishStopUnlocked(sessionId);
   }
 

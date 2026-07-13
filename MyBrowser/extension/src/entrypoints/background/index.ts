@@ -229,7 +229,12 @@ export default defineBackground(() => {
     const termination = getRecordingTermination(parsed);
     if (termination) {
       if (termination.reason === 'session_closed') {
-        await getRecordingManager().abortSession(termination.sessionId);
+        try {
+          await getRecordingManager().abortSession(termination.sessionId);
+        } catch {
+          recordExtensionIssue('recording_cleanup', 'SESSION_CLEANUP_FAILED');
+          console.error('[MyBrowser] SESSION_CLEANUP_FAILED');
+        }
       } else {
         await getRecordingManager().expireReservation(termination.sessionId, termination.name!);
       }
