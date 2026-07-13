@@ -118,6 +118,39 @@ describe("parameterizeArgs", () => {
     expectAbsent(result, [SECRET_TEXT]);
   });
 
+  it("parameterizes every nested assertion value while retaining structural fields", () => {
+    const state: ParameterizationState = { nextVariable: 1 };
+    const result = parameterizeArgs("browser_assert", {
+      tabId: 7,
+      checks: [
+        { type: "text_contains", value: SECRET_TEXT, selector: "#status" },
+        { type: "element_count", value: SECRET_FORM, selector: ".row", min: 0, max: 12 },
+      ],
+    }, state);
+
+    expect(result).toEqual({
+      args: {
+        tabId: 7,
+        checks: [
+          { type: "text_contains", value: "{{input_1}}", selector: "#status" },
+          { type: "element_count", value: "{{input_2}}", selector: ".row", min: 0, max: 12 },
+        ],
+      },
+      requiredVariables: [
+        { name: "input_1", source: "text", hint: "text_input_1" },
+        { name: "input_2", source: "text", hint: "text_input_2" },
+      ],
+    });
+    expect(state).toEqual({ nextVariable: 3 });
+    expectAbsent(result, [SECRET_TEXT, SECRET_FORM]);
+
+    for (const min of [-1, 0.5, 2_147_483_648]) {
+      expect(() => parameterizeArgs("browser_assert", {
+        checks: [{ type: "element_count", min }],
+      }, { nextVariable: 1 })).toThrow("RECORDING_METADATA_MISMATCH");
+    }
+  });
+
   it("keeps a non-sensitive navigation target as origin plus pathname", () => {
     const state: ParameterizationState = { nextVariable: 1 };
 
@@ -158,6 +191,7 @@ describe("parameterizeArgs", () => {
       ["browser_reset_viewport", { tabId: false }],
       ["browser_fill_form", { submitAfter: 1 }],
       ["browser_wait_for", { timeout: null }],
+      ["browser_assert", { checks: [{ type: "element_count", min: "1" }] }],
       ["browser_clipboard", { tabId: false }],
     ];
 

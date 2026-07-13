@@ -635,21 +635,6 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           return;
         }
 
-        let recording;
-        try {
-          recording = sanitizeRecording(msg.payload);
-          if (recording.name !== rawRecordingName) throw new Error("Invalid recording name");
-        } catch {
-          safeSend(ws, {
-            type: "persistRecordingResult",
-            id: msg.id,
-            ok: false,
-            error: "invalid request",
-          });
-          return;
-        }
-        const canonicalRecording = JSON.stringify(recording);
-
         if (!connectionSessions.hasLiveSession(sessionId)) {
           safeSend(ws, {
             type: "persistRecordingResult",
@@ -661,27 +646,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         }
 
         stateManager
-          .hasRecordingReservation(sessionId, recording.name)
+          .hasRecordingReservation(sessionId, rawRecordingName)
           .then(async (hasReservation) => {
             if (!hasReservation) {
-              if (recordingRetryRegistry.match(sessionId, recording.name, canonicalRecording)) {
-                recordingRetryRegistry.clearSession(sessionId);
-                try {
-                  saveRecordingToFile(
-                    recording,
-                    options.recordingsDir,
-                    options.recordingFileOps,
-                  );
-                  safeSend(ws, {
-                    type: "persistRecordingResult",
-                    id: msg.id,
-                    ok: true,
-                  });
-                  return;
-                } catch {
-                  // Fall through to the same redacted ownership response.
-                }
-              }
               safeSend(ws, {
                 type: "persistRecordingResult",
                 id: msg.id,
@@ -690,6 +657,21 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
               });
               return;
             }
+
+            let recording;
+            try {
+              recording = sanitizeRecording(msg.payload);
+              if (recording.name !== rawRecordingName) throw new Error("Invalid recording name");
+            } catch {
+              safeSend(ws, {
+                type: "persistRecordingResult",
+                id: msg.id,
+                ok: false,
+                error: "invalid request",
+              });
+              return;
+            }
+            const canonicalRecording = JSON.stringify(recording);
 
             if (!recordingRetryRegistry.canRetain(sessionId, recording.name, canonicalRecording)) {
               throw new Error("Recording recovery payload changed");

@@ -46,6 +46,9 @@ describe("TOOL_METADATA", () => {
       .sort();
 
     expect(recordable).toEqual([
+      ["browser_assert", {
+        "checks.*.selector": "safe", "checks.*.type": "safe", "checks.*.value": "text",
+      }],
       ["browser_click", {
         element: "safe", label: "safe", matchText: "safe", name: "safe",
         ref: "safe", role: "safe", selector: "safe",

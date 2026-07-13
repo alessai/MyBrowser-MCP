@@ -67,12 +67,15 @@ class MemoryStorage implements RecordingStorage {
   failSet: Error | undefined;
   failGet: Error | undefined;
   failGetKeys: Error | undefined;
+  failGetBytesInUse: Error | undefined;
   failHas: Error | undefined;
   failSetKey: string | undefined;
   failSetKeyOnCall: number | undefined;
   failRemoveKey: string | undefined;
   failRemoveMany: Error | undefined;
   readonly removeManyCalls: string[][] = [];
+  readonly getBytesInUseCalls: string[][] = [];
+  bytesInUseOverride: number | undefined;
   private readonly setCounts = new Map<string, number>();
 
   constructor(events: string[] = []) {
@@ -94,6 +97,19 @@ class MemoryStorage implements RecordingStorage {
   async getKeys(): Promise<string[]> {
     if (this.failGetKeys) throw this.failGetKeys;
     return [...this.values.keys()];
+  }
+
+  async getBytesInUse(keys: string[]): Promise<number> {
+    this.getBytesInUseCalls.push([...keys]);
+    if (this.failGetBytesInUse) throw this.failGetBytesInUse;
+    if (this.bytesInUseOverride !== undefined) return this.bytesInUseOverride;
+    const encoder = new TextEncoder();
+    return keys.reduce((total, key) => {
+      const value = this.values.get(key);
+      return value === undefined
+        ? total
+        : total + encoder.encode(JSON.stringify({ [key]: value })).byteLength;
+    }, 0);
   }
 
   async set<T>(key: string, value: T): Promise<void> {
@@ -905,6 +921,31 @@ describe("runRecordedAction", () => {
     expectAbsent(stopped);
   });
 
+  it("records nested assertions without retaining original values", async () => {
+    const { manager } = createManager();
+    await manager.start("session-a", "assertions", 11, "https://example.test");
+    const prepared = await manager.prepareStep("session-a", "browser_assert", {
+      checks: [
+        { type: "text_contains", value: SECRET_TEXT, selector: "#status" },
+        { type: "element_count", value: SECRET_FORM, selector: ".row", min: 0, max: 10 },
+      ],
+    }, 11);
+    expect(prepared).not.toBeNull();
+    await manager.commitStep("session-a", prepared!, {
+      durationMs: 1,
+      currentUrl: "https://example.test/current",
+    });
+
+    const snapshot = manager.snapshot();
+    expect(snapshot.active[0]?.recording.steps[0]?.args).toEqual({
+      checks: [
+        { type: "text_contains", value: "{{input_1}}", selector: "#status" },
+        { type: "element_count", value: "{{input_2}}", selector: ".row", min: 0, max: 10 },
+      ],
+    });
+    expectAbsent(snapshot);
+  });
+
   it("keeps a prepared handler failure private after session abort", async () => {
     const { manager, sessionStorage } = createManager();
     await manager.start("session-a", "flow", 11, "https://example.test");
@@ -1236,6 +1277,81 @@ describe("RecordingManager restart and stop persistence", () => {
     expect(scheduler.cleanupSessions.has("session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording:session-a")).toBe(false);
     expect(sessionStorage.values.has("active-recording-index:session-a")).toBe(false);
+  });
+
+  it("retains a fresh authoritative cleanup footprint until successful retry frees capacity", async () => {
+    const sessionStorage = new MemoryStorage();
+    sessionStorage.values.set("active-recording:session-a", {
+      sessionId: "session-a",
+      tabId: 11,
+      nextVariable: 1,
+      status: "cleanup",
+      recording: {
+        name: "cleanup-near-cap",
+        startedAt: 1_700_000_000_000,
+        stoppedAt: 1_700_000_000_001,
+        url: "https://example.test",
+        steps: [],
+        requiredVariables: [],
+      },
+    });
+    sessionStorage.values.set("active-recording-index:session-a", {
+      sessionId: "session-a",
+      status: "cleanup",
+    });
+    sessionStorage.bytesInUseOverride = MAX_AGGREGATE_RECORDING_BYTES - 1;
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    const scheduler = new FakeScheduler();
+    scheduler.cleanupSessions.add("session-a");
+    const context = createManager({ sessionStorage, scheduler });
+
+    await context.manager.retryCleanupStates();
+    expect(sessionStorage.getBytesInUseCalls).toContainEqual([
+      "active-recording-index:session-a",
+      "active-recording:session-a",
+    ]);
+    await expect(context.manager.start(
+      "session-b", "blocked-by-cleanup", 22, "https://example.test/b",
+    )).rejects.toThrow("RECORDING_STATE_LIMIT");
+
+    sessionStorage.failRemoveMany = undefined;
+    await context.manager.retryCleanupSession("session-a");
+    await expect(context.manager.start(
+      "session-b", "after-cleanup", 22, "https://example.test/b",
+    )).resolves.toBeUndefined();
+  });
+
+  it("blocks prepares while an unmeasurable fresh cleanup footprint cannot be removed", async () => {
+    const sessionStorage = new MemoryStorage();
+    const context = createManager({ sessionStorage });
+    await context.manager.start("session-b", "existing", 22, "https://example.test/b");
+    sessionStorage.values.set("active-recording:session-a", {
+      sessionId: "session-a",
+      tabId: 11,
+      nextVariable: 1,
+      status: "cleanup",
+      recording: {
+        name: "unmeasurable-cleanup",
+        startedAt: 1_700_000_000_000,
+        stoppedAt: 1_700_000_000_001,
+        url: "https://example.test",
+        steps: [],
+        requiredVariables: [],
+      },
+    });
+    sessionStorage.values.set("active-recording-index:session-a", {
+      sessionId: "session-a",
+      status: "cleanup",
+    });
+    sessionStorage.failGetBytesInUse = new Error("BYTES_FAILED");
+    sessionStorage.failRemoveMany = new Error("REMOVE_FAILED");
+    context.scheduler.cleanupSessions.add("session-a");
+
+    await context.manager.retryCleanupStates();
+    await expect(context.manager.prepareStep(
+      "session-b", "browser_click", { element: "safe" }, 22,
+    )).rejects.toThrow("RECORDING_STATE_LIMIT");
+    expect(context.transport.requests).toEqual([]);
   });
 
   it("attempts queued closure cleanup after immediate alarm scheduling rejects", async () => {
@@ -2018,9 +2134,14 @@ describe("RecordingManager restart and stop persistence", () => {
       string,
       { integer: boolean; min: number; max: number }
     >>;
-    const validates = (action: string, path: string, value: number): boolean => (
-      validateSanitizedArgs(action, { [path]: value }, new Map(), new Set())
-    );
+    const validates = (action: string, path: string, value: number): boolean => {
+      if (path.startsWith("checks.*.")) {
+        return validateSanitizedArgs(action, {
+          checks: [{ type: "element_count", [path.slice("checks.*.".length)]: value }],
+        }, new Map(), new Set());
+      }
+      return validateSanitizedArgs(action, { [path]: value }, new Map(), new Set());
+    };
     for (const [action, paths] of Object.entries(numericBounds)) {
       for (const [path, bounds] of Object.entries(paths)) {
         expect(validates(action, path, bounds.min), `${action}.${path} min`).toBe(true);

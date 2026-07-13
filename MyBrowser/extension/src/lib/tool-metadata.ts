@@ -36,7 +36,12 @@ export const TOOL_METADATA = {
   browser_find: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_action: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   browser_wait_for: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: true, recordingStrings: { condition: 'safe', value: 'text', selector: 'safe' } },
-  browser_assert: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
+  browser_assert: {
+    tab: 'required', queue: 'tab', mutatesTab: false, recordable: true,
+    recordingStrings: {
+      'checks.*.type': 'safe', 'checks.*.value': 'text', 'checks.*.selector': 'safe',
+    },
+  },
   list_tabs: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
   select_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   new_tab: { tab: 'none', queue: 'global', mutatesTab: true, recordable: false },
@@ -104,6 +109,11 @@ export const RECORDING_ARGUMENT_TYPES = {
     '': 'object', condition: 'string', value: 'string', selector: 'string', timeout: 'number',
     pollInterval: 'number', tabId: 'number',
   },
+  browser_assert: {
+    '': 'object', checks: 'array', 'checks.*': 'object', 'checks.*.type': 'string',
+    'checks.*.value': 'string', 'checks.*.selector': 'string', 'checks.*.min': 'number',
+    'checks.*.max': 'number', tabId: 'number',
+  },
   browser_clipboard: { '': 'object', action: 'string', text: 'string', tabId: 'number' },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingArgumentType>>>>;
 
@@ -117,6 +127,7 @@ const TAB_ID_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
 const MARK_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
 const TIMER_MS_BOUNDS = { integer: false, min: 0, max: 2_147_483_647 } as const;
 const WAIT_SECONDS_BOUNDS = { integer: false, min: 0, max: 2_147_483.647 } as const;
+const ELEMENT_COUNT_BOUNDS = { integer: true, min: 0, max: 2_147_483_647 } as const;
 
 export const RECORDING_NUMERIC_BOUNDS = {
   browser_navigate: { tabId: TAB_ID_BOUNDS },
@@ -134,6 +145,11 @@ export const RECORDING_NUMERIC_BOUNDS = {
   browser_fill_form: { tabId: TAB_ID_BOUNDS },
   browser_wait_for: {
     timeout: TIMER_MS_BOUNDS, pollInterval: TIMER_MS_BOUNDS, tabId: TAB_ID_BOUNDS,
+  },
+  browser_assert: {
+    'checks.*.min': ELEMENT_COUNT_BOUNDS,
+    'checks.*.max': ELEMENT_COUNT_BOUNDS,
+    tabId: TAB_ID_BOUNDS,
   },
   browser_clipboard: { tabId: TAB_ID_BOUNDS },
 } as const satisfies Readonly<

@@ -27,6 +27,7 @@ const requiredVariables = [
   { name: "form_4", source: "form", hint: "form_input_4" },
   { name: "input_5", source: "text", hint: "text_input_5" },
   { name: "clipboard_6", source: "clipboard", hint: "clipboard_input_6" },
+  { name: "input_7", source: "text", hint: "text_input_7" },
 ] as const;
 
 const actionArgs: Record<string, Record<string, unknown>> = {
@@ -44,6 +45,9 @@ const actionArgs: Record<string, Record<string, unknown>> = {
   browser_reset_viewport: {},
   browser_fill_form: { fields: { [SECRET_FORM_KEY]: "{{form_4}}" }, submitText: "Continue" },
   browser_wait_for: { condition: "text_visible", value: "{{input_5}}", selector: "#status" },
+  browser_assert: {
+    checks: [{ type: "text_contains", value: "{{input_7}}", selector: "#status", min: 0, max: 10 }],
+  },
   browser_clipboard: { action: "write", text: "{{clipboard_6}}" },
 };
 
@@ -148,6 +152,7 @@ describe("recording argument privacy", () => {
       browser_reset_viewport: (args) => { args.tabId = false; },
       browser_fill_form: (args) => { args.submitAfter = 1; },
       browser_wait_for: (args) => { args.timeout = null; },
+      browser_assert: (args) => { args.checks = {}; },
       browser_clipboard: (args) => { args.tabId = false; },
     };
     expect(Object.keys(probes).sort()).toEqual(Object.keys(actionArgs).sort());
@@ -180,18 +185,33 @@ describe("recording argument privacy", () => {
       for (const [path, bounds] of Object.entries(paths)) {
         for (const value of [bounds.min, bounds.max]) {
           const candidate = recording();
-          candidate.steps.find((step) => step.action === action)!.args[path] = value;
+          const args = candidate.steps.find((step) => step.action === action)!.args;
+          if (path.startsWith("checks.*.")) {
+            (args.checks as Array<Record<string, unknown>>)[0]![path.slice("checks.*.".length)] = value;
+          } else {
+            args[path] = value;
+          }
           expect(() => sanitizeRecording(candidate), `${action}.${path}=${value}`).not.toThrow();
         }
         for (const value of [bounds.min - 1, bounds.max + 1]) {
           const candidate = recording();
-          candidate.steps.find((step) => step.action === action)!.args[path] = value;
+          const args = candidate.steps.find((step) => step.action === action)!.args;
+          if (path.startsWith("checks.*.")) {
+            (args.checks as Array<Record<string, unknown>>)[0]![path.slice("checks.*.".length)] = value;
+          } else {
+            args[path] = value;
+          }
           expect(() => sanitizeRecording(candidate), `${action}.${path}=${value}`)
             .toThrow("unsanitized action data");
         }
         if (bounds.integer) {
           const candidate = recording();
-          candidate.steps.find((step) => step.action === action)!.args[path] = bounds.min + 0.5;
+          const args = candidate.steps.find((step) => step.action === action)!.args;
+          if (path.startsWith("checks.*.")) {
+            (args.checks as Array<Record<string, unknown>>)[0]![path.slice("checks.*.".length)] = bounds.min + 0.5;
+          } else {
+            args[path] = bounds.min + 0.5;
+          }
           expect(() => sanitizeRecording(candidate), `${action}.${path}=fractional`)
             .toThrow("unsanitized action data");
         }
@@ -206,6 +226,9 @@ describe("recording argument privacy", () => {
       ["browser_select_option", (args) => { args.values = ["SECRET_RAW_SELECT_7815"]; }],
       ["browser_navigate", (args) => { args.url = "https://user:SECRET_RAW_URL_2936@example.test/path"; }],
       ["browser_clipboard", (args) => { args.text = "SECRET_RAW_CLIPBOARD_5187"; }],
+      ["browser_assert", (args) => {
+        (args.checks as Array<Record<string, unknown>>)[0]!.value = "SECRET_RAW_ASSERT_7318";
+      }],
     ];
     const sanitizedFields = sanitizeRecording(recording()).steps
       .find((step) => step.action === "browser_fill_form")?.args.fields as Record<string, unknown>;
@@ -399,9 +422,9 @@ describe("recording argument privacy", () => {
     const fields = Object.create(null) as Record<string, string>;
     for (const [key, value] of [
       ["Account", "{{form_4}}"],
-      ["__proto__", "{{form_7}}"],
-      ["constructor", "{{form_8}}"],
-      ["prototype", "{{form_9}}"],
+      ["__proto__", "{{form_8}}"],
+      ["constructor", "{{form_9}}"],
+      ["prototype", "{{form_10}}"],
     ] as const) {
       Object.defineProperty(fields, key, {
         value,
@@ -416,9 +439,9 @@ describe("recording argument privacy", () => {
       source: string;
       hint: string;
     }>).push(
-      { name: "form_7", source: "form", hint: "form_input_7" },
       { name: "form_8", source: "form", hint: "form_input_8" },
       { name: "form_9", source: "form", hint: "form_input_9" },
+      { name: "form_10", source: "form", hint: "form_input_10" },
     );
 
     const sanitized = sanitizeRecording(parameterized);
@@ -430,7 +453,7 @@ describe("recording argument privacy", () => {
     ]);
     expect(Object.hasOwn(sanitizedFields, "__proto__")).toBe(true);
     expect(Object.getOwnPropertyDescriptor(sanitizedFields, "__proto__")?.value)
-      .toBe("{{form_7}}");
+      .toBe("{{form_8}}");
 
     const stopResult = sanitizeRecordStopResult({
       extensionSaved: true,
@@ -441,7 +464,7 @@ describe("recording argument privacy", () => {
       step.action === "browser_fill_form"
     ))!.args.fields as Record<string, string>;
     expect(Object.getOwnPropertyDescriptor(stopFields, "__proto__")?.value)
-      .toBe("{{form_7}}");
+      .toBe("{{form_8}}");
 
     const hostileUnknown = recording();
     hostileUnknown.steps[0]!.args = JSON.parse(

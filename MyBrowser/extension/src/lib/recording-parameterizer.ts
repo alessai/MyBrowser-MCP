@@ -69,6 +69,8 @@ function placeholderSource(value: string): { name: string; source: VariableSourc
 }
 
 function wildcardPath(path: string): string {
+  const indexed = path.split('.').map((part) => (/^\d+$/.test(part) ? '*' : part)).join('.');
+  if (indexed !== path) return indexed;
   const separator = path.lastIndexOf('.');
   return separator < 0 ? '*' : `${path.slice(0, separator)}.*`;
 }

@@ -32,6 +32,7 @@ export interface RecordingStorage {
   get<T>(key: string): Promise<T | undefined>;
   has(key: string): Promise<boolean>;
   getKeys(): Promise<string[]>;
+  getBytesInUse(keys: string[]): Promise<number>;
   set<T>(key: string, value: T): Promise<void>;
   setMany(values: Record<string, unknown>): Promise<void>;
   remove(key: string): Promise<void>;
@@ -166,6 +167,10 @@ class ChromeStorageAdapter implements RecordingStorage {
 
   async getKeys(): Promise<string[]> {
     return this.area.getKeys();
+  }
+
+  async getBytesInUse(keys: string[]): Promise<number> {
+    return await this.area.getBytesInUse(keys);
   }
 
   async set<T>(key: string, value: T): Promise<void> {
@@ -1154,6 +1159,7 @@ export class RecordingManager {
   }
 
   private async retryCleanupSessionUnlocked(sessionId: string): Promise<boolean> {
+    await this.accountCleanupFootprintUnlocked(sessionId);
     this.hideSessionForCleanupUnlocked(sessionId);
     try {
       await this.removeActiveStateUnlocked(sessionId);
@@ -1164,6 +1170,20 @@ export class RecordingManager {
     }
     try { await this.scheduler.clearCleanup(sessionId); } catch { /* stale tombstones retry safely */ }
     return true;
+  }
+
+  private async accountCleanupFootprintUnlocked(sessionId: string): Promise<void> {
+    if (this.persistedFootprints.has(sessionId)) return;
+    const keys = [`${ACTIVE_MARKER_PREFIX}${sessionId}`, `${ACTIVE_PREFIX}${sessionId}`];
+    try {
+      const bytes = await this.sessionStorage.getBytesInUse(keys);
+      this.persistedFootprints.set(
+        sessionId,
+        Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : this.limits.maxAggregateBytes,
+      );
+    } catch {
+      this.persistedFootprints.set(sessionId, this.limits.maxAggregateBytes);
+    }
   }
 
   private hideSessionForCleanupUnlocked(sessionId: string): void {

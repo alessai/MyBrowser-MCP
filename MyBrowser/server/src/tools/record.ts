@@ -178,6 +178,9 @@ export const SERVER_RECORDING_STRING_METADATA = {
   browser_reset_viewport: {},
   browser_fill_form: { "fields.*": "form", submitText: "safe" },
   browser_wait_for: { condition: "safe", value: "text", selector: "safe" },
+  browser_assert: {
+    "checks.*.type": "safe", "checks.*.value": "text", "checks.*.selector": "safe",
+  },
   browser_clipboard: { action: "safe", text: "clipboard" },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingStringKind>>>>;
 
@@ -222,6 +225,11 @@ export const SERVER_RECORDING_ARGUMENT_TYPES = {
     "": "object", condition: "string", value: "string", selector: "string", timeout: "number",
     pollInterval: "number", tabId: "number",
   },
+  browser_assert: {
+    "": "object", checks: "array", "checks.*": "object", "checks.*.type": "string",
+    "checks.*.value": "string", "checks.*.selector": "string", "checks.*.min": "number",
+    "checks.*.max": "number", tabId: "number",
+  },
   browser_clipboard: { "": "object", action: "string", text: "string", tabId: "number" },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, RecordingArgumentType>>>>;
 
@@ -235,6 +243,7 @@ const TAB_ID_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
 const MARK_BOUNDS = { integer: true, min: 1, max: 2_147_483_647 } as const;
 const TIMER_MS_BOUNDS = { integer: false, min: 0, max: 2_147_483_647 } as const;
 const WAIT_SECONDS_BOUNDS = { integer: false, min: 0, max: 2_147_483.647 } as const;
+const ELEMENT_COUNT_BOUNDS = { integer: true, min: 0, max: 2_147_483_647 } as const;
 
 export const SERVER_RECORDING_NUMERIC_BOUNDS = {
   browser_navigate: { tabId: TAB_ID_BOUNDS },
@@ -252,6 +261,11 @@ export const SERVER_RECORDING_NUMERIC_BOUNDS = {
   browser_fill_form: { tabId: TAB_ID_BOUNDS },
   browser_wait_for: {
     timeout: TIMER_MS_BOUNDS, pollInterval: TIMER_MS_BOUNDS, tabId: TAB_ID_BOUNDS,
+  },
+  browser_assert: {
+    "checks.*.min": ELEMENT_COUNT_BOUNDS,
+    "checks.*.max": ELEMENT_COUNT_BOUNDS,
+    tabId: TAB_ID_BOUNDS,
   },
   browser_clipboard: { tabId: TAB_ID_BOUNDS },
 } as const satisfies Readonly<
@@ -601,9 +615,18 @@ export function createRecordingTools(
           return finishPendingStop();
         }
 
+        const rawRecordingName = isPlainRecord(rawResult)
+          && isPlainRecord(rawResult.recording)
+          && typeof rawResult.recording.name === "string"
+          ? rawResult.recording.name
+          : undefined;
+        if (activeRecordingName && rawRecordingName !== activeRecordingName) {
+          throw new Error("Recording result does not match the active reservation");
+        }
+
         try {
-      const result = sanitizeRecordStopResult(rawResult);
-      const recording = result.recording;
+          const result = sanitizeRecordStopResult(rawResult);
+          const recording = result.recording;
           if (activeRecordingName && recording.name !== activeRecordingName) {
             throw new Error("Recording result does not match the active reservation");
           }

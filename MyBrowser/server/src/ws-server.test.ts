@@ -433,6 +433,38 @@ describe("recording tools and persistence", () => {
     });
   });
 
+  it("rejects a wrong raw stop name before sanitization without releasing ownership", async () => {
+    const state = createRecordingState();
+    const { recordStart, recordStop } = getRecordingApi().createRecordingTools(
+      state,
+      () => "session-a",
+    );
+    await recordStart.handle(
+      { sendSocketMessage: vi.fn().mockResolvedValue({ status: "recording" }) } as unknown as Context,
+      { name: validRecording.name, tabId: 7 },
+    );
+    const secret = "SECRET_WRONG_STOP_9271";
+
+    await expect(recordStop.handle({
+      sendSocketMessage: vi.fn().mockResolvedValue({
+        recording: { name: `Other_${secret}` },
+      }),
+    } as unknown as Context, {})).rejects.toThrow(
+      "Recording result does not match the active reservation",
+    );
+
+    expect(state.hasRecordingReservation).not.toHaveBeenCalled();
+    expect(state.releaseRecordingReservation).not.toHaveBeenCalled();
+    try {
+      await recordStop.handle({
+        sendSocketMessage: vi.fn().mockResolvedValue({ recording: { name: secret } }),
+      } as unknown as Context, {});
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain(secret);
+    }
+    expect(state.releaseRecordingReservation).not.toHaveBeenCalled();
+  });
+
   it("reports a normalized name conflict without proxying start", async () => {
     const state = createRecordingState();
     state.reserveRecording = vi.fn().mockResolvedValue({ ok: false, owner: "session-b" });
@@ -1542,6 +1574,32 @@ describe("acknowledged recording reservation messages", () => {
       "session-a", validRecording.name,
     )).resolves.toBe(false);
     expect(retryRegistry.count()).toBe(0);
+  });
+
+  it("checks a wrong canonical raw name before strict sanitize or persistence", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mybrowser-recording-raw-owner-"));
+    tempDirs.push(base);
+    const recordingsDir = join(base, "recordings");
+    const mkdir = vi.fn(mkdirSync);
+    const { server, extension } = await setupReservedRecording(recordingsDir, {
+      mkdirSync: mkdir,
+    });
+    const hasReservation = vi.spyOn(server.stateManager, "hasRecordingReservation");
+
+    await expect(persistRecordingMessage(extension, "persist-wrong-owner", {
+      name: "Other_Flow",
+    })).resolves.toEqual({
+      type: "persistRecordingResult",
+      id: "persist-wrong-owner",
+      ok: false,
+      error: "reservation unavailable",
+    });
+
+    expect(hasReservation).toHaveBeenCalledWith("session-a", "Other_Flow");
+    expect(mkdir).not.toHaveBeenCalled();
+    await expect(server.stateManager.hasRecordingReservation(
+      "session-a", validRecording.name,
+    )).resolves.toBe(true);
   });
 
   it("keeps canonical retry retention at zero across many successful recordings", async () => {
