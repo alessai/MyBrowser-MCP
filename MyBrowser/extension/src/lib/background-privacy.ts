@@ -9,6 +9,7 @@ const SAFE_RECORDING_STAGES = new Set([
   'renew_transport',
   'promote_session',
   'session_closed',
+  'renewal_in_progress',
 ]);
 
 export interface ToolFailureMetadata {

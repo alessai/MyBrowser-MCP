@@ -386,6 +386,8 @@ export function isSanitizedRecording(
 
 export class RecordingManager {
   private readonly active = new Map<string, ActiveRecording>();
+  private readonly authorityTokens = new Map<string, object>();
+  private readonly renewingSessions = new Set<string>();
   private readonly persistedFootprints = new Map<string, number>();
   private readonly replayTokens = new Map<string, Set<ReplayToken>>();
   private readonly closedSessions = new Set<string>();
@@ -479,6 +481,7 @@ export class RecordingManager {
         throw new Error('RECORDING_STATE_LIMIT');
       }
       this.active.set(sessionId, state);
+      this.authorityTokens.set(sessionId, {});
       try {
         await this.persistActiveUnlocked(state);
       } catch {
@@ -512,6 +515,9 @@ export class RecordingManager {
         throw new RecordedStateFailure('restore_all');
       }
       if (this.closedSessions.has(sessionId)) return null;
+      if (this.renewingSessions.has(sessionId)) {
+        throw new RecordedStateFailure('renewal_in_progress');
+      }
       const active = await this.ensureSessionAuthorityUnlocked(sessionId);
       if (!active || this.replayTokens.has(sessionId) || active.tabId !== tabId) return null;
       if (active.status !== 'active') return null;
@@ -667,6 +673,9 @@ export class RecordingManager {
         await this.restoreSessionUnlocked(sessionId);
       } catch {
         throw new RecordedStateFailure('restore_session');
+      }
+      if (this.renewingSessions.has(sessionId)) {
+        throw new RecordedStateFailure('renewal_in_progress');
       }
       let state = await this.ensureSessionAuthorityUnlocked(sessionId);
       if (!state && this.closedSessions.has(sessionId)) {
@@ -867,7 +876,7 @@ export class RecordingManager {
       const found: Array<{
         sessionId: string;
         name: string;
-        state: ActiveRecording;
+        authorityToken: object;
       }> = [];
       for (const sessionId of sessionIds) {
         if (cleanupSessions.has(sessionId)) continue;
@@ -883,51 +892,62 @@ export class RecordingManager {
           await this.finishStopUnlocked(sessionId);
           continue;
         }
-        found.push({ sessionId, name: active.recording.name, state: active });
+        if ([...this.pending.values()].some((entry) => entry.sessionId === sessionId)) continue;
+        const authorityToken = this.authorityTokenFor(sessionId);
+        this.renewingSessions.add(sessionId);
+        found.push({ sessionId, name: active.recording.name, authorityToken });
       }
       return found;
     });
 
-    for (let offset = 0; offset < candidates.length; offset += RENEWAL_BATCH_SIZE) {
-      const batch = candidates.slice(offset, offset + RENEWAL_BATCH_SIZE);
-      const results = await Promise.all(batch.map(async (candidate) => {
-        try {
-          const response = await this.transport.request('renewRecordingReservation', {
-            sessionId: candidate.sessionId,
-            name: candidate.name,
-          }, SERVER_TIMEOUT_MS);
-          return { candidate, response } as const;
-        } catch {
-          return { candidate, response: undefined } as const;
-        }
-      }));
-
-      await this.enqueue(async () => {
-        for (const { candidate, response } of results) {
-          const current = this.active.get(candidate.sessionId);
-          if (current !== candidate.state) continue;
-          if (this.closedSessions.has(candidate.sessionId)) {
-            await this.finishStopUnlocked(candidate.sessionId);
-            continue;
-          }
-          if (!isRecord(response) || typeof response.ok !== 'boolean') {
-            // Ambiguous failure: retain the sanitized state and retry later.
-            continue;
-          }
-          if (!response.ok) {
-            await this.finishStopUnlocked(candidate.sessionId);
-            continue;
-          }
-          if (current.status !== 'quarantined') continue;
-          const promoted: ActiveRecording = { ...current, status: 'active' };
-          this.active.set(candidate.sessionId, promoted);
+    try {
+      for (let offset = 0; offset < candidates.length; offset += RENEWAL_BATCH_SIZE) {
+        const batch = candidates.slice(offset, offset + RENEWAL_BATCH_SIZE);
+        const results = await Promise.all(batch.map(async (candidate) => {
           try {
-            await this.persistActiveUnlocked(promoted);
+            const response = await this.transport.request('renewRecordingReservation', {
+              sessionId: candidate.sessionId,
+              name: candidate.name,
+            }, SERVER_TIMEOUT_MS);
+            return { candidate, response } as const;
           } catch {
-            this.active.set(candidate.sessionId, current);
+            return { candidate, response: undefined } as const;
           }
-        }
-      });
+        }));
+
+        await this.enqueue(async () => {
+          for (const { candidate, response } of results) {
+            if (this.authorityTokens.get(candidate.sessionId) !== candidate.authorityToken) continue;
+            const current = this.active.get(candidate.sessionId);
+            if (!current) continue;
+            if (this.closedSessions.has(candidate.sessionId)) {
+              await this.finishStopUnlocked(candidate.sessionId);
+              continue;
+            }
+            if (!isRecord(response) || typeof response.ok !== 'boolean') {
+              // Ambiguous failure: retain the sanitized state and retry later.
+              continue;
+            }
+            if (!response.ok) {
+              await this.finishStopUnlocked(candidate.sessionId);
+              continue;
+            }
+            if (current.status !== 'quarantined') continue;
+            const promoted: ActiveRecording = { ...current, status: 'active' };
+            this.active.set(candidate.sessionId, promoted);
+            try {
+              await this.persistActiveUnlocked(promoted);
+            } catch {
+              this.active.set(candidate.sessionId, current);
+            }
+          }
+        });
+        for (const candidate of batch) this.renewingSessions.delete(candidate.sessionId);
+      }
+    } finally {
+      for (const candidate of candidates) {
+        this.renewingSessions.delete(candidate.sessionId);
+      }
     }
   }
 
@@ -1032,6 +1052,7 @@ export class RecordingManager {
       : clone(stored);
     this.persistedFootprints.set(sessionId, this.reservedStateBytes(stored));
     this.active.set(sessionId, restored);
+    this.authorityTokenFor(sessionId);
     if (this.aggregateReservedBytesWith() > this.limits.maxAggregateBytes) {
       this.active.delete(sessionId);
       await this.removeActiveStateUnlocked(sessionId);
@@ -1182,6 +1203,8 @@ export class RecordingManager {
     this.persistedFootprints.delete(sessionId);
     this.cleanupFallbackSessions.delete(sessionId);
     this.active.delete(sessionId);
+    this.authorityTokens.delete(sessionId);
+    this.renewingSessions.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1285,6 +1308,8 @@ export class RecordingManager {
   private hideSessionForCleanupUnlocked(sessionId: string): void {
     this.closedSessions.add(sessionId);
     this.active.delete(sessionId);
+    this.authorityTokens.delete(sessionId);
+    this.renewingSessions.delete(sessionId);
     for (const [id, reservation] of this.pending) {
       if (reservation.sessionId === sessionId) this.pending.delete(id);
     }
@@ -1310,6 +1335,14 @@ export class RecordingManager {
   private async abortSessionUnlocked(sessionId: string): Promise<void> {
     await this.restoreSessionUnlocked(sessionId, false);
     await this.finishStopUnlocked(sessionId);
+  }
+
+  private authorityTokenFor(sessionId: string): object {
+    const existing = this.authorityTokens.get(sessionId);
+    if (existing) return existing;
+    const created = {};
+    this.authorityTokens.set(sessionId, created);
+    return created;
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {

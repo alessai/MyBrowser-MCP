@@ -1747,6 +1747,51 @@ describe("RecordingManager restart and stop persistence", () => {
     await Promise.all([firstPass, start]);
   });
 
+  it("blocks a recordable action while that session's authority renewal is unresolved", async () => {
+    const transport = new FakeTransport();
+    const renewal = deferred<unknown>();
+    transport.responses.push(renewal.promise);
+    const current = createManager({ transport });
+    await current.manager.start("session-a", "renewing-action", 11, "https://example.test");
+
+    const renewalPass = current.manager.renewPersistedSessions();
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(1));
+    let actionRan = false;
+    const action = runRecordedAction({
+      manager: current.manager,
+      sessionId: "session-a",
+      toolName: "browser_click",
+      args: { element: "Account" },
+      tabId: 11,
+      run: async () => { actionRan = true; },
+      currentUrl: async () => "https://example.test",
+    });
+
+    await expect(action).rejects.toMatchObject({ stage: "renewal_in_progress" });
+    expect(actionRan).toBe(false);
+    renewal.resolve({ ok: false });
+    await renewalPass;
+    expect(current.manager.snapshot().active).toEqual([]);
+  });
+
+  it("skips periodic renewal for an action that is already prepared", async () => {
+    const current = createManager();
+    await current.manager.start("session-a", "prepared-action", 11, "https://example.test");
+    const prepared = await current.manager.prepareStep(
+      "session-a", "browser_click", { element: "Account" }, 11,
+    );
+    expect(prepared).not.toBeNull();
+
+    await current.manager.renewPersistedSessions();
+
+    expect(current.transport.requests).toEqual([]);
+    await current.manager.commitStep("session-a", prepared!, {
+      durationMs: 1,
+      currentUrl: "https://example.test",
+    });
+    expect(current.manager.snapshot().active).toHaveLength(1);
+  });
+
   it("tombstones session closure before cleanup persistence and blocks current-worker renewal", async () => {
     const sessionStorage = new MemoryStorage();
     const transport = new FakeTransport();
