@@ -382,4 +382,123 @@ describe("Context telemetry correlation", () => {
       .toBe("internal_failure");
     await manager.close();
   });
+
+  it("accepts and strips direct and hub extension summaries using pseudonyms only", async () => {
+    const sink = new MemorySink();
+    const manager = enabledManager(sink);
+    const socket = new FakeSocket();
+    const context = new Context(manager);
+    context.sessionId = "session-a";
+    const browserId = context.addBrowser(socket as unknown as WebSocket);
+
+    const invoke = async (extensionRequestId: string | undefined, responseError?: string) => {
+      const pending = manager.runToolCall({
+        sessionId: "session-a", toolName: "browser_click",
+        arguments: { tabId: 7, element: "Save" },
+      }, () => context.sendSocketMessageToBrowser(browserId, "browser_click", { tabId: 7 }));
+      await nextTurn();
+      const request = JSON.parse(socket.sent.at(-1)!);
+      const telemetry = {
+        schemaVersion: 1,
+        traceId: request.trace.traceId,
+        transportSpanId: request.trace.transportSpanId,
+        extensionRequestId: extensionRequestId ?? request.id,
+        offscreenReceivedToBackgroundMs: 1,
+        queueWaitMs: 2,
+        handlerMs: 3,
+        resolvedTabId: 7,
+        stateSignals: { tabChanged: true, pathChanged: false },
+        errorCategory: "extension_tool_failed",
+      };
+      socket.dispatch("message", {
+        type: "messageResponse",
+        payload: {
+          requestId: request.id,
+          ...(responseError ? { error: responseError } : { result: { ok: true } }),
+          telemetry,
+        },
+      });
+      return { pending, request };
+    };
+
+    const direct = await invoke(undefined);
+    await expect(direct.pending).resolves.toEqual({ ok: true });
+    const hub = await invoke("hub_RAW_EXTENSION_ID_CANARY");
+    await expect(hub.pending).resolves.toEqual({ ok: true });
+    const error = await invoke(undefined, "RAW_PAGE_ERROR_CANARY");
+    await expect(error.pending).rejects.toThrow("RAW_PAGE_ERROR_CANARY");
+
+    const summaries = sink.events.filter((event): event is Extract<
+      TelemetryEvent, { type: "extension_summary" }
+    > => event.type === "extension_summary");
+    expect(summaries).toHaveLength(3);
+    expect(summaries.map((event) => event.routeMode)).toEqual(["direct", "hub", "direct"]);
+    expect(summaries[0]).toEqual(expect.objectContaining({
+      offscreenReceivedToBackgroundMs: 1, queueWaitMs: 2, handlerMs: 3,
+      errorCategory: "extension_tool_failed", tabChanged: true, pathChanged: false,
+      resolvedTabPseudonym: expect.any(String), extensionRequestPseudonym: expect.any(String),
+    }));
+    expect(summaries[1]?.extensionRequestPseudonym).not.toBe("hub_RAW_EXTENSION_ID_CANARY");
+    expect(summaries[0]?.resolvedTabPseudonym).not.toBe("7");
+    const evidence = JSON.stringify(sink.events);
+    expect(evidence).not.toContain("hub_RAW_EXTENSION_ID_CANARY");
+    expect(evidence).not.toContain("RAW_PAGE_ERROR_CANARY");
+    await manager.close();
+  });
+
+  it("turns malformed extension summaries into one bounded integrity event without changing results", async () => {
+    const cases = [
+      {
+        reason: "oversized",
+        telemetry: {
+          schemaVersion: 1, traceId: "trace_1234567890abcdef",
+          transportSpanId: "span_1234567890abcdefg", extensionRequestId: "hub_1",
+          extra: `RAW_OVERSIZED_CANARY${"x".repeat(20_000)}`,
+        },
+      },
+      {
+        reason: "unsupported_version",
+        telemetry: { schemaVersion: 2, marker: "RAW_VERSION_CANARY" },
+      },
+      {
+        reason: "malformed",
+        telemetry: {
+          traceId: "trace_1234567890abcdef", transportSpanId: "span_1234567890abcdefg",
+          extensionRequestId: "RAW_MALFORMED_CANARY",
+        },
+      },
+      { reason: "mismatched_trace", telemetry: null },
+    ] as const;
+
+    for (const scenario of cases) {
+      const sink = new MemorySink();
+      const manager = enabledManager(sink);
+      const socket = new FakeSocket();
+      const context = new Context(manager);
+      context.sessionId = "session-a";
+      const browserId = context.addBrowser(socket as unknown as WebSocket);
+      const pending = manager.runToolCall({
+        sessionId: "session-a", toolName: "browser_click", arguments: { tabId: 1, element: "Save" },
+      }, () => context.sendSocketMessageToBrowser(browserId, "browser_click", { tabId: 1 }));
+      await nextTurn();
+      const request = JSON.parse(socket.sent[0]!);
+      const telemetry = scenario.reason === "mismatched_trace" ? {
+        schemaVersion: 1,
+        traceId: "different_trace_123456",
+        transportSpanId: request.trace.transportSpanId,
+        extensionRequestId: "hub_1",
+      } : scenario.telemetry;
+      socket.dispatch("message", {
+        type: "messageResponse",
+        payload: { requestId: request.id, result: "unchanged-result", telemetry },
+      });
+      await expect(pending).resolves.toBe("unchanged-result");
+      const integrity = sink.events.filter((event) => event.type === "telemetry_integrity");
+      expect(integrity).toEqual([expect.objectContaining({
+        reason: scenario.reason, sizeBucket: expect.any(String),
+      })]);
+      expect(JSON.stringify(sink.events)).not.toContain("RAW_");
+      await manager.close();
+    }
+  });
 });

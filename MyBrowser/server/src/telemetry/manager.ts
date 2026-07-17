@@ -5,7 +5,11 @@ import type { Stats } from "node:fs";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import type { TraceContextV1 } from "../protocol.js";
+import {
+  isExtensionTraceSummaryV1,
+  type ExtensionTraceSummaryV1,
+  type TraceContextV1,
+} from "../protocol.js";
 import {
   pseudonymizeTelemetryValue,
   summarizeFailedToolArguments,
@@ -44,6 +48,80 @@ function byteSizeBucket(bytes: number): string {
   if (bytes <= 4_095) return "1-4KiB";
   if (bytes <= 16_383) return "4-16KiB";
   return "16KiB+";
+}
+
+const MAX_EXTENSION_SUMMARY_BYTES = 16 * 1024;
+const MAX_EXTENSION_SUMMARY_PROPERTIES = 64;
+const MAX_EXTENSION_SUMMARY_DEPTH = 4;
+
+interface ShapeMeasure { bytes: number; oversized: boolean; malformed: boolean }
+
+function measureTelemetryShape(value: unknown, seen = new WeakSet<object>(), depth = 0): ShapeMeasure {
+  if (depth > MAX_EXTENSION_SUMMARY_DEPTH) {
+    return { bytes: MAX_EXTENSION_SUMMARY_BYTES + 1, oversized: true, malformed: false };
+  }
+  if (typeof value === "string") {
+    if (value.length > MAX_EXTENSION_SUMMARY_BYTES) {
+      return { bytes: MAX_EXTENSION_SUMMARY_BYTES + 1, oversized: true, malformed: false };
+    }
+    return { bytes: Buffer.byteLength(value, "utf8") + 2, oversized: false, malformed: false };
+  }
+  if (typeof value === "number") return { bytes: 32, oversized: false, malformed: false };
+  if (typeof value === "boolean") return { bytes: 5, oversized: false, malformed: false };
+  if (value === null) return { bytes: 4, oversized: false, malformed: false };
+  if (typeof value !== "object") return { bytes: 4, oversized: false, malformed: true };
+  if (seen.has(value)) return { bytes: 0, oversized: false, malformed: true };
+  seen.add(value);
+  if (Array.isArray(value) && value.length > MAX_EXTENSION_SUMMARY_PROPERTIES) {
+    return { bytes: MAX_EXTENSION_SUMMARY_BYTES + 1, oversized: true, malformed: false };
+  }
+  let bytes = 2;
+  let properties = 0;
+  try {
+    if (Object.getOwnPropertySymbols(value).length > 0) return { bytes, oversized: false, malformed: true };
+    for (const key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      properties += 1;
+      if (properties > MAX_EXTENSION_SUMMARY_PROPERTIES) {
+        return { bytes: MAX_EXTENSION_SUMMARY_BYTES + 1, oversized: true, malformed: false };
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) return { bytes, oversized: false, malformed: true };
+      bytes += Buffer.byteLength(key, "utf8") + 4;
+      const child = measureTelemetryShape(descriptor.value, seen, depth + 1);
+      bytes += child.bytes;
+      if (child.malformed) return { bytes, oversized: false, malformed: true };
+      if (child.oversized || bytes > MAX_EXTENSION_SUMMARY_BYTES) {
+        return { bytes: Math.max(bytes, MAX_EXTENSION_SUMMARY_BYTES + 1), oversized: true, malformed: false };
+      }
+    }
+  } catch {
+    return { bytes, oversized: false, malformed: true };
+  }
+  return { bytes, oversized: false, malformed: false };
+}
+
+function summarySchema(value: unknown): { present: boolean; value: unknown } {
+  if (typeof value !== "object" || value === null) return { present: false, value: undefined };
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, "schemaVersion");
+    return descriptor && "value" in descriptor
+      ? { present: true, value: descriptor.value }
+      : { present: false, value: undefined };
+  } catch {
+    return { present: false, value: undefined };
+  }
+}
+
+function summaryTimingWithinRequest(summary: ExtensionTraceSummaryV1, timeoutMs: number): boolean {
+  const timeout = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
+  const cap = Math.min(86_400_000, timeout + 5_000);
+  return [
+    summary.offscreenReceivedToBackgroundMs,
+    summary.queueWaitMs,
+    summary.handlerMs,
+    summary.responseSerializeMs,
+  ].every((value) => value === undefined || value <= cap);
 }
 
 export interface TelemetrySink {
@@ -95,6 +173,7 @@ export interface TransportSpanInput {
 
 export interface TransportSpanHandle {
   readonly trace: TraceContextV1;
+  acceptExtensionTelemetry(value: unknown, transportRequestId: string, timeoutMs: number): void;
   complete(responseBytes: number, resultPresent: boolean): void;
   fail(errorCategory: TelemetryErrorCategory): void;
 }
@@ -372,9 +451,103 @@ export class TelemetryManager implements TelemetrySink {
       });
 
       let terminal = false;
+      let extensionProcessed = false;
       const durationMs = (): number => Math.max(0, this.monotonicNow() - startedMonoMs);
+      const emitIntegrity = (
+        reason: "malformed" | "oversized" | "mismatched_trace" | "unsupported_version",
+        bytes: number,
+      ): void => {
+        this.emit({
+          ...this.eventBase("telemetry_integrity"),
+          type: "telemetry_integrity",
+          sessionPseudonym: root.sessionPseudonym,
+          traceId: root.traceId,
+          rootCallId: root.rootCallId,
+          transportSpanId,
+          reason,
+          sizeBucket: byteSizeBucket(bytes),
+        });
+      };
       return Object.freeze({
         trace,
+        acceptExtensionTelemetry: (
+          value: unknown,
+          transportRequestId: string,
+          timeoutMs: number,
+        ): void => {
+          if (terminal || extensionProcessed) return;
+          extensionProcessed = true;
+          try {
+            const measured = measureTelemetryShape(value);
+            if (measured.oversized) {
+              emitIntegrity("oversized", measured.bytes);
+              return;
+            }
+            if (measured.malformed) {
+              emitIntegrity("malformed", measured.bytes);
+              return;
+            }
+            const schema = summarySchema(value);
+            if (!schema.present) {
+              emitIntegrity("malformed", measured.bytes);
+              return;
+            }
+            if (schema.value !== 1) {
+              emitIntegrity("unsupported_version", measured.bytes);
+              return;
+            }
+            if (!isExtensionTraceSummaryV1(value) || !summaryTimingWithinRequest(value, timeoutMs)) {
+              emitIntegrity("malformed", measured.bytes);
+              return;
+            }
+            if (value.traceId !== root.traceId || value.transportSpanId !== transportSpanId) {
+              emitIntegrity("mismatched_trace", measured.bytes);
+              return;
+            }
+            this.emit({
+              ...this.eventBase("extension_summary"),
+              type: "extension_summary",
+              sessionPseudonym: root.sessionPseudonym,
+              traceId: root.traceId,
+              rootCallId: root.rootCallId,
+              transportSpanId,
+              routeMode: value.extensionRequestId === transportRequestId ? "direct" : "hub",
+              extensionRequestPseudonym: pseudonymizeTelemetryValue(
+                this.key!, "extension_request", value.extensionRequestId,
+              ),
+              ...(value.resolvedTabId === undefined ? {} : {
+                resolvedTabPseudonym: pseudonymizeTelemetryValue(
+                  this.key!, "tab", String(value.resolvedTabId),
+                ),
+              }),
+              ...(value.offscreenReceivedToBackgroundMs === undefined ? {} : {
+                offscreenReceivedToBackgroundMs: value.offscreenReceivedToBackgroundMs,
+              }),
+              ...(value.queueWaitMs === undefined ? {} : { queueWaitMs: value.queueWaitMs }),
+              ...(value.handlerMs === undefined ? {} : { handlerMs: value.handlerMs }),
+              ...(value.responseSerializeMs === undefined ? {} : {
+                responseSerializeMs: value.responseSerializeMs,
+              }),
+              ...(value.errorCategory === undefined ? {} : { errorCategory: value.errorCategory }),
+              ...(value.stateSignals?.tabChanged === undefined ? {} : {
+                tabChanged: value.stateSignals.tabChanged,
+              }),
+              ...(value.stateSignals?.originChanged === undefined ? {} : {
+                originChanged: value.stateSignals.originChanged,
+              }),
+              ...(value.stateSignals?.pathChanged === undefined ? {} : {
+                pathChanged: value.stateSignals.pathChanged,
+              }),
+              ...(value.stateSignals?.loadStatusChanged === undefined ? {} : {
+                loadStatusChanged: value.stateSignals.loadStatusChanged,
+              }),
+            });
+          } catch {
+            try { emitIntegrity("malformed", 0); } catch {
+              // Raw extension telemetry must never escape or affect the response.
+            }
+          }
+        },
         complete: (responseBytes: number, resultPresent: boolean): void => {
           if (terminal) return;
           terminal = true;

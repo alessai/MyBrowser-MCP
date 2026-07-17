@@ -322,7 +322,17 @@ export class Context {
         if (parsed.type !== MESSAGE_RESPONSE_TYPE) return;
         if (parsed.payload?.requestId !== id) return;
 
-        const { result, error } = parsed.payload;
+        const responsePayload = parsed.payload as Record<string, unknown>;
+        try {
+          const telemetryDescriptor = Object.getOwnPropertyDescriptor(responsePayload, "telemetry");
+          if (telemetryDescriptor && "value" in telemetryDescriptor) {
+            transport?.acceptExtensionTelemetry(telemetryDescriptor.value, id, timeoutMs);
+            delete responsePayload.telemetry;
+          }
+        } catch {
+          // Optional extension telemetry cannot affect tool resolution.
+        }
+        const { result, error } = responsePayload as { result?: unknown; error?: string };
         const responseBytes = Buffer.byteLength(rawResponse);
         cleanup();
         if (error) {
@@ -335,7 +345,7 @@ export class Context {
         } else {
           transport?.complete(
             responseBytes,
-            Object.prototype.hasOwnProperty.call(parsed.payload, "result"),
+            Object.prototype.hasOwnProperty.call(responsePayload, "result"),
           );
           resolve(result);
         }

@@ -161,6 +161,10 @@ export interface ExtensionSummaryEvent extends CorrelatedEventBase {
   handlerMs?: number;
   responseSerializeMs?: number;
   errorCategory?: TelemetryErrorCategory;
+  tabChanged?: boolean;
+  originChanged?: boolean;
+  pathChanged?: boolean;
+  loadStatusChanged?: boolean;
 }
 
 export interface TelemetryIntegrityEvent extends CorrelatedEventBase {
