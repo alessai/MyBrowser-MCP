@@ -66,12 +66,42 @@ export interface TraceContextV1 {
   transportSpanId: string;
 }
 
+export const EXTENSION_TELEMETRY_ERROR_CATEGORIES = [
+  "invalid_arguments", "authorization_denied", "ownership_denied",
+  "browser_not_found", "not_connected", "timeout", "request_expired",
+  "queue_overloaded", "tab_not_found", "session_closed", "worker_restarted",
+  "extension_tool_failed", "unknown",
+] as const;
+
+export type ExtensionTelemetryErrorCategory =
+  (typeof EXTENSION_TELEMETRY_ERROR_CATEGORIES)[number];
+
+export interface ExtensionTraceSummaryV1 {
+  schemaVersion: 1;
+  traceId: string;
+  transportSpanId: string;
+  extensionRequestId: string;
+  offscreenReceivedToBackgroundMs?: number;
+  queueWaitMs?: number;
+  handlerMs?: number;
+  responseSerializeMs?: number;
+  resolvedTabId?: number;
+  stateSignals?: {
+    tabChanged?: boolean;
+    originChanged?: boolean;
+    pathChanged?: boolean;
+    loadStatusChanged?: boolean;
+  };
+  errorCategory?: ExtensionTelemetryErrorCategory;
+}
+
 export interface ToolResponseV2 {
   type: "messageResponse";
   payload: {
     requestId: string;
     result?: unknown;
     error?: string;
+    telemetry?: ExtensionTraceSummaryV1;
   };
 }
 
@@ -110,6 +140,57 @@ export function isTraceContextV1(value: unknown): value is TraceContextV1 {
   } catch {
     return false;
   }
+}
+
+const EXTENSION_REQUEST_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_EXTENSION_TIMING_MS = 86_400_000;
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length <= allowed.length && keys.every((key) => allowed.includes(key));
+}
+
+function validTiming(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+    && value >= 0 && value <= MAX_EXTENSION_TIMING_MS;
+}
+
+function isStateSignals(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    "tabChanged", "originChanged", "pathChanged", "loadStatusChanged",
+  ])) return false;
+  return ["tabChanged", "originChanged", "pathChanged", "loadStatusChanged"]
+    .every((key) => !hasOwn(value, key) || typeof value[key] === "boolean");
+}
+
+export function isExtensionTraceSummaryV1(value: unknown): value is ExtensionTraceSummaryV1 {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    "schemaVersion", "traceId", "transportSpanId", "extensionRequestId",
+    "offscreenReceivedToBackgroundMs", "queueWaitMs", "handlerMs",
+    "responseSerializeMs", "resolvedTabId", "stateSignals", "errorCategory",
+  ])) return false;
+  if (value.schemaVersion !== 1
+    || typeof value.traceId !== "string" || !TRACE_ID_PATTERN.test(value.traceId)
+    || typeof value.transportSpanId !== "string" || !TRACE_ID_PATTERN.test(value.transportSpanId)
+    || typeof value.extensionRequestId !== "string" || !EXTENSION_REQUEST_ID.test(value.extensionRequestId)) {
+    return false;
+  }
+  for (const key of [
+    "offscreenReceivedToBackgroundMs", "queueWaitMs", "handlerMs", "responseSerializeMs",
+  ]) if (hasOwn(value, key) && !validTiming(value[key])) return false;
+  if (hasOwn(value, "resolvedTabId") && (
+    typeof value.resolvedTabId !== "number" || !Number.isInteger(value.resolvedTabId)
+    || value.resolvedTabId < 0 || value.resolvedTabId > 2_147_483_647
+  )) return false;
+  if (hasOwn(value, "stateSignals") && !isStateSignals(value.stateSignals)) return false;
+  if (hasOwn(value, "errorCategory") && !EXTENSION_TELEMETRY_ERROR_CATEGORIES.some(
+    (category) => category === value.errorCategory,
+  )) return false;
+  return true;
 }
 
 export function isAuthRequestV2(value: unknown): value is AuthRequestV2 {
@@ -156,6 +237,7 @@ export function isToolResponseV2(value: unknown): value is ToolResponseV2 {
 
   return (
     typeof value.payload.requestId === "string" &&
-    (value.payload.error === undefined || typeof value.payload.error === "string")
+    (value.payload.error === undefined || typeof value.payload.error === "string") &&
+    (!hasOwn(value.payload, "telemetry") || isExtensionTraceSummaryV1(value.payload.telemetry))
   );
 }

@@ -4,10 +4,27 @@ import { getRegisteredToolNames } from "./tools";
 import {
   RECORDING_ARGUMENT_TYPES,
   RECORDING_NUMERIC_BOUNDS,
+  TOOL_TELEMETRY_STATE_SIGNALS,
   TOOL_METADATA,
 } from "./tool-metadata";
 
 describe("TOOL_METADATA", () => {
+  it("declares only state changes already guaranteed by successful tool execution", () => {
+    expect(TOOL_TELEMETRY_STATE_SIGNALS).toEqual({
+      close_tab: ["tabChanged"],
+      new_tab: ["tabChanged"],
+    });
+    for (const [toolName, signals] of Object.entries(TOOL_TELEMETRY_STATE_SIGNALS)) {
+      expect(toolName in TOOL_METADATA).toBe(true);
+      expect(signals.every((signal) => [
+        "tabChanged",
+        "originChanged",
+        "pathChanged",
+        "loadStatusChanged",
+      ].includes(signal))).toBe(true);
+    }
+  });
+
   it("classifies every registered tool exactly once", () => {
     expect(Object.keys(TOOL_METADATA).sort()).toEqual(getRegisteredToolNames().sort());
 

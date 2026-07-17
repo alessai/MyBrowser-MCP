@@ -176,6 +176,33 @@ describe("protocol v2 conformance", () => {
     })).toBe(false);
   });
 
+  it("keeps extension trace-summary guards equivalent across packages", () => {
+    const summary = {
+      schemaVersion: 1 as const,
+      traceId: "trace_1234567890abcdef",
+      transportSpanId: "span_1234567890abcdefg",
+      extensionRequestId: "hub_1",
+      offscreenReceivedToBackgroundMs: 1,
+      queueWaitMs: 2,
+      handlerMs: 3,
+      responseSerializeMs: 4,
+      resolvedTabId: 7,
+      stateSignals: { tabChanged: true },
+      errorCategory: "extension_tool_failed",
+    };
+    expect(serverProtocol.isExtensionTraceSummaryV1(summary)).toBe(true);
+    expect(extensionProtocol.isExtensionTraceSummaryV1(summary)).toBe(true);
+    for (const invalid of [
+      { ...summary, queueWaitMs: -1 },
+      { ...summary, stateSignals: { tabChanged: true, rawUrl: "secret" } },
+      { ...summary, errorCategory: "raw error" },
+      { ...summary, resultContent: "secret" },
+    ]) {
+      expect(serverProtocol.isExtensionTraceSummaryV1(invalid)).toBe(false);
+      expect(extensionProtocol.isExtensionTraceSummaryV1(invalid)).toBe(false);
+    }
+  });
+
   it("rejects invalid tool requests in both packages", () => {
     const request = {
       id: "req-1",

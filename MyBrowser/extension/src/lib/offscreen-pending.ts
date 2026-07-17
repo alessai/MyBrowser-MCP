@@ -3,15 +3,17 @@ import { isToolRequestV2, isToolResponseV2 } from "./protocol";
 export class PendingToolRequests {
   private readonly requestIds = new Set<string>();
 
-  trackInbound(raw: string): void {
+  trackInbound(raw: string): boolean {
     try {
       const message: unknown = JSON.parse(raw);
       if (isToolRequestV2(message)) {
         this.requestIds.add(message.id);
+        return message.trace !== undefined;
       }
     } catch {
       // Non-JSON WebSocket messages are not tool requests.
     }
+    return false;
   }
 
   completeOutbound(raw: string): void {

@@ -45,7 +45,25 @@ function toolRequest(id: string): string {
   });
 }
 
+function tracedToolRequest(id: string): string {
+  return JSON.stringify({
+    ...JSON.parse(toolRequest(id)) as object,
+    trace: {
+      schemaVersion: 1,
+      traceId: "trace_1234567890abcdef",
+      rootCallId: "root_1234567890abcdefg",
+      transportSpanId: "span_1234567890abcdefg",
+    },
+  });
+}
+
 describe("PendingToolRequests", () => {
+  it("reports whether an accepted request carries valid trace metadata", () => {
+    const pending = new PendingToolRequests();
+    expect(pending.trackInbound(toolRequest("plain"))).toBe(false);
+    expect(pending.trackInbound(tracedToolRequest("traced"))).toBe(true);
+  });
+
   it("fails each request still pending after matching responses complete", () => {
     const pending = new PendingToolRequests();
     const sent: string[] = [];

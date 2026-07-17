@@ -10,6 +10,7 @@ export interface RequestMeta {
   requestId: string;
   sessionId: string;
   expiresAt: number;
+  onStart?: (startedAt: number) => void;
 }
 
 interface QueueEntry {
@@ -73,7 +74,9 @@ export class RequestScheduler {
 
   async runUnqueued<T>(meta: RequestMeta, work: () => Promise<T>): Promise<T> {
     if (this.closedSessions.has(meta.sessionId)) throw new Error('SESSION_CLOSED');
-    if (meta.expiresAt <= this.now()) throw new Error('REQUEST_EXPIRED');
+    const startedAt = this.now();
+    try { meta.onStart?.(startedAt); } catch { /* telemetry callbacks are inert */ }
+    if (meta.expiresAt <= startedAt) throw new Error('REQUEST_EXPIRED');
     return work();
   }
 
@@ -141,7 +144,9 @@ export class RequestScheduler {
     entry: QueueEntry,
   ): Promise<void> {
     try {
-      if (entry.meta.expiresAt <= this.now()) {
+      const startedAt = this.now();
+      try { entry.meta.onStart?.(startedAt); } catch { /* telemetry callbacks are inert */ }
+      if (entry.meta.expiresAt <= startedAt) {
         throw new Error('REQUEST_EXPIRED');
       }
       entry.resolve(await entry.work());

@@ -9,6 +9,7 @@
 import { ReconnectingWebSocket } from '../../lib/reconnecting-ws';
 import { PendingToolRequests } from '../../lib/offscreen-pending';
 import type { WsStatusResponse } from '../../lib/protocol';
+import { createOffscreenToolFrame } from '../../lib/telemetry-summary';
 
 const ws = new ReconnectingWebSocket();
 const pendingToolRequests = new PendingToolRequests();
@@ -167,8 +168,11 @@ function connectWithConfig(url: string, token: string, browserName?: string): vo
       postToBackground({ type: '_os_disconnected' });
     },
     onMessage(data: string) {
-      pendingToolRequests.trackInbound(data);
-      postToBackground({ type: '_os_ws_receive', payload: data });
+      const traced = pendingToolRequests.trackInbound(data);
+      postToBackground({
+        type: '_os_ws_receive',
+        payload: traced ? createOffscreenToolFrame(data) : data,
+      });
     },
   }, browserName);
 }

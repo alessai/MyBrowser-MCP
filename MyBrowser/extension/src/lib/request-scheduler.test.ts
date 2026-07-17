@@ -31,6 +31,52 @@ function meta(overrides: Partial<RequestMeta> = {}): RequestMeta {
 }
 
 describe("RequestScheduler", () => {
+  it("invokes the optional start callback exactly once for every queue kind", async () => {
+    let now = 10;
+    const scheduler = new RequestScheduler({ now: () => now++ });
+    const started: Array<[string, number]> = [];
+
+    for (const queue of ["tab", "session", "global", "none"] as const) {
+      await dispatchScheduledRequest(
+        scheduler,
+        queue,
+        1,
+        meta({
+          requestId: queue,
+          onStart: (startedAt) => started.push([queue, startedAt]),
+        }),
+        async () => queue,
+      );
+    }
+
+    expect(started).toEqual([
+      ["tab", 10],
+      ["session", 11],
+      ["global", 12],
+      ["none", 13],
+    ]);
+  });
+
+  it("calls onStart only when queued work actually starts and ignores callback failures", async () => {
+    const scheduler = new RequestScheduler({ now: () => 5 });
+    const running = deferred<void>();
+    const active = scheduler.runTab(1, meta(), () => running.promise);
+    let queuedStarts = 0;
+    const queued = scheduler.runTab(1, meta({
+      requestId: "queued",
+      onStart: () => {
+        queuedStarts += 1;
+        throw new Error("telemetry callback must be inert");
+      },
+    }), async () => "done");
+
+    expect(queuedStarts).toBe(0);
+    running.resolve();
+    await active;
+    await expect(queued).resolves.toBe("done");
+    expect(queuedStarts).toBe(1);
+  });
+
   it("starts work for two tabs concurrently", async () => {
     const scheduler = new RequestScheduler({ now: () => 0 });
     const first = deferred<string>();

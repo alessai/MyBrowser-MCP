@@ -17,7 +17,11 @@ import {
 } from '../../lib/request-scheduler';
 import { SessionStateStore } from '../../lib/session-state';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
-import { TOOL_METADATA, type ToolName } from '../../lib/tool-metadata';
+import {
+  TOOL_METADATA,
+  TOOL_TELEMETRY_STATE_SIGNALS,
+  type ToolName,
+} from '../../lib/tool-metadata';
 import {
   RECORDING_RENEWAL_ALARM,
   recordingCleanupSessionId,
@@ -56,6 +60,12 @@ import {
 import { getStorageAll } from '../../lib/storage';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
 import { parseInboundWsFrame, reportToolFailure } from '../../lib/background-privacy';
+import {
+  attachExtensionTelemetry,
+  createExtensionTelemetrySummaryBuilder,
+  readOffscreenToolFrame,
+  telemetryErrorCategory,
+} from '../../lib/telemetry-summary';
 import {
   isToolRequestV2,
   type ToolResponseV2,
@@ -218,8 +228,10 @@ export default defineBackground(() => {
   // Handle tool requests from offscreen (WS → offscreen → here)
   // =====================================================================
 
-  async function handleToolRequest(raw: string): Promise<void> {
-    const decoded = parseInboundWsFrame(raw);
+  async function handleToolRequest(rawFrame: unknown): Promise<void> {
+    const frame = readOffscreenToolFrame(rawFrame);
+    if (!frame) return;
+    const decoded = parseInboundWsFrame(frame.raw);
     if (!decoded.ok) return;
     const parsed = decoded.value;
 
@@ -299,7 +311,15 @@ export default defineBackground(() => {
     }
 
     const request = parsed;
-    const expiresAt = Date.now() + Math.max(0, request.timeoutMs);
+    const requestNow = Date.now();
+    const expiresAt = requestNow + Math.max(0, request.timeoutMs);
+    const telemetryBuilder = request.trace === undefined ? undefined : createExtensionTelemetrySummaryBuilder({
+      trace: request.trace,
+      extensionRequestId: request.id,
+      timeoutMs: request.timeoutMs,
+      offscreenReceivedAtEpochMs: frame.receivedAtEpochMs,
+      backgroundReceivedAtEpochMs: requestNow,
+    });
     let response: ToolResponseV2;
     try {
       const metadata = TOOL_METADATA[request.type as ToolName];
@@ -314,6 +334,7 @@ export default defineBackground(() => {
         resolveTabId,
         clearFallback: () => sessionState.clearSession(request.sessionId),
       });
+      telemetryBuilder?.setResolvedTabId(tabId);
 
       const context = new RequestToolContext({
         sessionId: request.sessionId,
@@ -327,26 +348,35 @@ export default defineBackground(() => {
         requestId: request.id,
         sessionId: request.sessionId,
         expiresAt,
+        ...(telemetryBuilder === undefined ? {} : {
+          onStart: (startedAt: number) => telemetryBuilder.markQueueStarted(startedAt),
+        }),
       };
       const work = async (): Promise<unknown> => {
         if (expiresAt <= Date.now()) throw new Error('REQUEST_EXPIRED');
         const run = () => handleTool(request.type, request.payload, context);
-        if (!metadata.recordable) return run();
-        return runRecordedAction({
-          manager: getRecordingManager(),
-          sessionId: request.sessionId,
-          toolName: request.type as ToolName,
-          args: request.payload,
-          tabId,
-          run,
-          currentUrl: async () => {
-            const tab = await chrome.tabs.get(tabId);
-            return tab.url || '';
-          },
-        });
+        telemetryBuilder?.markHandlerStarted();
+        try {
+          if (!metadata.recordable) return await run();
+          return await runRecordedAction({
+            manager: getRecordingManager(),
+            sessionId: request.sessionId,
+            toolName: request.type as ToolName,
+            args: request.payload,
+            tabId,
+            run,
+            currentUrl: async () => {
+              const tab = await chrome.tabs.get(tabId);
+              return tab.url || '';
+            },
+          });
+        } finally {
+          telemetryBuilder?.markHandlerFinished();
+        }
       };
 
       if (metadata.queue === 'tab' && tabId < 0) throw new Error('TAB_CLOSED');
+      telemetryBuilder?.markQueueEnqueued(Date.now());
       const result = await dispatchScheduledRequest(
         scheduler,
         metadata.queue,
@@ -355,9 +385,18 @@ export default defineBackground(() => {
         work,
       );
 
+      if (telemetryBuilder) {
+        const signals = TOOL_TELEMETRY_STATE_SIGNALS[
+          request.type as keyof typeof TOOL_TELEMETRY_STATE_SIGNALS
+        ] ?? [];
+        for (const signal of signals) telemetryBuilder.markStateSignal(signal);
+      }
+
       response = {
         type: 'messageResponse',
-        payload: { requestId: request.id, result },
+        payload: telemetryBuilder
+          ? attachExtensionTelemetry({ requestId: request.id, result }, telemetryBuilder)
+          : { requestId: request.id, result },
       };
     } catch (e) {
       const failure = reportToolFailure(e, {
@@ -366,10 +405,13 @@ export default defineBackground(() => {
       });
       response = {
         type: 'messageResponse',
-        payload: {
-          requestId: request.id,
-          error: failure.responseError,
-        },
+        payload: telemetryBuilder
+          ? attachExtensionTelemetry(
+            { requestId: request.id, error: failure.responseError },
+            telemetryBuilder,
+            telemetryErrorCategory(e),
+          )
+          : { requestId: request.id, error: failure.responseError },
       };
     }
 

@@ -163,3 +163,14 @@ export const RECORDING_NUMERIC_BOUNDS = {
 >;
 
 export type ToolName = keyof typeof TOOL_METADATA;
+
+export type TelemetryStateSignal =
+  | 'tabChanged'
+  | 'originChanged'
+  | 'pathChanged'
+  | 'loadStatusChanged';
+
+export const TOOL_TELEMETRY_STATE_SIGNALS = Object.freeze({
+  close_tab: Object.freeze(['tabChanged']),
+  new_tab: Object.freeze(['tabChanged']),
+} as const satisfies Partial<Record<ToolName, readonly TelemetryStateSignal[]>>);
