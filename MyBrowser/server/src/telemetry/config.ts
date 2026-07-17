@@ -75,6 +75,7 @@ export function parseTelemetryConfig(
   return {
     enabled: cli.traceInternal === true,
     directory: resolveTraceDirectory(cli.traceDir, home),
+    keyPath: resolve(home, ".mybrowser", "trace-key"),
     retentionMs: retentionDays * DAY_MS,
     maxTotalBytes,
     maxFileBytes: Math.min(DEFAULT_TELEMETRY_LIMITS.maxFileBytes, maxTotalBytes),

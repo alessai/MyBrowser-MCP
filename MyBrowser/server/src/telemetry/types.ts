@@ -48,6 +48,7 @@ export type TelemetryOutcomeStatus =
 export interface TelemetryConfig {
   enabled: boolean;
   directory: string;
+  keyPath: string;
   retentionMs: number;
   maxTotalBytes: number;
   maxFileBytes: number;

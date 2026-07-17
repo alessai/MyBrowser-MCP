@@ -18,6 +18,7 @@ describe("parseTelemetryConfig", () => {
     expect(parse()).toEqual({
       enabled: false,
       directory: `${HOME}/.mybrowser/traces`,
+      keyPath: `${HOME}/.mybrowser/trace-key`,
       retentionMs: DEFAULT_TELEMETRY_LIMITS.retentionMs,
       maxTotalBytes: DEFAULT_TELEMETRY_LIMITS.maxTotalBytes,
       maxFileBytes: DEFAULT_TELEMETRY_LIMITS.maxFileBytes,
@@ -34,6 +35,7 @@ describe("parseTelemetryConfig", () => {
     })).toEqual({
       enabled: true,
       directory: `${HOME}/custom-traces`,
+      keyPath: `${HOME}/.mybrowser/trace-key`,
       retentionMs: 7 * 86_400_000,
       maxTotalBytes: 64 * 1024 * 1024,
       maxFileBytes: DEFAULT_TELEMETRY_LIMITS.maxFileBytes,

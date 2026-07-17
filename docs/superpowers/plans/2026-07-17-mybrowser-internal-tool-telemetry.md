@@ -78,6 +78,7 @@
 export interface TelemetryConfig {
   enabled: boolean;
   directory: string;
+  keyPath: string;
   retentionMs: number;
   maxTotalBytes: number;
   maxFileBytes: number;
@@ -283,7 +284,7 @@ Expected: FAIL because writer and manager do not exist.
 
 - [ ] **Step 2: Implement safe directory/key initialization**
 
-Reuse the recording persistence security posture: no-follow open, descriptor identity/type/mode verification, explicit `fchmod`, private directory verification, and no pathname-check-then-open TOCTOU. Generate one 32-byte HMAC key only when tracing is enabled. A disabled manager has no timers, files, keys, or filesystem calls.
+Reuse the recording persistence security posture: no-follow open, descriptor identity/type/mode verification, explicit `fchmod`, private directory verification, and no pathname-check-then-open TOCTOU. Generate one 32-byte HMAC key at the fixed per-install `~/.mybrowser/trace-key` path only when tracing is enabled; publish a fully written temporary inode atomically so concurrent first starts cannot observe a partial key. A disabled manager has no timers, files, keys, or filesystem calls.
 
 - [ ] **Step 3: Implement buffered JSONL and retention**
 
