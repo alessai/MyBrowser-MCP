@@ -5,6 +5,7 @@ import type { Stats } from "node:fs";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 
+import type { TraceContextV1 } from "../protocol.js";
 import {
   pseudonymizeTelemetryValue,
   summarizeFailedToolArguments,
@@ -35,6 +36,15 @@ import {
 
 const INSTALL_KEY_BYTES = 32;
 const KEY_PUBLICATION_ATTEMPTS = 3;
+
+function byteSizeBucket(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0";
+  if (bytes <= 255) return "1-255";
+  if (bytes <= 1_023) return "256-1023";
+  if (bytes <= 4_095) return "1-4KiB";
+  if (bytes <= 16_383) return "4-16KiB";
+  return "16KiB+";
+}
 
 export interface TelemetrySink {
   emit(event: TelemetryEvent): void;
@@ -76,6 +86,17 @@ export interface ToolsListedInput {
   readonly clientSupportsElicitation: boolean;
   readonly toolCount: number;
   readonly schemaDigest: string;
+}
+
+export interface TransportSpanInput {
+  readonly action: string;
+  readonly browserId?: string;
+}
+
+export interface TransportSpanHandle {
+  readonly trace: TraceContextV1;
+  complete(responseBytes: number, resultPresent: boolean): void;
+  fail(errorCategory: TelemetryErrorCategory): void;
 }
 
 export interface TelemetryManagerDependencies {
@@ -321,6 +342,80 @@ export class TelemetryManager implements TelemetrySink {
 
   currentRoot(): RootToolContext | undefined {
     return this.enabled ? this.roots.getStore() : undefined;
+  }
+
+  beginTransport(input: TransportSpanInput): TransportSpanHandle | undefined {
+    if (!this.enabled || !this.key) return undefined;
+    const root = this.roots.getStore();
+    if (!root) return undefined;
+
+    try {
+      const transportSpanId = this.randomUUID();
+      const startedMonoMs = this.monotonicNow();
+      const trace = Object.freeze({
+        schemaVersion: 1 as const,
+        traceId: root.traceId,
+        rootCallId: root.rootCallId,
+        transportSpanId,
+      });
+      this.emit({
+        ...this.eventBase("transport_started"),
+        type: "transport_started",
+        sessionPseudonym: root.sessionPseudonym,
+        traceId: root.traceId,
+        rootCallId: root.rootCallId,
+        transportSpanId,
+        action: input.action,
+        ...(input.browserId
+          ? { browserPseudonym: pseudonymizeTelemetryValue(this.key, "browser", input.browserId) }
+          : {}),
+      });
+
+      let terminal = false;
+      const durationMs = (): number => Math.max(0, this.monotonicNow() - startedMonoMs);
+      return Object.freeze({
+        trace,
+        complete: (responseBytes: number, resultPresent: boolean): void => {
+          if (terminal) return;
+          terminal = true;
+          try {
+            this.emit({
+              ...this.eventBase("transport_completed"),
+              type: "transport_completed",
+              sessionPseudonym: root.sessionPseudonym,
+              traceId: root.traceId,
+              rootCallId: root.rootCallId,
+              transportSpanId,
+              durationMs: durationMs(),
+              responseSizeBucket: byteSizeBucket(responseBytes),
+              resultPresent,
+            });
+          } catch {
+            // Transport telemetry must not alter the response.
+          }
+        },
+        fail: (errorCategory: TelemetryErrorCategory): void => {
+          if (terminal) return;
+          terminal = true;
+          try {
+            this.emit({
+              ...this.eventBase("transport_failed"),
+              type: "transport_failed",
+              sessionPseudonym: root.sessionPseudonym,
+              traceId: root.traceId,
+              rootCallId: root.rootCallId,
+              transportSpanId,
+              durationMs: durationMs(),
+              errorCategory,
+            });
+          } catch {
+            // Transport telemetry must not alter the failure.
+          }
+        },
+      });
+    } catch {
+      return undefined;
+    }
   }
 
   recordToolsListed(input: ToolsListedInput): void {

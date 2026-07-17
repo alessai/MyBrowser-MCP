@@ -127,6 +127,55 @@ describe("protocol v2 conformance", () => {
     expect(extensionProtocol.isToolRequestV2(request)).toBe(true);
   });
 
+  it("validates bounded schema-v1 trace contexts on the server", () => {
+    const traceId = "trace_1234567890abcdef";
+    const trace = {
+      schemaVersion: 1,
+      traceId,
+      rootCallId: "root_1234567890abcdef",
+      transportSpanId: "span_1234567890abcdef",
+    };
+
+    expect(serverProtocol.isTraceContextV1(trace)).toBe(true);
+    for (const invalidTrace of [
+      { ...trace, schemaVersion: 2 },
+      { ...trace, traceId: "short" },
+      { ...trace, traceId: `${traceId}!` },
+      { ...trace, traceId: "x".repeat(65) },
+      { ...trace, transportSpanId: "short" },
+      { ...trace, extra: true },
+    ]) {
+      expect(serverProtocol.isTraceContextV1(invalidTrace)).toBe(false);
+    }
+    const hostile = { ...trace };
+    Object.defineProperty(hostile, "traceId", { get: () => { throw new Error("getter invoked"); } });
+    expect(() => serverProtocol.isTraceContextV1(hostile)).not.toThrow();
+    expect(serverProtocol.isTraceContextV1(hostile)).toBe(false);
+  });
+
+  it("accepts only valid optional trace metadata in a v2 tool request", () => {
+    const traceId = "trace_1234567890abcdef";
+    const request = {
+      id: "req-1",
+      type: "browser_click",
+      payload: { tabId: 7 },
+      sessionId: "session-a",
+      timeoutMs: 30_000,
+      trace: {
+        schemaVersion: 1,
+        traceId,
+        rootCallId: "root_1234567890abcdef",
+        transportSpanId: "span_1234567890abcdef",
+      },
+    };
+
+    expect(serverProtocol.isToolRequestV2(request)).toBe(true);
+    expect(serverProtocol.isToolRequestV2({
+      ...request,
+      trace: { ...request.trace, transportSpanId: "short" },
+    })).toBe(false);
+  });
+
   it("rejects invalid tool requests in both packages", () => {
     const request = {
       id: "req-1",

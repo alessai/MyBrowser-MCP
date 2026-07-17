@@ -56,6 +56,14 @@ export interface ToolRequestV2 {
   payload: Record<string, unknown>;
   sessionId: string;
   timeoutMs: number;
+  trace?: TraceContextV1;
+}
+
+export interface TraceContextV1 {
+  schemaVersion: 1;
+  traceId: string;
+  rootCallId: string;
+  transportSpanId: string;
 }
 
 export interface ToolResponseV2 {
@@ -71,6 +79,37 @@ export type ToolResponse = ToolResponseV2;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const TRACE_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const TRACE_FIELDS = new Set(["schemaVersion", "traceId", "rootCallId", "transportSpanId"]);
+
+function ownDataValue(record: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+export function isTraceContextV1(value: unknown): value is TraceContextV1 {
+  if (!isRecord(value)) return false;
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== TRACE_FIELDS.size || keys.some((key) => typeof key !== "string" || !TRACE_FIELDS.has(key))) {
+      return false;
+    }
+    const schemaVersion = ownDataValue(value, "schemaVersion");
+    const traceId = ownDataValue(value, "traceId");
+    const rootCallId = ownDataValue(value, "rootCallId");
+    const transportSpanId = ownDataValue(value, "transportSpanId");
+    return schemaVersion === 1
+      && typeof traceId === "string"
+      && TRACE_ID_PATTERN.test(traceId)
+      && typeof rootCallId === "string"
+      && TRACE_ID_PATTERN.test(rootCallId)
+      && typeof transportSpanId === "string"
+      && TRACE_ID_PATTERN.test(transportSpanId);
+  } catch {
+    return false;
+  }
 }
 
 export function isAuthRequestV2(value: unknown): value is AuthRequestV2 {
@@ -105,7 +144,8 @@ export function isToolRequestV2(value: unknown): value is ToolRequestV2 {
     isRecord(value.payload) &&
     typeof value.sessionId === "string" &&
     typeof value.timeoutMs === "number" &&
-    Number.isFinite(value.timeoutMs)
+    Number.isFinite(value.timeoutMs) &&
+    (value.trace === undefined || isTraceContextV1(value.trace))
   );
 }
 

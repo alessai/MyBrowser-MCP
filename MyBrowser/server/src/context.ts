@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import type { TelemetryManager } from "./telemetry/manager.js";
+import type { TelemetryErrorCategory } from "./telemetry/types.js";
 
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
 
@@ -13,6 +14,18 @@ function generateId(): string {
   const timestamp = Date.now().toString(36);
   const randomStr = Math.random().toString(36).substring(2, 10);
   return `${timestamp}-${randomStr}`;
+}
+
+function classifyResponseError(error: string): TelemetryErrorCategory {
+  switch (error) {
+    case "REQUEST_EXPIRED": return "request_expired";
+    case "QUEUE_OVERLOADED": return "queue_overloaded";
+    case "TAB_CLOSED": return "tab_not_found";
+    case "SESSION_CLOSED": return "session_closed";
+    case "EXTENSION_WORKER_RESTARTED": return "worker_restarted";
+    case "No tab is connected": return "not_connected";
+    default: return "extension_tool_failed";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +165,7 @@ export class Context {
   private async getTarget(): Promise<{
     ws: WebSocket;
     targetBrowserId?: string;
+    telemetryBrowserId?: string;
   }> {
     const resolvedBrowserId = this._resolveTargetBrowserId
       ? await this._resolveTargetBrowserId()
@@ -159,7 +173,11 @@ export class Context {
 
     if (this._isClientMode) {
       if (!this._hubWs) throw new Error(noBrowserMessage);
-      return { ws: this._hubWs, targetBrowserId: resolvedBrowserId };
+      return {
+        ws: this._hubWs,
+        targetBrowserId: resolvedBrowserId,
+        telemetryBrowserId: resolvedBrowserId,
+      };
     }
 
     const targetBrowserId = resolvedBrowserId ?? this._activeBrowserId;
@@ -170,7 +188,7 @@ export class Context {
       this.removeBrowser(targetBrowserId);
       throw new Error(`Active browser "${targetBrowserId}" connection lost. Use list_browsers and select_browser.`);
     }
-    return { ws: browser.ws };
+    return { ws: browser.ws, telemetryBrowserId: targetBrowserId };
   }
 
   async sendSocketMessage(
@@ -185,6 +203,7 @@ export class Context {
       type,
       payload,
       options,
+      target.telemetryBrowserId,
     );
   }
 
@@ -215,6 +234,7 @@ export class Context {
         type,
         payload,
         options,
+        browserId,
       );
     }
     const browser = this.browsers.get(browserId);
@@ -232,6 +252,7 @@ export class Context {
       type,
       payload,
       options,
+      browserId,
     );
   }
 
@@ -241,6 +262,7 @@ export class Context {
     type: string,
     payload: unknown,
     options: { timeoutMs: number },
+    telemetryBrowserId: string | undefined,
   ): Promise<any> {
     if (this.shuttingDown) throw new Error("SERVER_SHUTTING_DOWN");
     const { timeoutMs } = options;
@@ -259,6 +281,19 @@ export class Context {
     if (targetBrowserId !== undefined) {
       message.targetBrowserId = targetBrowserId;
     }
+    const transport = this.telemetry?.beginTransport({
+      action: type,
+      browserId: telemetryBrowserId,
+    });
+    if (transport) message.trace = transport.trace;
+
+    let serializedMessage: string;
+    try {
+      serializedMessage = JSON.stringify(message);
+    } catch (error) {
+      transport?.fail("internal_failure");
+      throw error;
+    }
 
     return new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -271,13 +306,16 @@ export class Context {
 
       const timeoutId = setTimeout(() => {
         cleanup();
+        transport?.fail("timeout");
         reject(new Error(`WebSocket response timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
       const messageHandler = (event: { data: any }) => {
         let parsed: any;
+        let rawResponse: string;
         try {
-          parsed = JSON.parse(event.data.toString());
+          rawResponse = event.data.toString();
+          parsed = JSON.parse(rawResponse);
         } catch {
           return;
         }
@@ -285,30 +323,39 @@ export class Context {
         if (parsed.payload?.requestId !== id) return;
 
         const { result, error } = parsed.payload;
+        const responseBytes = Buffer.byteLength(rawResponse);
         cleanup();
         if (error) {
+          transport?.fail(classifyResponseError(error));
           reject(
             new Error(
               error === "No tab is connected" ? noBrowserMessage : error
             )
           );
         } else {
+          transport?.complete(
+            responseBytes,
+            Object.prototype.hasOwnProperty.call(parsed.payload, "result"),
+          );
           resolve(result);
         }
       };
 
       const errorHandler = () => {
         cleanup();
+        transport?.fail("not_connected");
         reject(new Error("WebSocket error occurred"));
       };
 
       const closeHandler = () => {
         cleanup();
+        transport?.fail("not_connected");
         reject(new Error("Browser disconnected during request"));
       };
 
       const cancelForShutdown = () => {
         cleanup();
+        transport?.fail("session_closed");
         reject(new Error("SERVER_SHUTTING_DOWN"));
       };
 
@@ -318,9 +365,16 @@ export class Context {
       this.shutdownCancellations.add(cancelForShutdown);
 
       if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify(message));
+        try {
+          ws.send(serializedMessage);
+        } catch (error) {
+          cleanup();
+          transport?.fail("internal_failure");
+          reject(error);
+        }
       } else {
         cleanup();
+        transport?.fail("not_connected");
         reject(new Error("WebSocket is not open"));
       }
     });
