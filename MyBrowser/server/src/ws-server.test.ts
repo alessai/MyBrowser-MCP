@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { Context } from "./context.js";
 import { HubStateManager } from "./hub-client.js";
+import { getRecentIssues } from './logger.js';
 import { PROTOCOL_VERSION, WS_CLOSE } from "./protocol.js";
 import { LocalStateManager, type IStateManager } from "./state-manager.js";
 import * as recordingTools from "./tools/record.js";
@@ -2702,6 +2703,148 @@ describe("WebSocket connection roles and session binding", () => {
 });
 
 describe("real loopback session topology", () => {
+  it("preserves valid trace correlation through hub rewrites without trusting it for routing", async () => {
+    const server = await startHub();
+    const extension = await connect(server);
+    const extensionAuth = await authenticate(extension, "extension");
+    const browserId = extensionAuth.browserId as string;
+    const extensionInbox = createMessageInbox(extension);
+    const clientA = await connect(server);
+    const clientB = await connect(server);
+    await authenticate(clientA, "client");
+    await authenticate(clientB, "client");
+    await callHubRpc(clientA, "register-trace-a", "registerSession", { sessionId: "trace-session-a" });
+    await callHubRpc(clientB, "register-trace-b", "registerSession", { sessionId: "trace-session-b" });
+    await callHubRpc(clientA, "select-trace-a", "selectBrowser", { browserId });
+    await callHubRpc(clientB, "select-trace-b", "selectBrowser", { browserId });
+    const clientAInbox = createMessageInbox(clientA);
+    const clientBInbox = createMessageInbox(clientB);
+    const collidingTrace = {
+      schemaVersion: 1,
+      traceId: "trace_collision_1234567890",
+      rootCallId: "root_collision_1234567890",
+      transportSpanId: "span_collision_1234567890",
+    };
+
+    clientA.send(JSON.stringify({
+      id: "trace-request-a",
+      type: "browser_click",
+      payload: { client: "a" },
+      sessionId: "trace-session-b",
+      targetBrowserId: "spoofed-browser",
+      timeoutMs: 30_000,
+      trace: collidingTrace,
+    }));
+    clientB.send(JSON.stringify({
+      id: "trace-request-b",
+      type: "browser_click",
+      payload: { client: "b" },
+      sessionId: "trace-session-a",
+      targetBrowserId: "spoofed-browser",
+      timeoutMs: 30_000,
+      trace: collidingTrace,
+    }));
+
+    const forwarded = [await extensionInbox.next(), await extensionInbox.next()];
+    const forwardedA = forwarded.find((message) => message.sessionId === "trace-session-a")!;
+    const forwardedB = forwarded.find((message) => message.sessionId === "trace-session-b")!;
+    expect(forwardedA).toMatchObject({
+      type: "browser_click",
+      payload: { client: "a" },
+      sessionId: "trace-session-a",
+      trace: collidingTrace,
+    });
+    expect(forwardedB).toMatchObject({
+      type: "browser_click",
+      payload: { client: "b" },
+      sessionId: "trace-session-b",
+      trace: collidingTrace,
+    });
+    expect(forwardedA).not.toHaveProperty("targetBrowserId");
+    expect(forwardedB).not.toHaveProperty("targetBrowserId");
+    expect(forwardedA.id).not.toBe(forwardedB.id);
+
+    const validResponseTelemetry = {
+      schemaVersion: 1,
+      traceId: collidingTrace.traceId,
+      extensionRequestId: forwardedB.id,
+      queueKind: "tab",
+      stateChanged: false,
+    };
+    const malformedResponseTelemetry = {
+      raw: "RAW_RESPONSE_TELEMETRY_CANARY",
+      unknown: { nested: true },
+    };
+    extension.send(JSON.stringify({
+      type: "messageResponse",
+      payload: {
+        requestId: forwardedB.id,
+        result: "result-b",
+        telemetry: validResponseTelemetry,
+      },
+    }));
+    await expect(clientBInbox.next()).resolves.toEqual({
+      type: "messageResponse",
+      payload: {
+        requestId: "trace-request-b",
+        result: "result-b",
+        telemetry: validResponseTelemetry,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(clientAInbox.all).toEqual([]);
+    extension.send(JSON.stringify({
+      type: "messageResponse",
+      payload: {
+        requestId: forwardedA.id,
+        result: "result-a",
+        telemetry: malformedResponseTelemetry,
+      },
+    }));
+    await expect(clientAInbox.next()).resolves.toEqual({
+      type: "messageResponse",
+      payload: {
+        requestId: "trace-request-a",
+        result: "result-a",
+        telemetry: malformedResponseTelemetry,
+      },
+    });
+
+    const malformedTrace = {
+      ...collidingTrace,
+      traceId: "x".repeat(65),
+      raw: "RAW_REQUEST_TRACE_CANARY",
+    };
+    clientA.send(JSON.stringify({
+      id: "malformed-trace-request",
+      type: "browser_click",
+      payload: { client: "a" },
+      timeoutMs: 30_000,
+      trace: malformedTrace,
+    }));
+    const malformedForward = await extensionInbox.next();
+    expect(malformedForward).not.toHaveProperty("trace");
+    expect(JSON.stringify(malformedForward)).not.toContain("RAW_REQUEST_TRACE_CANARY");
+    extension.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: malformedForward.id, result: true },
+    }));
+    await expect(clientAInbox.next()).resolves.toMatchObject({
+      payload: { requestId: "malformed-trace-request", result: true },
+    });
+
+    extension.send(JSON.stringify({
+      id: "extension-forbidden-trace",
+      type: "browser_click",
+      payload: {},
+      trace: collidingTrace,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(extensionInbox.all).toEqual([]);
+    expect(JSON.stringify(getRecentIssues(100))).not.toContain("RAW_REQUEST_TRACE_CANARY");
+    expect(JSON.stringify(getRecentIssues(100))).not.toContain("RAW_RESPONSE_TELEMETRY_CANARY");
+  });
+
   it.each(["client", "extension"] as const)(
     "rejects old and unversioned %s peers",
     async (role) => {

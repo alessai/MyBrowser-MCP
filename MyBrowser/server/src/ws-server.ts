@@ -10,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   WS_CLOSE,
   isAuthResultV2,
+  isTraceContextV1,
   type AuthRequestV2,
   type ConnectionRole,
   type ToolRequestV2,
@@ -1290,6 +1291,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           payload: forwardedPayload,
           sessionId: clientSessionId,
           timeoutMs: normalizedTimeoutMs,
+          ...(isTraceContextV1(msg.trace) ? { trace: msg.trace } : {}),
         };
         browserWs.send(JSON.stringify(forwarded));
 
