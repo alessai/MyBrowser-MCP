@@ -49,7 +49,7 @@ function readOwnDataField(source: unknown, field: string): { present: boolean; v
   }
 }
 
-function pseudonymize(key: Buffer, namespace: string, value: string): string {
+export function pseudonymizeTelemetryValue(key: Buffer, namespace: string, value: string): string {
   return createHmac("sha256", key)
     .update(namespace, "utf8")
     .update("\0", "utf8")
@@ -176,7 +176,7 @@ function applyFieldPolicy(
         }
         return false;
       }
-      summary.pseudonyms[field] = pseudonymize(hmacKey, rule.namespace, input);
+      summary.pseudonyms[field] = pseudonymizeTelemetryValue(hmacKey, rule.namespace, input);
       return true;
     }
     case "url": {
@@ -190,7 +190,7 @@ function applyFieldPolicy(
         if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
         summary.scalar[`${field}.origin`] = parsed.origin;
         if (hmacKey) {
-          summary.pseudonyms[`${field}.path`] = pseudonymize(hmacKey, "url_path", parsed.pathname);
+          summary.pseudonyms[`${field}.path`] = pseudonymizeTelemetryValue(hmacKey, "url_path", parsed.pathname);
         }
         return true;
       } catch {
@@ -263,10 +263,34 @@ export function summarizeToolArguments(
   const policy = getTelemetryToolPolicy(toolName);
   if (!policy) throw new Error(`Telemetry policy missing for ${toolName}`);
   const summary = sanitizeWithPolicy(policy, args, hmacKey);
-  const fingerprint = pseudonymize(
+  const fingerprint = pseudonymizeTelemetryValue(
     hmacKey,
     "tool_arguments",
     `${toolName}\0${canonicalize(summary)}`,
+  );
+  return Object.freeze({ summary, fingerprint });
+}
+
+export function summarizeUnknownToolArguments(hmacKey: Buffer): SanitizedToolArguments {
+  const summary = freezeSummary({
+    presence: [], scalar: {}, counts: {}, pseudonyms: {}, droppedFields: 0, truncated: false,
+  });
+  const fingerprint = pseudonymizeTelemetryValue(
+    hmacKey,
+    "tool_arguments",
+    `unknown_tool\0${canonicalize(summary)}`,
+  );
+  return Object.freeze({ summary, fingerprint });
+}
+
+export function summarizeFailedToolArguments(hmacKey: Buffer): SanitizedToolArguments {
+  const summary = freezeSummary({
+    presence: [], scalar: {}, counts: {}, pseudonyms: {}, droppedFields: 1, truncated: false,
+  });
+  const fingerprint = pseudonymizeTelemetryValue(
+    hmacKey,
+    "tool_arguments",
+    `sanitizer_failed_tool\0${canonicalize(summary)}`,
   );
   return Object.freeze({ summary, fingerprint });
 }

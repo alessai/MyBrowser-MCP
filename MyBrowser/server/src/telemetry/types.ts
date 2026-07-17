@@ -97,6 +97,9 @@ export interface ToolsListedEvent extends TelemetryEventBase {
   type: "tools_listed";
   clientName?: string;
   clientVersion?: string;
+  clientSupportsSampling?: boolean;
+  clientSupportsRoots?: boolean;
+  clientSupportsElicitation?: boolean;
   toolCount: number;
   schemaDigest: string;
 }
@@ -104,7 +107,9 @@ export interface ToolsListedEvent extends TelemetryEventBase {
 export interface ToolStartedEvent extends CorrelatedEventBase {
   type: "tool_started";
   toolName: string;
+  argumentFingerprint: string;
   arguments?: SanitizedArgumentSummary;
+  sanitizerFailed?: boolean;
 }
 
 export interface ToolCompletedEvent extends CorrelatedEventBase {

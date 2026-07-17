@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import type { TelemetryManager } from "./telemetry/manager.js";
 
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
 
@@ -36,6 +37,8 @@ export interface BrowserInfo {
 // ---------------------------------------------------------------------------
 
 export class Context {
+  constructor(readonly telemetry?: TelemetryManager) {}
+
   public sessionId: string = "";
 
   // Multi-browser registry

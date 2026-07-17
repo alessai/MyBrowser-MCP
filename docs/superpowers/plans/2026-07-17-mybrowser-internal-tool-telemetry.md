@@ -313,7 +313,7 @@ git commit -m "feat: persist bounded private traces"
 - Modify: `MyBrowser/server/src/telemetry/manager.test.ts`
 - Modify: `MyBrowser/server/src/server.ts`
 - Modify: `MyBrowser/server/src/server.test.ts`
-- Modify: `MyBrowser/server/src/index.ts`
+- Modify: `MyBrowser/server/src/context.ts`
 
 **Produces:**
 
@@ -379,7 +379,7 @@ Record only client name/version, capability booleans, tool count, and schema-ver
 cd MyBrowser/server
 npm test -- src/telemetry/manager.test.ts src/server.test.ts src/context.test.ts
 npm run check
-git -C ../.. add MyBrowser/server/src/index.ts MyBrowser/server/src/server.ts MyBrowser/server/src/server.test.ts MyBrowser/server/src/telemetry
+git -C ../.. add MyBrowser/server/src/context.ts MyBrowser/server/src/server.ts MyBrowser/server/src/server.test.ts MyBrowser/server/src/telemetry docs/superpowers/plans/2026-07-17-mybrowser-internal-tool-telemetry.md
 git commit -m "feat: trace MCP tool lifecycles"
 ```
 

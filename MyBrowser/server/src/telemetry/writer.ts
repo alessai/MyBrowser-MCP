@@ -47,8 +47,24 @@ const CORRELATION_FIELDS = ["sessionPseudonym", "traceId", "rootCallId"] as cons
 const EVENT_FIELDS: Readonly<Record<TelemetryEventType, readonly string[]>> = Object.freeze({
   run_started: [...BASE_FIELDS, "processRole"],
   run_stopped: [...BASE_FIELDS, "reason", "droppedEvents"],
-  tools_listed: [...BASE_FIELDS, "clientName", "clientVersion", "toolCount", "schemaDigest"],
-  tool_started: [...BASE_FIELDS, ...CORRELATION_FIELDS, "toolName", "arguments"],
+  tools_listed: [
+    ...BASE_FIELDS,
+    "clientName",
+    "clientVersion",
+    "clientSupportsSampling",
+    "clientSupportsRoots",
+    "clientSupportsElicitation",
+    "toolCount",
+    "schemaDigest",
+  ],
+  tool_started: [
+    ...BASE_FIELDS,
+    ...CORRELATION_FIELDS,
+    "toolName",
+    "argumentFingerprint",
+    "arguments",
+    "sanitizerFailed",
+  ],
   tool_completed: [...BASE_FIELDS, ...CORRELATION_FIELDS, "toolName", "durationMs", "status", "stateChanged"],
   tool_failed: [...BASE_FIELDS, ...CORRELATION_FIELDS, "toolName", "durationMs", "status", "errorCategory"],
   transport_started: [
@@ -99,8 +115,14 @@ const EVENT_FIELDS: Readonly<Record<TelemetryEventType, readonly string[]>> = Ob
 const OPTIONAL_FIELDS: Readonly<Record<TelemetryEventType, readonly string[]>> = Object.freeze({
   run_started: [],
   run_stopped: [],
-  tools_listed: ["clientName", "clientVersion"],
-  tool_started: ["arguments"],
+  tools_listed: [
+    "clientName",
+    "clientVersion",
+    "clientSupportsSampling",
+    "clientSupportsRoots",
+    "clientSupportsElicitation",
+  ],
+  tool_started: ["arguments", "sanitizerFailed"],
   tool_completed: ["stateChanged"],
   tool_failed: [],
   transport_started: ["browserPseudonym"],
@@ -378,7 +400,10 @@ function cloneTelemetryEvent(event: TelemetryEvent): Record<string, unknown> {
       if (value.length === 0 || value.length > 2_048 || CONTROL_CHARACTERS.test(value)) {
         throw new Error("Telemetry string field is invalid");
       }
-      if ((field.endsWith("Pseudonym") || field === "notePseudonym") && !SAFE_PSEUDONYM.test(value)) {
+      if (
+        (field.endsWith("Pseudonym") || field === "notePseudonym" || field === "argumentFingerprint")
+        && !SAFE_PSEUDONYM.test(value)
+      ) {
         throw new Error("Telemetry pseudonym field is invalid");
       }
       if (["eventId", "runId", "traceId", "rootCallId", "transportSpanId", "targetRunId", "targetCallId"].includes(field)) {
@@ -618,6 +643,10 @@ export class JsonlTelemetryWriter {
       droppedEvents: this.droppedEvents,
       disabled: this.disabled,
     });
+  }
+
+  getDroppedEvents(): number {
+    return this.droppedEvents;
   }
 
   get activePath(): string {

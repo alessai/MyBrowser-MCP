@@ -1,10 +1,24 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes as cryptoRandomBytes, randomUUID as cryptoRandomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import type { Stats } from "node:fs";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import type { TelemetryConfig, TelemetryEvent, TelemetryEventBase, WriterHealthEvent } from "./types.js";
+import {
+  pseudonymizeTelemetryValue,
+  summarizeFailedToolArguments,
+  summarizeToolArguments,
+  summarizeUnknownToolArguments,
+} from "./sanitize.js";
+import type {
+  TelemetryConfig,
+  TelemetryErrorCategory,
+  TelemetryEvent,
+  TelemetryEventBase,
+  TelemetryOutcomeStatus,
+  WriterHealthEvent,
+} from "./types.js";
 import { TELEMETRY_SCHEMA_VERSION } from "./types.js";
 import {
   assertDescriptorMatchesPath,
@@ -26,6 +40,42 @@ export interface TelemetrySink {
   emit(event: TelemetryEvent): void;
   flush(): Promise<void>;
   close(deadlineMs?: number): Promise<void>;
+  getDroppedEvents?(): number;
+}
+
+export interface RootToolContext {
+  readonly runId: string;
+  readonly traceId: string;
+  readonly rootCallId: string;
+  readonly sessionPseudonym: string;
+  readonly toolName: string;
+  readonly startedMonoMs: number;
+}
+
+export type RootToolOutcome =
+  | { readonly status: "success" }
+  | {
+    readonly status: Exclude<TelemetryOutcomeStatus, "success">;
+    readonly errorCategory: TelemetryErrorCategory;
+  };
+
+export interface RootToolInput {
+  readonly sessionId: string;
+  readonly toolName: string;
+  readonly arguments?: unknown;
+  readonly unknownTool?: boolean;
+  readonly classifyResult?: (result: unknown) => RootToolOutcome;
+  readonly classifyError?: (error: unknown) => RootToolOutcome;
+}
+
+export interface ToolsListedInput {
+  readonly clientName?: string;
+  readonly clientVersion?: string;
+  readonly clientSupportsSampling: boolean;
+  readonly clientSupportsRoots: boolean;
+  readonly clientSupportsElicitation: boolean;
+  readonly toolCount: number;
+  readonly schemaDigest: string;
 }
 
 export interface TelemetryManagerDependencies {
@@ -176,6 +226,7 @@ export class TelemetryManager implements TelemetrySink {
   private readonly now: () => number;
   private readonly monotonicNow: () => number;
   private readonly randomUUID: () => string;
+  private readonly roots = new AsyncLocalStorage<RootToolContext>();
   private closePromise?: Promise<void>;
 
   private constructor(
@@ -249,19 +300,143 @@ export class TelemetryManager implements TelemetrySink {
       onDiagnostic: dependencies.onDiagnostic,
       ...dependencies.writerOptions,
     });
-    return new TelemetryManager(true, runId, writer, key, { now, monotonicNow, randomUUID, monoStart });
+    const manager = new TelemetryManager(true, runId, writer, key, { now, monotonicNow, randomUUID, monoStart });
+    manager.emitRunStarted();
+    return manager;
   }
 
   static fromSink(sink: TelemetrySink, options: TelemetryManagerTestOptions): TelemetryManager {
-    return new TelemetryManager(true, options.runId, sink, options.installKey, {
+    const manager = new TelemetryManager(true, options.runId, sink, options.installKey, {
       now: options.now ?? Date.now,
       monotonicNow: options.monotonicNow ?? (() => performance.now()),
       randomUUID: options.randomUUID ?? cryptoRandomUUID,
     });
+    manager.emitRunStarted();
+    return manager;
   }
 
   installKey(): Buffer | undefined {
     return this.key ? Buffer.from(this.key) : undefined;
+  }
+
+  currentRoot(): RootToolContext | undefined {
+    return this.enabled ? this.roots.getStore() : undefined;
+  }
+
+  recordToolsListed(input: ToolsListedInput): void {
+    if (!this.enabled) return;
+    try {
+      this.emit({
+        ...this.eventBase("tools_listed"),
+        type: "tools_listed",
+        ...(input.clientName ? { clientName: input.clientName } : {}),
+        ...(input.clientVersion ? { clientVersion: input.clientVersion } : {}),
+        clientSupportsSampling: input.clientSupportsSampling,
+        clientSupportsRoots: input.clientSupportsRoots,
+        clientSupportsElicitation: input.clientSupportsElicitation,
+        toolCount: input.toolCount,
+        schemaDigest: input.schemaDigest,
+      });
+    } catch {
+      // List-tools telemetry must not affect the MCP response.
+    }
+  }
+
+  async runToolCall<T>(input: RootToolInput, operation: () => Promise<T>): Promise<T> {
+    if (!this.enabled || !this.key) return operation();
+
+    let root: RootToolContext;
+    let argumentSummary: ReturnType<typeof summarizeToolArguments>;
+    let sanitizerFailed = false;
+    try {
+      const startedMonoMs = this.monotonicNow();
+      let safeToolName = input.toolName;
+      try {
+        argumentSummary = input.unknownTool
+          ? summarizeUnknownToolArguments(this.key)
+          : summarizeToolArguments(input.toolName, input.arguments, this.key);
+      } catch {
+        safeToolName = "sanitizer_failed_tool";
+        sanitizerFailed = true;
+        argumentSummary = summarizeFailedToolArguments(this.key);
+      }
+      root = Object.freeze({
+        runId: this.runId,
+        traceId: this.randomUUID(),
+        rootCallId: this.randomUUID(),
+        sessionPseudonym: pseudonymizeTelemetryValue(this.key, "session", input.sessionId),
+        toolName: safeToolName,
+        startedMonoMs,
+      });
+      this.emit({
+        ...this.eventBase("tool_started"),
+        type: "tool_started",
+        sessionPseudonym: root.sessionPseudonym,
+        traceId: root.traceId,
+        rootCallId: root.rootCallId,
+        toolName: root.toolName,
+        argumentFingerprint: argumentSummary.fingerprint,
+        arguments: argumentSummary.summary,
+        ...(sanitizerFailed ? { sanitizerFailed: true } : {}),
+      });
+    } catch {
+      return operation();
+    }
+
+    const terminal = (outcome: RootToolOutcome): void => {
+      try {
+        const durationMs = Math.max(0, this.monotonicNow() - root.startedMonoMs);
+        if (outcome.status === "success") {
+          this.emit({
+            ...this.eventBase("tool_completed"),
+            type: "tool_completed",
+            sessionPseudonym: root.sessionPseudonym,
+            traceId: root.traceId,
+            rootCallId: root.rootCallId,
+            toolName: root.toolName,
+            durationMs,
+            status: "success",
+          });
+          return;
+        }
+        this.emit({
+          ...this.eventBase("tool_failed"),
+          type: "tool_failed",
+          sessionPseudonym: root.sessionPseudonym,
+          traceId: root.traceId,
+          rootCallId: root.rootCallId,
+          toolName: root.toolName,
+          durationMs,
+          status: outcome.status,
+          errorCategory: outcome.errorCategory,
+        });
+      } catch {
+        // Telemetry event construction must not affect the tool result or error.
+      }
+    };
+
+    return this.roots.run(root, async () => {
+      try {
+        const result = await operation();
+        let outcome: RootToolOutcome = { status: "success" };
+        try {
+          outcome = input.classifyResult?.(result) ?? outcome;
+        } catch {
+          outcome = { status: "error", errorCategory: "unknown" };
+        }
+        terminal(outcome);
+        return result;
+      } catch (error) {
+        let outcome: RootToolOutcome = { status: "error", errorCategory: "unknown" };
+        try {
+          outcome = input.classifyError?.(error) ?? outcome;
+        } catch {
+          // Keep the stable unknown category without changing the thrown error.
+        }
+        terminal(outcome);
+        throw error;
+      }
+    });
   }
 
   emit(event: TelemetryEvent): void {
@@ -285,6 +460,16 @@ export class TelemetryManager implements TelemetrySink {
   close(deadlineMs = 2_000): Promise<void> {
     if (!this.enabled) return Promise.resolve();
     if (this.closePromise) return this.closePromise;
+    try {
+      this.emit({
+        ...this.eventBase("run_stopped"),
+        type: "run_stopped",
+        reason: "shutdown",
+        droppedEvents: Math.min(2_147_483_647, Math.max(0, this.sink?.getDroppedEvents?.() ?? 0)),
+      });
+    } catch {
+      // Lifecycle telemetry must never prevent shutdown.
+    }
     const closeWork = Promise.resolve()
       .then(() => this.sink?.close(deadlineMs))
       .then(() => undefined)
@@ -300,7 +485,7 @@ export class TelemetryManager implements TelemetrySink {
     return this.closePromise;
   }
 
-  eventBase(type: TelemetryEvent["type"]): TelemetryEventBase {
+  private eventBase(type: TelemetryEvent["type"]): TelemetryEventBase {
     if (!this.enabled) throw new Error("Telemetry is disabled");
     return {
       schemaVersion: TELEMETRY_SCHEMA_VERSION,
@@ -310,5 +495,17 @@ export class TelemetryManager implements TelemetrySink {
       timestamp: new Date(this.now()).toISOString(),
       monotonicOffsetMs: Math.max(0, this.monotonicNow() - this.monoStart),
     };
+  }
+
+  private emitRunStarted(): void {
+    try {
+      this.emit({
+        ...this.eventBase("run_started"),
+        type: "run_started",
+        processRole: "client",
+      });
+    } catch {
+      // Lifecycle telemetry must never prevent startup.
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -12,7 +13,8 @@ import { recordIssue } from "./logger.js";
 import { SessionIncarnation } from "./session-incarnation.js";
 import { assertTelemetryPolicyCoverage } from "./telemetry/policies.js";
 import { summarizeDiagnosticsArguments } from "./telemetry/sanitize.js";
-import type { TelemetryConfig } from "./telemetry/types.js";
+import { TelemetryManager, type RootToolOutcome } from "./telemetry/manager.js";
+import type { TelemetryConfig, TelemetryErrorCategory } from "./telemetry/types.js";
 
 // Navigation tools
 import { navigate, goBack, goForward, wait } from "./tools/navigation.js";
@@ -91,6 +93,7 @@ export interface ServerOptions {
   sessionId?: string;
   sessionName?: string;
   telemetryConfig?: TelemetryConfig;
+  telemetry?: TelemetryManager;
 }
 
 export let stateManager: IStateManager;
@@ -118,8 +121,92 @@ function extractTabId(args: unknown): number | undefined {
 }
 
 export async function createServerWithTools(options: ServerOptions) {
+  const telemetry = options.telemetry ?? (options.telemetryConfig
+    ? TelemetryManager.create(options.telemetryConfig, {
+      onDiagnostic: (diagnostic) => recordIssue({
+        level: "error",
+        area: "telemetry_writer",
+        message: `Internal telemetry writer disabled (${diagnostic.reason})`,
+      }),
+    })
+    : TelemetryManager.disabled());
+  try {
+    return await createServerWithTelemetry(options, telemetry);
+  } catch (error) {
+    await telemetry.close(2_000);
+    throw error;
+  }
+}
+
+function classifyToolResult(result: unknown): RootToolOutcome {
+  if (typeof result !== "object" || result === null) {
+    return { status: "error", errorCategory: "unknown" };
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(result, "isError");
+    if (!descriptor) return { status: "success" };
+    if (!("value" in descriptor)) return { status: "error", errorCategory: "unknown" };
+    if (descriptor.value === true) return { status: "error", errorCategory: "unknown" };
+    if (descriptor.value === false || descriptor.value === undefined) return { status: "success" };
+    return { status: "error", errorCategory: "unknown" };
+  } catch {
+    return { status: "error", errorCategory: "unknown" };
+  }
+}
+
+const EXPLICIT_ERROR_CATEGORIES: Readonly<Record<string, TelemetryErrorCategory>> = Object.freeze({
+  INVALID_ARGUMENTS: "invalid_arguments",
+  AUTHORIZATION_DENIED: "authorization_denied",
+  OWNERSHIP_DENIED: "ownership_denied",
+  NOT_CONNECTED: "not_connected",
+  BROWSER_NOT_FOUND: "browser_not_found",
+  TAB_NOT_FOUND: "tab_not_found",
+  ELEMENT_NOT_FOUND: "element_not_found",
+  TIMEOUT: "timeout",
+  REQUEST_EXPIRED: "request_expired",
+  QUEUE_OVERLOADED: "queue_overloaded",
+  SESSION_CLOSED: "session_closed",
+  EXTENSION_WORKER_RESTARTED: "worker_restarted",
+  PROTOCOL_ERROR: "protocol_error",
+  STORAGE_FAILURE: "storage_failure",
+});
+
+function classifyExplicitError(error: unknown): RootToolOutcome {
+  if (typeof error !== "object" || error === null) {
+    return { status: "error", errorCategory: "unknown" };
+  }
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(error, "code");
+  } catch {
+    return { status: "error", errorCategory: "unknown" };
+  }
+  const code = descriptor && "value" in descriptor && typeof descriptor.value === "string"
+    ? descriptor.value
+    : undefined;
+  const errorCategory = code ? EXPLICIT_ERROR_CATEGORIES[code] : undefined;
+  if (!errorCategory) return { status: "error", errorCategory: "unknown" };
+  if (errorCategory === "timeout" || errorCategory === "request_expired") {
+    return { status: "timeout", errorCategory };
+  }
+  if (errorCategory === "worker_restarted" || errorCategory === "session_closed") {
+    return { status: "cancelled", errorCategory };
+  }
+  return { status: "error", errorCategory };
+}
+
+function schemaDigest(tools: readonly Tool[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(tools.map((tool) => ({
+      name: tool.schema.name,
+      inputSchema: tool.schema.inputSchema,
+    }))))
+    .digest("base64url");
+}
+
+async function createServerWithTelemetry(options: ServerOptions, telemetry: TelemetryManager) {
   const { host, port, token } = options;
-  const context = new Context();
+  const context = new Context(telemetry);
 
   const incarnation = new SessionIncarnation(options.sessionId);
   let sessionId = incarnation.sessionId;
@@ -235,34 +322,75 @@ export async function createServerWithTools(options: ServerOptions) {
     { name: "MyBrowser MCP", version: VERSION },
     { capabilities: { tools: {} } }
   );
+  let toolsSchemaDigest: string | undefined;
+  if (telemetry.enabled) {
+    try {
+      toolsSchemaDigest = schemaDigest(tools);
+    } catch {
+      // Telemetry digest construction must not affect server startup.
+    }
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    if (telemetry.enabled && toolsSchemaDigest) {
+      try {
+        const client = server.getClientVersion();
+        const capabilities = server.getClientCapabilities();
+        telemetry.recordToolsListed({
+          ...(client?.name ? { clientName: client.name } : {}),
+          ...(client?.version ? { clientVersion: client.version } : {}),
+          clientSupportsSampling: capabilities?.sampling !== undefined,
+          clientSupportsRoots: capabilities?.roots !== undefined,
+          clientSupportsElicitation: capabilities?.elicitation !== undefined,
+          toolCount: tools.length,
+          schemaDigest: toolsSchemaDigest,
+        });
+      } catch {
+        // Telemetry event construction must not affect the list-tools response.
+      }
+    }
     return { tools: tools.map((t) => t.schema) };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolName = request.params.name;
-    const tool = tools.find((t) => t.schema.name === toolName);
-    if (!tool) {
-      recordIssue({
-        level: "warn",
-        area: "tool_not_found",
-        message: `Tool "${toolName}" not found`,
-        toolName,
-        sessionId,
-      });
-      return {
-        content: [{ type: "text", text: `Tool "${toolName}" not found` }],
-        isError: true,
-      };
-    }
+    const requestedToolName = request.params.name;
+    const registeredTool = tools.find((candidate) => candidate.schema.name === requestedToolName);
+    const toolName = registeredTool?.schema.name ?? "unknown_tool";
+    let failureOutcome: RootToolOutcome | undefined;
+    return telemetry.runToolCall({
+      sessionId,
+      toolName,
+      arguments: request.params.arguments,
+      unknownTool: registeredTool === undefined,
+      classifyResult: (result) => {
+        if (failureOutcome) return failureOutcome;
+        return classifyToolResult(result);
+      },
+      classifyError: classifyExplicitError,
+    }, async () => {
+      const tool = registeredTool;
+      if (!tool) {
+        failureOutcome = { status: "error", errorCategory: "invalid_arguments" };
+        recordIssue({
+          level: "warn",
+          area: "tool_not_found",
+          message: `Tool "${requestedToolName}" not found`,
+          toolName: requestedToolName,
+          sessionId,
+        });
+        return {
+          content: [{ type: "text", text: `Tool "${requestedToolName}" not found` }],
+          isError: true,
+        };
+      }
 
-    await stateManager.touchSession(sessionId);
+      await stateManager.touchSession(sessionId);
 
-    // Ownership check for mutating tools
-    if (MUTATING_TOOLS.has(toolName) && await stateManager.shouldEnforceOwnership()) {
-      const tabId = extractTabId(request.params.arguments);
+      // Ownership check for mutating tools
+      if (MUTATING_TOOLS.has(toolName) && await stateManager.shouldEnforceOwnership()) {
+        const tabId = extractTabId(request.params.arguments);
         if (tabId === undefined) {
+          failureOutcome = { status: "error", errorCategory: "ownership_denied" };
           recordIssue({
             level: "warn",
             area: "ownership",
@@ -273,58 +401,61 @@ export async function createServerWithTools(options: ServerOptions) {
           return {
             content: [{
               type: "text",
-            text: `tabId is required when tab ownership is enforced (multiple sessions active). Use list_tabs to find tab IDs.`,
-          }],
-          isError: true,
-        };
-      }
-
-      try {
-        const browserId = await getActiveBrowser();
-        const tabKey = makeTabKey(browserId, tabId);
-        if (!await stateManager.isTabAvailable(tabKey, sessionId)) {
-          const owner = await stateManager.getTabOwner(tabKey);
-          const ownerName = owner ? (await stateManager.getSessionName(owner) ?? owner) : "unknown";
-          recordIssue({
-            level: "warn",
-            area: "ownership",
-            message: `${toolName} rejected because tab ${tabId} on browser ${browserId} is owned by ${ownerName}`,
-            toolName,
-            sessionId,
-            browserId,
-          });
-          return {
-            content: [{
-              type: "text",
-              text: `Tab ${tabId} on browser ${browserId} is owned by session "${ownerName}". Claim it first with browser_claim_tab or ask the owner to release it.`,
+              text: `tabId is required when tab ownership is enforced (multiple sessions active). Use list_tabs to find tab IDs.`,
             }],
             isError: true,
           };
         }
-      } catch {
-        // No browser connected — let the tool fail naturally
-      }
-    }
 
-    try {
-      return await tool.handle(context, request.params.arguments);
-    } catch (error) {
-      recordIssue({
-        level: "error",
-        area: "tool_failure",
-        message: error instanceof Error ? error.message : String(error),
-        toolName,
-        sessionId,
-        details: {
-          arguments: summarizeDiagnosticsArguments(toolName, request.params.arguments),
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-      });
-      return {
-        content: [{ type: "text", text: String(error) }],
-        isError: true,
-      };
-    }
+        try {
+          const browserId = await getActiveBrowser();
+          const tabKey = makeTabKey(browserId, tabId);
+          if (!await stateManager.isTabAvailable(tabKey, sessionId)) {
+            failureOutcome = { status: "error", errorCategory: "ownership_denied" };
+            const owner = await stateManager.getTabOwner(tabKey);
+            const ownerName = owner ? (await stateManager.getSessionName(owner) ?? owner) : "unknown";
+            recordIssue({
+              level: "warn",
+              area: "ownership",
+              message: `${toolName} rejected because tab ${tabId} on browser ${browserId} is owned by ${ownerName}`,
+              toolName,
+              sessionId,
+              browserId,
+            });
+            return {
+              content: [{
+                type: "text",
+                text: `Tab ${tabId} on browser ${browserId} is owned by session "${ownerName}". Claim it first with browser_claim_tab or ask the owner to release it.`,
+              }],
+              isError: true,
+            };
+          }
+        } catch {
+          // No browser connected — let the tool fail naturally
+        }
+      }
+
+      try {
+        return await tool.handle(context, request.params.arguments);
+      } catch (error) {
+        failureOutcome = classifyExplicitError(error);
+        recordIssue({
+          level: "error",
+          area: "tool_failure",
+          message: error instanceof Error ? error.message : String(error),
+          toolName,
+          sessionId,
+          details: {
+            arguments: summarizeDiagnosticsArguments(toolName, request.params.arguments),
+            stack: error instanceof Error ? error.stack : undefined,
+          },
+        });
+        return {
+          content: [{ type: "text", text: String(error) }],
+          isError: true,
+        };
+      }
+    });
   });
 
   const originalClose = server.close.bind(server);
@@ -334,19 +465,23 @@ export async function createServerWithTools(options: ServerOptions) {
     if (closePromise) return closePromise;
     closePromise = (async () => {
       const errors: unknown[] = [];
-      for (const step of [
-        () => originalClose(),
-        () => wss.close(),
-        () => context.close(),
-      ]) {
-        try {
-          await step();
-        } catch (error) {
-          errors.push(error);
+      try {
+        for (const step of [
+          () => originalClose(),
+          () => wss.close(),
+          () => context.close(),
+        ]) {
+          try {
+            await step();
+          } catch (error) {
+            errors.push(error);
+          }
         }
-      }
-      if (errors.length > 0) {
-        throw new AggregateError(errors, "Server shutdown failed");
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Server shutdown failed");
+        }
+      } finally {
+        await telemetry.close(2_000);
       }
     })();
     return closePromise;

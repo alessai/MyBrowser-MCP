@@ -8,12 +8,24 @@ import { getRecentIssues } from "./logger.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import { createServerWithTools, stateManager } from "./server.js";
 import type { LocalStateManager } from "./state-manager.js";
+import { TelemetryManager, type TelemetrySink } from "./telemetry/manager.js";
+import type { TelemetryEvent } from "./telemetry/types.js";
 import { createWebSocketServer, type WsServerResult } from "./ws-server.js";
 
 const token = "production-close-token";
 const sockets: WebSocket[] = [];
 const wsServers: WsServerResult[] = [];
 const mcpServers: Array<{ close: () => Promise<void> }> = [];
+
+class ServerMemoryTelemetrySink implements TelemetrySink {
+  readonly events: TelemetryEvent[] = [];
+  readonly close = vi.fn(async () => undefined);
+  readonly flush = vi.fn(async () => undefined);
+
+  emit(event: TelemetryEvent): void {
+    this.events.push(event);
+  }
+}
 
 const recording = {
   name: "Shutdown_Record",
@@ -247,5 +259,119 @@ describe("production server diagnostics privacy", () => {
     } finally {
       await client.close();
     }
+  });
+});
+
+describe("production server root telemetry", () => {
+  it("records bounded list and tool lifecycles without changing MCP results", async () => {
+    const canary = "RAW_SERVER_ROOT_CANARY_91d4";
+    const rawSession = "RAW_SERVER_SESSION_IDENTIFIER";
+    const sink = new ServerMemoryTelemetrySink();
+    let id = 0;
+    const telemetry = TelemetryManager.fromSink(sink, {
+      runId: "server-root-run",
+      installKey: Buffer.alloc(32, 6),
+      randomUUID: () => `server-event-${++id}`,
+    });
+    const port = await freePort();
+    const server = await createServerWithTools({
+      host: "127.0.0.1",
+      port,
+      token,
+      sessionId: rawSession,
+      telemetry,
+    });
+    mcpServers.push(server);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "root-telemetry-test", version: "2.3.4" });
+    await client.connect(clientTransport);
+
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools.length).toBeGreaterThan(0);
+      const localSuccess = await client.callTool({ name: "list_browsers", arguments: {} });
+      expect(localSuccess.isError).not.toBe(true);
+      vi.spyOn(stateManager, "shouldEnforceOwnership").mockResolvedValue(true);
+      const ownershipDenied = await client.callTool({
+        name: "browser_click",
+        arguments: { element: canary },
+      });
+      expect(ownershipDenied.isError).toBe(true);
+      const noBrowser = await client.callTool({
+        name: "browser_eval",
+        arguments: { code: canary, tabId: 44 },
+      });
+      expect(noBrowser.isError).toBe(true);
+      const missing = await client.callTool({ name: "definitely_missing_tool", arguments: {} });
+      expect(missing.isError).toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+
+    const listed = sink.events.find((event) => event.type === "tools_listed");
+    expect(listed).toMatchObject({
+      type: "tools_listed",
+      clientName: "root-telemetry-test",
+      clientVersion: "2.3.4",
+      clientSupportsSampling: false,
+      clientSupportsRoots: false,
+      clientSupportsElicitation: false,
+    });
+    expect(listed).toHaveProperty("schemaDigest");
+
+    const started = sink.events.filter((event) => event.type === "tool_started");
+    const terminals = sink.events.filter((event) => (
+      event.type === "tool_completed" || event.type === "tool_failed"
+    ));
+    expect(started.map((event) => event.toolName)).toEqual([
+      "list_browsers",
+      "browser_click",
+      "browser_eval",
+      "unknown_tool",
+    ]);
+    expect(terminals).toHaveLength(started.length);
+    expect(terminals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool_completed", toolName: "list_browsers" }),
+      expect.objectContaining({
+        type: "tool_failed",
+        toolName: "browser_click",
+        errorCategory: "ownership_denied",
+      }),
+      expect.objectContaining({ type: "tool_failed", toolName: "browser_eval" }),
+      expect.objectContaining({
+        type: "tool_failed",
+        toolName: "unknown_tool",
+        errorCategory: "invalid_arguments",
+      }),
+    ]));
+    expect(sink.events.filter((event) => event.type === "run_stopped")).toHaveLength(1);
+    expect(sink.close).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(sink.events);
+    expect(serialized).not.toContain(canary);
+    expect(serialized).not.toContain(rawSession);
+    expect(serialized).not.toContain("definitely_missing_tool");
+    expect(serialized).not.toMatch(/"(?:model|provider|prompt)"/u);
+  });
+
+  it("closes an injected manager when server setup fails", async () => {
+    const sink = new ServerMemoryTelemetrySink();
+    const telemetry = TelemetryManager.fromSink(sink, {
+      runId: "failed-setup-run",
+      installKey: Buffer.alloc(32, 7),
+      randomUUID: () => "failed-setup-event",
+    });
+
+    await expect(createServerWithTools({
+      host: "127.0.0.1",
+      port: -1,
+      token,
+      sessionId: "failed-setup-session",
+      telemetry,
+    })).rejects.toBeDefined();
+
+    expect(sink.events.map((event) => event.type)).toEqual(["run_started", "run_stopped"]);
+    expect(sink.close).toHaveBeenCalledTimes(1);
   });
 });
