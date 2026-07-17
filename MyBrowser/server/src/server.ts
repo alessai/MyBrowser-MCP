@@ -10,6 +10,7 @@ import { makeTabKey, type IStateManager } from "./state-manager.js";
 import type { Tool } from "./tools/types.js";
 import { recordIssue } from "./logger.js";
 import { SessionIncarnation } from "./session-incarnation.js";
+import type { TelemetryConfig } from "./telemetry/types.js";
 
 // Navigation tools
 import { navigate, goBack, goForward, wait } from "./tools/navigation.js";
@@ -87,6 +88,7 @@ export interface ServerOptions {
   token: string;
   sessionId?: string;
   sessionName?: string;
+  telemetryConfig?: TelemetryConfig;
 }
 
 export let stateManager: IStateManager;

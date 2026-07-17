@@ -12,7 +12,7 @@
 
 ## Global constraints
 
-- Telemetry is disabled unless `--trace-tools` or `MYBROWSER_TRACE_TOOLS=1` is explicit.
+- Telemetry is disabled unless `--trace-internal` is explicit. There is no environment-variable enablement path.
 - Disabled mode creates no trace directory, key, file, protocol trace field, or extension work.
 - The hub never writes telemetry and never receives the install HMAC key.
 - No raw prompt, hidden reasoning, typed/form/clipboard/storage value, cookie, token, password, page HTML/text, console content, screenshot, download/upload path, eval code/result, or unrestricted tool result may enter a persisted event.
@@ -34,7 +34,7 @@
 ### Server
 
 - Create `MyBrowser/server/src/telemetry/types.ts`: versioned event, trace, summary, outcome, and error-category types.
-- Create `MyBrowser/server/src/telemetry/config.ts` and `.test.ts`: CLI/environment configuration and disabled defaults.
+- Create `MyBrowser/server/src/telemetry/config.ts` and `.test.ts`: CLI configuration, approved clamping, hub suppression, and disabled defaults.
 - Create `MyBrowser/server/src/telemetry/policies.ts` and `.test.ts`: complete per-tool allowlist registry and coverage assertion.
 - Create `MyBrowser/server/src/telemetry/sanitize.ts` and `.test.ts`: bounded traversal, canonicalization, redaction, HMAC pseudonyms, and safe diagnostics summary.
 - Create `MyBrowser/server/src/telemetry/writer.ts` and `.test.ts`: exact private modes, JSONL append, buffering, rotation, retention, and cap enforcement.
@@ -67,6 +67,8 @@
 - Create: `MyBrowser/server/src/telemetry/types.ts`
 - Create: `MyBrowser/server/src/telemetry/config.ts`
 - Create: `MyBrowser/server/src/telemetry/config.test.ts`
+- Create: `MyBrowser/server/src/telemetry/startup-error.ts`
+- Create: `MyBrowser/server/src/telemetry/startup-error.test.ts`
 - Modify: `MyBrowser/server/src/index.ts`
 - Modify: `MyBrowser/server/src/server.ts`
 
@@ -93,12 +95,11 @@ export type TelemetryErrorCategory =
 
 - [ ] **Step 1: Write failing config tests**
 
-Cover defaults, CLI precedence, environment fallback, invalid numbers, path expansion, and disabled no-side-effect semantics:
+Cover defaults, explicit CLI enablement, clamped bounds, path expansion, hub suppression, and disabled no-side-effect semantics:
 
 ```ts
 const config = parseTelemetryConfig(
-  { traceTools: true, traceRetentionDays: 7, traceMaxMb: 64 },
-  { MYBROWSER_TRACE_TOOLS: "0" },
+  { traceInternal: true, traceRetentionDays: 7, traceMaxMb: 64 },
   "/home/test",
 );
 expect(config).toMatchObject({
@@ -120,26 +121,26 @@ Expected: FAIL because telemetry configuration/types do not exist.
 
 - [ ] **Step 2: Implement pure configuration parsing**
 
-Defaults: disabled, 14 days, 256 MiB aggregate, 32 MiB/file, 16 KiB/event, `~/.mybrowser/traces`. Reject invalid/negative/unsafe values with a stable configuration error. Parsing must not touch the filesystem.
+Defaults: disabled, 14 days, 256 MiB aggregate, 32 MiB/file, 16 KiB/event, `~/.mybrowser/traces`. Clamp finite retention values to 1–90 days and finite storage values to 16–2048 MiB. Reject non-finite/unsafe values with a stable configuration error. Parsing must not touch the filesystem.
 
 - [ ] **Step 3: Add CLI options without changing normal startup**
 
 Add:
 
 ```text
---trace-tools
+--trace-internal
 --trace-dir <path>
 --trace-retention-days <days>
 --trace-max-mb <megabytes>
 ```
 
-Extend `ServerOptions` with `telemetryConfig?: TelemetryConfig`, pass the parsed config to `createServerWithTools`, and leave it inert until Task 3/4 create the manager. Do not initialize a writer in `index.ts`. Preserve `--version`, `--hub`, stdio startup, and existing options.
+Extend `ServerOptions` with `telemetryConfig?: TelemetryConfig`, pass the parsed config to `createServerWithTools` only for MCP stdio mode, and leave it inert until Task 3/4 create the manager. Standalone `--hub` receives no telemetry config even if trace flags are supplied. Do not initialize a writer in `index.ts`. Use Commander's async parse path with a bounded, control-normalized startup error formatter; preserve `--version`, stdio startup, and existing options.
 
 - [ ] **Step 4: Verify and commit**
 
 ```bash
 cd MyBrowser/server
-npm test -- src/telemetry/config.test.ts src/release-contract.test.ts
+npm test -- src/telemetry/config.test.ts src/telemetry/types.test.ts src/telemetry/startup-error.test.ts src/release-contract.test.ts
 npm run check
 git -C ../.. add MyBrowser/server/src/telemetry MyBrowser/server/src/index.ts MyBrowser/server/src/server.ts
 git commit -m "feat: define private telemetry contract"
@@ -779,7 +780,7 @@ With tracing on, use deterministic fake sinks for CI and a separate non-gating l
 
 Document:
 
-- explicit enable/disable flags and environment variable;
+- explicit `--trace-internal` enablement and absence of an environment-variable enablement path;
 - exact data collected and prohibited;
 - local path, modes, defaults, rotation, retention, and cap;
 - `trace list/analyze/annotate/export/purge` examples;
