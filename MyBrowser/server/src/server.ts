@@ -10,6 +10,8 @@ import { makeTabKey, type IStateManager } from "./state-manager.js";
 import type { Tool } from "./tools/types.js";
 import { recordIssue } from "./logger.js";
 import { SessionIncarnation } from "./session-incarnation.js";
+import { assertTelemetryPolicyCoverage } from "./telemetry/policies.js";
+import { summarizeDiagnosticsArguments } from "./telemetry/sanitize.js";
 import type { TelemetryConfig } from "./telemetry/types.js";
 
 // Navigation tools
@@ -45,7 +47,7 @@ import { ensureDirectories } from "./site-knowledge.js";
 import { createRecordingTools } from "./tools/record.js";
 
 // ULTRA Phase 3: Replay tools
-import { redactReplayArguments, replay } from "./tools/replay.js";
+import { replay } from "./tools/replay.js";
 
 // ULTRA Phase 4: Session tools
 import { createSessionTools } from "./tools/sessions.js";
@@ -219,6 +221,15 @@ export async function createServerWithTools(options: ServerOptions) {
     // Diagnostics and support
     browserDiagnostics, browserSupportBundle,
   ];
+  assertTelemetryPolicyCoverage(tools.map((tool) => {
+    const properties = tool.schema.inputSchema.properties;
+    return {
+      name: tool.schema.name,
+      argumentFields: properties && typeof properties === "object" && !Array.isArray(properties)
+        ? Object.keys(properties)
+        : [],
+    };
+  }));
 
   const server = new Server(
     { name: "MyBrowser MCP", version: VERSION },
@@ -305,9 +316,7 @@ export async function createServerWithTools(options: ServerOptions) {
         toolName,
         sessionId,
         details: {
-          arguments: toolName === "browser_replay"
-            ? redactReplayArguments(request.params.arguments)
-            : request.params.arguments,
+          arguments: summarizeDiagnosticsArguments(toolName, request.params.arguments),
           stack: error instanceof Error ? error.stack : undefined,
         },
       });

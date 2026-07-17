@@ -1,7 +1,10 @@
 import { createServer as createNetServer } from "node:net";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { Context } from "./context.js";
+import { getRecentIssues } from "./logger.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
 import { createServerWithTools, stateManager } from "./server.js";
 import type { LocalStateManager } from "./state-manager.js";
@@ -199,4 +202,50 @@ describe("production server shutdown wrapper", () => {
     expect((await hub.stateManager.listSessions()).map(({ id }) => id))
       .not.toContain("remote-production-session");
   }, 5_000);
+});
+
+describe("production server diagnostics privacy", () => {
+  it("does not retain raw tool arguments on the failure path", async () => {
+    const canary = "RAW_DIAGNOSTICS_CANARY_7f3d";
+    const port = await freePort();
+    const server = await createServerWithTools({
+      host: "127.0.0.1",
+      port,
+      token,
+      sessionId: "diagnostics-privacy-session",
+    });
+    mcpServers.push(server);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "diagnostics-privacy-test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "browser_eval",
+        arguments: { code: canary, tabId: 77 },
+      });
+      expect(response.isError).toBe(true);
+
+      const issue = [...getRecentIssues(100)].reverse().find((candidate) => (
+        candidate.area === "tool_failure"
+        && candidate.toolName === "browser_eval"
+        && candidate.sessionId === "diagnostics-privacy-session"
+      ));
+      expect(issue).toBeDefined();
+      expect(JSON.stringify(issue)).not.toContain(canary);
+      expect(issue?.details).toMatchObject({
+        arguments: {
+          presence: ["code", "tabId"],
+          scalar: { "code.length": "17-64" },
+          counts: {},
+          pseudonyms: {},
+          droppedFields: 1,
+          truncated: false,
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
 });
