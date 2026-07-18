@@ -7,6 +7,7 @@ import { createServerWithTools } from "./server.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { initializePersistentLogging } from "./logger.js";
 import { type TelemetryCliOptions, resolveProcessTelemetryConfig } from "./telemetry/config.js";
+import { registerTraceCommands } from "./telemetry/commands.js";
 import { formatStartupFailure } from "./telemetry/startup-error.js";
 import { VERSION } from "./version.js";
 
@@ -87,6 +88,8 @@ program
       await server.connect(transport);
     }
   });
+
+registerTraceCommands(program);
 
 try {
   await program.parseAsync(process.argv);

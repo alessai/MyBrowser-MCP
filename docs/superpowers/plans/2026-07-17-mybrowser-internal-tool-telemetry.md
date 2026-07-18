@@ -137,7 +137,7 @@ Add:
 
 Extend `ServerOptions` with `telemetryConfig?: TelemetryConfig`, pass the parsed config to `createServerWithTools` only for MCP stdio mode, and leave it inert until Task 3/4 create the manager. Standalone `--hub` receives no telemetry config even if trace flags are supplied. Do not initialize a writer in `index.ts`. Use Commander's async parse path with a bounded, control-normalized startup error formatter; preserve `--version`, stdio startup, and existing options.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 cd MyBrowser/server
@@ -673,16 +673,19 @@ git commit -m "feat: join extension telemetry at client"
 
 **Produces:** local `trace list`, `trace analyze`, `trace annotate`, `trace export`, and `trace purge` commands. These read already-sanitized JSONL; they never contact the network.
 
-- [ ] **Step 1: Write failing deterministic classifier tests**
+- [x] **Step 1: Write failing deterministic classifier tests**
 
 Use synthetic versioned events and assert:
 
 - `exact_repeat`: same semantic fingerprint consecutively;
 - `unchanged_repeat`: same fingerprint with equivalent safe post-state/no-change signal;
 - `error_retry`: failed call followed by same fingerprint;
+- `semantic_repeat`: same tool and target pseudonyms with a different privacy-safe fingerprint;
+- `timeout_retry`: same fingerprint after a timeout;
 - `oscillation`: `A → B → A → B` over at least two cycles;
 - `stale_reference_repeat`: known stale tab/element failure plus repeated pseudonym;
-- `recovery`: failed call followed within a bounded call window by a different successful state-changing call;
+- `recovery`: failed call followed within five calls by a different successful state-changing call;
+- `possible_noop`: success with a reliable no-change signal;
 - user feedback overrides a suspected automatic label but never rewrites source events;
 - concurrent siblings use monotonic start/end order, not request-ID order;
 - truncated final line is ignored; malformed interior line, unknown schema version, and cross-session/run collisions are reported safely;
@@ -697,11 +700,11 @@ npm test -- src/telemetry/analyzer.test.ts src/telemetry/commands.test.ts
 
 Expected: FAIL because analyzer/commands do not exist.
 
-- [ ] **Step 2: Implement streaming analysis**
+- [x] **Step 2: Implement streaming analysis**
 
 Process files line-by-line with bounded memory. Partition by `(runId, sessionPseudonym, traceId)`. Keep only the bounded window needed for loop/recovery classification. Automatic labels are `suspected` unless backed by explicit error/no-change/user feedback. Emit machine-readable JSON and a concise human table.
 
-- [ ] **Step 3: Register side-effect-free CLI subcommands**
+- [x] **Step 3: Register side-effect-free CLI subcommands**
 
 Move command construction into a testable `registerTraceCommands(program, deps)` without importing `index.ts` in tests. Preserve the existing root server action and `--version` behavior.
 
