@@ -248,12 +248,16 @@ class AnalyzerState {
     call.outcome = outcome;
     call.errorCategory = errorCategory;
     if (event.type === "tool_completed" && event.stateChanged !== undefined) {
-      call.stateChanged = event.stateChanged;
+      call.stateChanged = call.stateChanged === true || event.stateChanged;
     }
     if (outcome === "success" && call.stateChanged === false) {
       this.addFinding("possible_noop", "confirmed", call);
     }
-    if (outcome !== "success" || call.stateChanged !== true) return;
+    this.maybeClassifyRecovery(call);
+  }
+
+  private maybeClassifyRecovery(call: CallState): void {
+    if (call.outcome !== "success" || call.stateChanged !== true) return;
 
     const session = this.sessions.get(`${call.runId}|${call.sessionPseudonym}`);
     if (!session) return;
@@ -273,11 +277,12 @@ class AnalyzerState {
     >>;
     const values = [signals.tabChanged, signals.originChanged, signals.pathChanged, signals.loadStatusChanged]
       .filter((value): value is boolean => value !== undefined);
-    if (values.length > 0) call.stateChanged = values.some(Boolean);
+    if (values.length > 0) call.stateChanged = call.stateChanged === true || values.some(Boolean);
     if (event.errorCategory !== undefined) call.errorCategory = event.errorCategory;
     if (call.outcome === "success" && call.stateChanged === false) {
       this.addFinding("possible_noop", "confirmed", call);
     }
+    this.maybeClassifyRecovery(call);
   }
 
   private addFinding(

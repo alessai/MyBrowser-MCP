@@ -57,4 +57,20 @@ describe("background privacy boundaries", () => {
       details: { byteLength: new TextEncoder().encode(raw).byteLength },
     })]);
   });
+
+  it("does not create a clock-backed summary builder without valid trace metadata", () => {
+    const monotonicNow = vi.fn(() => {
+      throw new Error("disabled telemetry touched the clock");
+    });
+    const builder = createExtensionTelemetrySummaryBuilder({
+      trace: undefined as never,
+      extensionRequestId: "legacy-request",
+      timeoutMs: 1_000,
+      backgroundReceivedAtEpochMs: 1_000,
+      monotonicNow,
+    });
+
+    expect(builder).toBeUndefined();
+    expect(monotonicNow).not.toHaveBeenCalled();
+  });
 });

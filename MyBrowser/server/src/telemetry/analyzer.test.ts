@@ -50,6 +50,17 @@ function failed(trace: string, at: number, errorCategory: TelemetryErrorCategory
   };
 }
 
+function extensionSummary(trace: string, at: number, tabChanged: boolean): TelemetryEvent {
+  return {
+    ...base("extension_summary", trace, at),
+    type: "extension_summary",
+    transportSpanId: `span-${trace}-${at}`,
+    routeMode: "direct",
+    extensionRequestPseudonym: `request-${trace}-${at}`,
+    tabChanged,
+  };
+}
+
 function feedback(call: string, label: "mistake" | "expected" | "unclear"): TelemetryEvent {
   return {
     schemaVersion: 1, type: "feedback", eventId: `feedback-${call}`, runId: "run-a",
@@ -143,6 +154,34 @@ describe("telemetry analyzer", () => {
     ]);
     expect(report.findings).toContainEqual(expect.objectContaining({
       classification: "recovery", confidence: "confirmed", rootCallId: "call-good",
+    }));
+  });
+
+  it("preserves a positive state change across later no-change composite spans", () => {
+    const report = analyzeTelemetryEvents([
+      started("bad-composite", "failed", 1), failed("bad-composite", 2, "extension_tool_failed"),
+      started("good-composite", "different", 3),
+      extensionSummary("good-composite", 4, true),
+      extensionSummary("good-composite", 5, false),
+      completed("good-composite", 6, false),
+    ]);
+    expect(report.findings).toContainEqual(expect.objectContaining({
+      classification: "recovery", rootCallId: "call-good-composite",
+    }));
+    expect(report.findings).not.toContainEqual(expect.objectContaining({
+      classification: "possible_noop", rootCallId: "call-good-composite",
+    }));
+  });
+
+  it("classifies recovery when a positive extension summary arrives after the root terminal", () => {
+    const report = analyzeTelemetryEvents([
+      started("late-bad", "failed", 1), failed("late-bad", 2, "extension_tool_failed"),
+      started("late-good", "different", 3),
+      completed("late-good", 4),
+      extensionSummary("late-good", 5, true),
+    ]);
+    expect(report.findings).toContainEqual(expect.objectContaining({
+      classification: "recovery", rootCallId: "call-late-good",
     }));
   });
 

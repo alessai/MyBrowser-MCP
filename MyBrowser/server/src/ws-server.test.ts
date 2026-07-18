@@ -3215,8 +3215,9 @@ describe("real loopback session topology", () => {
   }, 5_000);
 
   it("retains an ID within grace and rejects it after finalization", async () => {
+    // Keep enough wall-clock margin for parallel-suite event-loop contention without changing the invariant.
     const server = await startHub(undefined, undefined, undefined, {
-      sessionReconnectGraceMs: 30,
+      sessionReconnectGraceMs: 300,
       finalizedSessionTtlMs: 1_000,
     });
     const first = await connect(server);
@@ -3239,7 +3240,7 @@ describe("real loopback session topology", () => {
     const reclaimedClosed = waitForClose(reclaimed);
     reclaimed.close();
     await reclaimedClosed;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 350));
 
     const stale = await connect(server);
     await authenticate(stale, "client");
