@@ -156,7 +156,7 @@ export function createTabTools({
           type: "text",
           text: !failedCleanup
             ? `Browser cleanup completed on ${cleaned} connected browser(s); routing now follows the shared default.`
-            : `Browser cleanup was partial${failed.length > 0 ? ` on browser IDs: ${failed.join(", ")}` : ""}${pending.length > 0 ? `; tabs remain queued for retry on browser IDs: ${pending.join(", ")}` : ""}. Claims and routing reset was attempted.`,
+            : `Browser cleanup was partial${failed.length > 0 ? ` on browser IDs: ${failed.join(", ")}` : ""}${pending.length > 0 ? `; tabs remain tracked for later cleanup on browser IDs: ${pending.join(", ")}` : ""}. Claims and routing reset was attempted.`,
         }],
         ...(failedCleanup ? { isError: true } : {}),
       };

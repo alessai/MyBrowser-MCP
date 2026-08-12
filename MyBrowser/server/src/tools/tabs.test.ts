@@ -75,7 +75,7 @@ describe("tab lifecycle tools", () => {
     const result = await tools.browserCleanup.handle(context, {});
 
     expect(result).toMatchObject({ isError: true });
-    expect(JSON.stringify(result)).toContain("queued for retry");
+    expect(JSON.stringify(result)).toContain("tracked for later cleanup");
     expect(JSON.stringify(result)).toContain("browser-a");
   });
 

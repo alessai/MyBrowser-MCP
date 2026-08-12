@@ -24,6 +24,7 @@
 - A `new_tab` persistence failure must roll back by closing the newly created tab and return a stable failure. It must never report an untracked temporary tab as successfully created.
 - Cleanup is idempotent. A missing/already-closed tab counts as cleaned; a transient close failure remains tracked for retry.
 - Cleanup intent is persisted before attempting tab removal. The global keepalive alarm retries pending cleanup after MV3 worker restart.
+- A new temporary tab in the same live session clears prior pending cleanup for that session; earlier failures remain tracked until the next explicit cleanup or authoritative session finalization so a delayed retry cannot close newer work.
 - Session and tab counts are bounded before creating another temporary tab: maximum 64 tracked sessions, 64 tabs per session, and 256 tabs total.
 - Session IDs and tab IDs remain extension-private control metadata. They must not be added to logs, diagnostics text, telemetry, or user-facing errors beyond existing bounded/pseudonymized fields.
 - Reconnect cleanup uses the existing bounded 24-hour `FinalizedSessionRegistry`; it adds no durable hub storage or new session authority. The extension may advertise at most 64 syntactically valid tracked session IDs, and the hub returns only their finalized intersection.
