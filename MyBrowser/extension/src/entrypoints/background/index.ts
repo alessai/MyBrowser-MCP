@@ -15,7 +15,8 @@ import {
   dispatchScheduledRequest,
   RequestScheduler,
 } from '../../lib/request-scheduler';
-import { SessionStateStore } from '../../lib/session-state';
+import { ChromeSessionStorageAdapter, SessionStateStore } from '../../lib/session-state';
+import { TemporaryTabManager } from '../../lib/temporary-tabs';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import {
   TOOL_METADATA,
@@ -342,7 +343,7 @@ export default defineBackground(() => {
         expiresAt,
         tabId,
         sessionState,
-        services: { networkCapture },
+        services: { networkCapture, temporaryTabs },
       });
       const requestMeta = {
         requestId: request.id,
@@ -553,6 +554,14 @@ export default defineBackground(() => {
   const sessionState = new SessionStateStore();
   const scheduler = new RequestScheduler();
   const networkCapture = new NetworkCaptureController();
+  const temporaryTabs = new TemporaryTabManager(
+    new ChromeSessionStorageAdapter(),
+    {
+      create: async (url) => chrome.tabs.create({ url }),
+      remove: async (tabId) => chrome.tabs.remove(tabId),
+    },
+    (code) => recordExtensionIssue('temporary_tabs', code),
+  );
 
   // =====================================================================
   // Init cleanup listeners

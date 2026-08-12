@@ -1,5 +1,6 @@
 import { InputDevice } from './input-device';
 import type { NetworkCaptureController } from './network-capture-controller';
+import type { TemporaryTabManager } from './temporary-tabs';
 
 export interface InitialTabResolutionOptions {
   requirement: 'required' | 'optional' | 'none';
@@ -51,6 +52,7 @@ export interface RequestSessionState {
 
 export interface RequestToolServices {
   networkCapture: NetworkCaptureController;
+  temporaryTabs: TemporaryTabManager;
 }
 
 export interface RequestToolContextOptions {

@@ -145,4 +145,13 @@ describe("TOOL_METADATA", () => {
     expect(TOOL_METADATA.browser_register_handler.queue).toBe("global");
     expect(TOOL_METADATA.browser_unregister_handler.queue).toBe("global");
   });
+
+  it('keeps tab lifecycle controls session-scoped and tab-free where possible', () => {
+    expect(TOOL_METADATA.keep_tab).toEqual({
+      tab: 'optional', queue: 'session', mutatesTab: false, recordable: false,
+    });
+    expect(TOOL_METADATA.cleanup_session_tabs).toEqual({
+      tab: 'none', queue: 'session', mutatesTab: false, recordable: false,
+    });
+  });
 });

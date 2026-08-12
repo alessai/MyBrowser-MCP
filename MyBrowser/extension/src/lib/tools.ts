@@ -810,20 +810,29 @@ const handlers: Record<string, ToolHandler> = {
 
   async new_tab(args, ctx) {
     const url = (args.url as string) || 'about:blank';
-    const tab = await chrome.tabs.create({ url });
-    if (tab.id === undefined) throw new Error('Failed to create tab');
-    await ctx.setTabId(tab.id);
+    const temporary = args.temporary !== false;
+    const tabId = await ctx.services.temporaryTabs.open(ctx.sessionId, url, temporary);
+    await ctx.setTabId(tabId);
     if (url !== 'about:blank') {
-      await waitForTabLoad(tab.id);
-      try { await ensureContentScript(tab.id); } catch {}
+      await waitForTabLoad(tabId);
+      try { await ensureContentScript(tabId); } catch {}
     }
-    return { tabId: tab.id };
+    return { tabId, temporary };
   },
 
   async close_tab(args, ctx) {
     const tabId = (args.tabId as number) ?? ctx.getTabId();
-    await chrome.tabs.remove(tabId);
+    await ctx.services.temporaryTabs.close(ctx.sessionId, tabId);
     await ctx.clearTab(tabId);
+  },
+
+  async keep_tab(args, ctx) {
+    const tabId = (args.tabId as number) ?? ctx.getTabId();
+    return { kept: await ctx.services.temporaryTabs.keep(ctx.sessionId, tabId) };
+  },
+
+  async cleanup_session_tabs(_args, ctx) {
+    return ctx.services.temporaryTabs.cleanupSession(ctx.sessionId);
   },
 
   // === ULTRA Phase 3: Session recording ===

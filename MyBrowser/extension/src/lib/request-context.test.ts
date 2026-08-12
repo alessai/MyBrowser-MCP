@@ -2,9 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import { NetworkCaptureController } from "./network-capture-controller";
 import { RequestToolContext, resolveInitialTab } from "./request-context";
+import { TemporaryTabManager } from "./temporary-tabs";
 
-function createServices(): { networkCapture: NetworkCaptureController } {
-  return { networkCapture: new NetworkCaptureController() };
+function createServices(): {
+  networkCapture: NetworkCaptureController;
+  temporaryTabs: TemporaryTabManager;
+} {
+  return {
+    networkCapture: new NetworkCaptureController(),
+    temporaryTabs: {} as TemporaryTabManager,
+  };
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -28,7 +35,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: 1,
       sessionState,
-      services: { networkCapture },
+      services: { networkCapture, temporaryTabs: {} as TemporaryTabManager },
     });
     const second = new RequestToolContext({
       sessionId: "session-b",
@@ -36,7 +43,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: 2,
       sessionState,
-      services: { networkCapture },
+      services: { networkCapture, temporaryTabs: {} as TemporaryTabManager },
     });
 
     expect(first.services).not.toBe(second.services);
@@ -139,7 +146,7 @@ describe("RequestToolContext", () => {
       expiresAt: 100,
       tabId: 12,
       sessionState: { setLastTab: vi.fn(async () => undefined), clearTab },
-      services: { networkCapture },
+      services: { networkCapture, temporaryTabs: {} as TemporaryTabManager },
     });
     let finished = false;
 

@@ -46,6 +46,8 @@ export const TOOL_METADATA = {
   select_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   new_tab: { tab: 'none', queue: 'global', mutatesTab: true, recordable: false },
   close_tab: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
+  keep_tab: { tab: 'optional', queue: 'session', mutatesTab: false, recordable: false },
+  cleanup_session_tabs: { tab: 'none', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_start: { tab: 'required', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_stop: { tab: 'none', queue: 'session', mutatesTab: false, recordable: false },
   browser_record_list: { tab: 'none', queue: 'none', mutatesTab: false, recordable: false },
