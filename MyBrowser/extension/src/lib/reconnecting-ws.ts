@@ -98,16 +98,7 @@ export class ReconnectingWebSocket {
 
     let reportedSessionIds: string[] = [];
     const socket = this.ws;
-    this.ws.onopen = async () => {
-      this.setState('AUTHENTICATING');
-      let collectionTimer: ReturnType<typeof setTimeout> | undefined;
-      const candidate = await Promise.race([
-        Promise.resolve().then(() => this.callbacks.beforeAuthenticate?.() ?? []).catch(() => []),
-        new Promise<unknown>((resolve) => {
-          collectionTimer = setTimeout(() => resolve([]), RECONCILIATION_COLLECTION_TIMEOUT_MS);
-        }),
-      ]);
-      if (collectionTimer) clearTimeout(collectionTimer);
+    const authenticate = (candidate: unknown): void => {
       reportedSessionIds = isBoundedSessionIdList(candidate) ? candidate : [];
       if (this.ws !== socket || this.state !== 'AUTHENTICATING') return;
       const auth: AuthRequestV2 = {
@@ -116,16 +107,32 @@ export class ReconnectingWebSocket {
         role: 'extension',
         protocolVersion: PROTOCOL_VERSION,
         browserName: this.browserName || undefined,
-        temporaryTabSessionIds: reportedSessionIds,
+        ...(reportedSessionIds.length > 0 ? { temporaryTabSessionIds: reportedSessionIds } : {}),
       };
       socket.send(JSON.stringify(auth));
-      // Start auth timeout — if server doesn't confirm within AUTH_TIMEOUT_MS, reconnect
       this.authTimer = setTimeout(() => {
         this.cleanup();
         this.setState('DISCONNECTED');
         this.callbacks.onDisconnected?.();
         this.scheduleRetry();
       }, AUTH_TIMEOUT_MS);
+    };
+    this.ws.onopen = () => {
+      this.setState('AUTHENTICATING');
+      if (!this.callbacks.beforeAuthenticate) {
+        authenticate([]);
+        return;
+      }
+      let collectionTimer: ReturnType<typeof setTimeout> | undefined;
+      Promise.race([
+        Promise.resolve().then(() => this.callbacks.beforeAuthenticate!()).catch(() => []),
+        new Promise<unknown>((resolve) => {
+          collectionTimer = setTimeout(() => resolve([]), RECONCILIATION_COLLECTION_TIMEOUT_MS);
+        }),
+      ]).then((candidate) => {
+        if (collectionTimer) clearTimeout(collectionTimer);
+        authenticate(candidate);
+      });
     };
 
     this.ws.onmessage = (event: MessageEvent) => {

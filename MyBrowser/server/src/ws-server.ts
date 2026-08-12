@@ -655,14 +655,17 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           timeoutMs = BROWSER_TIMEOUT_MS; // Browsers get longer timeout
           resetActivityTimer(); // Reset with new timeout
           connectionBrowsers.set(ws, browserId);
+          const finalizedSessionIds = finalizedSessions.intersect(
+            authRequest.temporaryTabSessionIds ?? [],
+          );
           ws.send(JSON.stringify({
             type: "auth",
             status: "ok",
             protocolVersion: PROTOCOL_VERSION,
             browserId,
-            finalizedSessionIds: finalizedSessions.intersect(
-              authRequest.temporaryTabSessionIds ?? [],
-            ),
+            ...(authRequest.temporaryTabSessionIds === undefined
+              ? {}
+              : { finalizedSessionIds }),
           }));
           recordIssue({
             level: "info",

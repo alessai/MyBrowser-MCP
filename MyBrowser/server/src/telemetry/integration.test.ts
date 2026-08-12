@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
 import { PROTOCOL_VERSION } from "../protocol.js";
-import { createServerWithTools } from "../server.js";
+import { createServerWithTools, stateManager } from "../server.js";
 import { analyzeTraceDirectory, exportTraces } from "./commands.js";
 import { TelemetryManager } from "./manager.js";
 import type { TelemetryConfig, TelemetryEvent } from "./types.js";
@@ -243,6 +243,9 @@ describe("internal telemetry real topology", () => {
       telemetry: managerB,
     });
     servers.push(serverB);
+    const browserId = (await stateManager.listBrowsers())[0]!.id;
+    await stateManager.selectBrowser(SESSION_CANARY_A, browserId);
+    await stateManager.selectBrowser(SESSION_CANARY_B, browserId);
     const clientA = await connectMcp(serverA, "task-10-client-a");
     const clientB = await connectMcp(serverB, "task-10-client-b");
 

@@ -69,7 +69,7 @@ describe('ReconnectingWebSocket temporary-tab reconciliation', () => {
     const socket = FakeWebSocket.instances[0]!;
     socket.open();
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(JSON.parse(socket.sent[0]!)).toMatchObject({ temporaryTabSessionIds: [] });
+    expect(JSON.parse(socket.sent[0]!)).not.toHaveProperty('temporaryTabSessionIds');
     client.disconnect();
   });
 
