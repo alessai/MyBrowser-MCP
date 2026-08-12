@@ -2782,7 +2782,7 @@ describe("real loopback session topology", () => {
     client.send(JSON.stringify({
       id: "invalid-keep",
       type: "keep_tab",
-      payload: { tabId: "9" },
+      payload: { tabId: 0 },
       targetBrowserId: browserB,
     }));
     await expect(clientInbox.next()).resolves.toEqual({

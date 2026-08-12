@@ -386,7 +386,6 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           sessionId,
           { notifyExtension: false },
         ),
-        () => stateManager.removeSession(sessionId),
       ]) {
         if (!ownsGeneration()) return false;
         await step(destructiveStep);
@@ -395,6 +394,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       if (generationAware && sessionGenerations.get(sessionId) !== generation) return false;
       sessionGenerations.delete(sessionId);
       finalizedSessions.add(sessionId);
+      await step(() => stateManager.removeSession(sessionId));
       if (errors.length > 0) {
         throw new AggregateError(errors, `finalizeSession(${sessionId})`);
       }
@@ -1201,7 +1201,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             && (
               typeof forwardedPayload.tabId !== "number"
               || !Number.isSafeInteger(forwardedPayload.tabId)
-              || forwardedPayload.tabId < 0
+              || forwardedPayload.tabId <= 0
             )
           ) {
             safeSend(ws, {

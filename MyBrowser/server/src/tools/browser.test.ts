@@ -69,4 +69,15 @@ describe("browser routing tools", () => {
     expect(selectBrowser.schema.description).toContain("use_default_browser");
     expect(useDefaultBrowser.schema.name).toBe("use_default_browser");
   });
+
+  it("reports how to return after selecting an override", async () => {
+    const { selectBrowser } = createBrowserTools(createState(), () => "session-a");
+
+    const result = await selectBrowser.handle(context, { browserId: "windows" });
+
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("use_default_browser"),
+    });
+  });
 });

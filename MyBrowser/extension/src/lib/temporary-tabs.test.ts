@@ -115,7 +115,7 @@ describe('TemporaryTabManager', () => {
   });
 
   it('keeps only the caller session ownership', async () => {
-    const { storage, manager } = setup();
+    const { storage, diagnostics, manager } = setup();
     storage.values.set('temporary-tabs-v1', {
       version: 1,
       sessions: {
@@ -128,13 +128,14 @@ describe('TemporaryTabManager', () => {
   });
 
   it('leaves ownership intact when keep persistence fails', async () => {
-    const { storage, manager } = setup();
+    const { storage, diagnostics, manager } = setup();
     await manager.open('session-a', 'about:blank', true);
     storage.set = vi.fn(async () => {
       throw new Error('CANARY_KEEP_FAILURE');
     });
 
-    await expect(manager.keep('session-a', 1)).rejects.toThrow('CANARY_KEEP_FAILURE');
+    await expect(manager.keep('session-a', 1)).resolves.toBe(false);
+    expect(diagnostics).toEqual(['TEMP_TAB_KEEP_PERSIST_FAILED']);
 
     storage.set = MemoryStorage.prototype.set.bind(storage);
     await expect(manager.cleanupSession('session-a')).resolves.toEqual({ closed: 1, keptForRetry: 0 });
@@ -231,6 +232,7 @@ describe('TemporaryTabManager', () => {
     await expect(manager.cleanupSession('session-a')).resolves.toEqual({ closed: 0, keptForRetry: 0 });
     expect(api.remove).not.toHaveBeenCalled();
     expect(diagnostics).toEqual(['TEMP_TAB_STATE_INVALID']);
+    expect(storage.values.has('temporary-tabs-v1')).toBe(false);
   });
 
   it('rejects accessor-backed state without reading the accessor', async () => {

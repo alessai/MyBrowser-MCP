@@ -136,6 +136,18 @@ export function isBoundedSessionIdList(value: unknown): value is string[] {
   });
 }
 
+export function intersectAdvertisedFinalizedSessions(value: unknown): string[] {
+  if (!isRecord(value) || !hasExactKeys(value, ['reportedSessionIds', 'finalizedSessionIds'])) {
+    return [];
+  }
+  if (
+    !isBoundedSessionIdList(value.reportedSessionIds)
+    || !isBoundedSessionIdList(value.finalizedSessionIds)
+  ) return [];
+  const finalized = new Set(value.finalizedSessionIds);
+  return value.reportedSessionIds.filter((sessionId) => finalized.has(sessionId));
+}
+
 function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }

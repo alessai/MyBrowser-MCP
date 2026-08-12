@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   isAuthRequestV2,
   isAuthResultV2,
+  intersectAdvertisedFinalizedSessions,
   isExtensionTraceSummaryV1,
   isTraceContextV1,
   isToolRequestV2,
@@ -56,6 +57,18 @@ describe("protocol v2", () => {
       type: "auth", status: "ok", protocolVersion: 2,
       finalizedSessionIds: ["duplicate", "duplicate"],
     })).toBe(false);
+  });
+
+  it("re-intersects finalized sessions with the exact auth advertisement", () => {
+    expect(intersectAdvertisedFinalizedSessions({
+      reportedSessionIds: ["session-a", "session-b"],
+      finalizedSessionIds: ["session-b", "session-c"],
+    })).toEqual(["session-b"]);
+    expect(intersectAdvertisedFinalizedSessions({
+      reportedSessionIds: ["session-a"],
+      finalizedSessionIds: ["session-a"],
+      extra: true,
+    })).toEqual([]);
   });
 
   it("rejects an auth result with no version", () => {

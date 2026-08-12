@@ -7,6 +7,7 @@ import { addMessageHandler, sendToTab } from '../../lib/messaging';
 import {
   GLOBAL_KEEPALIVE_ALARM_CONFIG,
   GLOBAL_KEEPALIVE_ALARM_NAME,
+  runGlobalKeepalive,
 } from '../../lib/keepalive-policy';
 import { handleTool } from '../../lib/tools';
 import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
@@ -68,7 +69,7 @@ import {
   telemetryErrorCategory,
 } from '../../lib/telemetry-summary';
 import {
-  isBoundedSessionIdList,
+  intersectAdvertisedFinalizedSessions,
   isToolRequestV2,
   type ToolResponseV2,
   type WsStatusResponse,
@@ -501,8 +502,7 @@ export default defineBackground(() => {
   addMessageHandler('_os_temp_tab_sessions', async () => temporaryTabs.trackedSessionIds());
 
   addMessageHandler('_os_reconcile_finalized_sessions', async (payload) => {
-    if (!isBoundedSessionIdList(payload)) return;
-    for (const sessionId of payload) {
+    for (const sessionId of intersectAdvertisedFinalizedSessions(payload)) {
       try {
         await temporaryTabs.cleanupSession(sessionId);
       } catch {
@@ -1004,12 +1004,17 @@ export default defineBackground(() => {
   chrome.alarms.create(GLOBAL_KEEPALIVE_ALARM_NAME, GLOBAL_KEEPALIVE_ALARM_CONFIG);
   chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === GLOBAL_KEEPALIVE_ALARM_NAME) {
-      try {
-        await getRecordingManager().retryCleanupStates();
-      } catch {
-        recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
-      }
-      await ensureAlive();
+      await runGlobalKeepalive({
+        retryTemporaryTabCleanup: () => temporaryTabs.retryPendingCleanup(),
+        retryRecordingCleanup: () => getRecordingManager().retryCleanupStates(),
+        ensureAlive,
+        reportTemporaryTabFailure: () => {
+          recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RETRY_FAILED');
+        },
+        reportRecordingFailure: () => {
+          recordExtensionIssue('recording_cleanup', 'CLEANUP_RETRY_FAILED');
+        },
+      });
     } else if (alarm.name === RECORDING_RENEWAL_ALARM) {
       await getRecordingManager().renewPersistedSessions();
     } else {

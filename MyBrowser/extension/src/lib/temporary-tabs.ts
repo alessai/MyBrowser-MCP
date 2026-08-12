@@ -27,6 +27,7 @@ interface StoredTemporaryTabsV1 {
 }
 
 type TemporaryTabDiagnostic =
+  | 'TEMP_TAB_KEEP_PERSIST_FAILED'
   | 'TEMP_TAB_ROLLBACK_FAILED'
   | 'TEMP_TAB_STATE_INVALID';
 
@@ -183,7 +184,12 @@ export class TemporaryTabManager {
       if (!session || !session.tabs.includes(tabId)) return false;
       const next = structuredClone(state);
       this.removeOwnedTab(next, sessionId, tabId);
-      await this.writeState(next);
+      try {
+        await this.writeState(next);
+      } catch {
+        this.reportDiagnostic('TEMP_TAB_KEEP_PERSIST_FAILED');
+        return false;
+      }
       return true;
     });
   }
@@ -279,6 +285,11 @@ export class TemporaryTabManager {
     const parsed = parseStoredState(raw);
     if (parsed) return parsed;
     this.reportDiagnostic('TEMP_TAB_STATE_INVALID');
+    try {
+      await this.storage.remove(STORAGE_KEY);
+    } catch {
+      // Rejected state remains non-authoritative and cannot drive tab closure.
+    }
     return emptyState();
   }
 

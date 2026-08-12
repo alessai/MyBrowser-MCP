@@ -85,7 +85,10 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
       const name = browser?.name ?? browserId;
 
       return {
-        content: [{ type: "text", text: `Active browser switched to "${name}" (${browserId})` }],
+        content: [{
+          type: "text",
+          text: `Active browser switched to "${name}" (${browserId}). Call use_default_browser to return to the shared default.`,
+        }],
       };
     },
   };

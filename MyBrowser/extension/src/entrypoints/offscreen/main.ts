@@ -169,12 +169,12 @@ function connectWithConfig(url: string, token: string, browserName?: string): vo
         return [];
       }
     },
-    onConnected(_reportedSessionIds, finalizedSessionIds) {
+    onConnected(reportedSessionIds, finalizedSessionIds) {
       postToBackground({ type: '_os_connected' });
       if (finalizedSessionIds.length > 0) {
         postToBackground({
           type: '_os_reconcile_finalized_sessions',
-          payload: finalizedSessionIds,
+          payload: { reportedSessionIds, finalizedSessionIds },
         });
       }
     },
