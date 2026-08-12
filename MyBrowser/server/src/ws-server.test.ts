@@ -341,6 +341,7 @@ async function startFakeHub(
 async function authenticate(
   ws: WebSocket,
   role: "client" | "extension",
+  extras: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const response = waitForMessage(ws);
   ws.send(JSON.stringify({
@@ -348,6 +349,7 @@ async function authenticate(
     token: TOKEN,
     role,
     protocolVersion: PROTOCOL_VERSION,
+    ...extras,
   }));
   return response;
 }
@@ -442,6 +444,15 @@ describe("FinalizedSessionRegistry", () => {
     expect(finalized.has("session-b")).toBe(false);
     expect(finalized.has("session-c")).toBe(false);
     expect(finalized.size).toBe(0);
+  });
+
+  it("returns only the bounded finalized intersection", () => {
+    const finalized = new FinalizedSessionRegistry({ ttlMs: 1_000, maxEntries: 3 });
+    finalized.add("session-a");
+    finalized.add("session-c");
+    expect(finalized.intersect(["session-c", "session-b", "session-a"])).toEqual([
+      "session-c", "session-a",
+    ]);
   });
 });
 
@@ -2703,6 +2714,23 @@ describe("WebSocket connection roles and session binding", () => {
 });
 
 describe("real loopback session topology", () => {
+  it("returns only finalized sessions reported by the authenticating extension", async () => {
+    const server = await startHub(undefined, undefined, undefined, { sessionReconnectGraceMs: 1 });
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "register", "registerSession", { sessionId: "session-finalized" });
+    client.close();
+    await vi.waitFor(() => expect(server.finalizedSessionCount()).toBe(1));
+
+    const extension = await connect(server);
+    await expect(authenticate(extension, "extension", {
+      temporaryTabSessionIds: ["session-live", "session-finalized"],
+    })).resolves.toMatchObject({
+      status: "ok",
+      finalizedSessionIds: ["session-finalized"],
+    });
+  });
+
   it("routes only approved tab-lifecycle requests to the explicitly named browser", async () => {
     const server = await startHub();
     const extensionA = await connect(server);

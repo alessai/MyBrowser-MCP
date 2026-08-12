@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   WS_CLOSE,
   isAuthResultV2,
+  isBoundedSessionIdList,
   type AuthRequestV2,
   type PingMessage,
 } from './protocol';
@@ -11,7 +12,8 @@ import {
 export type WsState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'CONNECTED';
 
 export interface ReconnectingWsCallbacks {
-  onConnected?: () => void;
+  beforeAuthenticate?: () => Promise<string[]>;
+  onConnected?: (reportedSessionIds: string[], finalizedSessionIds: string[]) => void;
   onDisconnected?: () => void;
   onMessage?: (data: string) => void;
   onProtocolError?: () => void;
@@ -24,6 +26,7 @@ const JITTER = 0.2;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const PONG_TIMEOUT_MS = 5_000;
 const AUTH_TIMEOUT_MS = 10_000;
+const RECONCILIATION_COLLECTION_TIMEOUT_MS = 2_000;
 
 export class ReconnectingWebSocket {
   private ws: WebSocket | null = null;
@@ -93,16 +96,29 @@ export class ReconnectingWebSocket {
       return;
     }
 
-    this.ws.onopen = () => {
+    let reportedSessionIds: string[] = [];
+    const socket = this.ws;
+    this.ws.onopen = async () => {
       this.setState('AUTHENTICATING');
+      let collectionTimer: ReturnType<typeof setTimeout> | undefined;
+      const candidate = await Promise.race([
+        Promise.resolve().then(() => this.callbacks.beforeAuthenticate?.() ?? []).catch(() => []),
+        new Promise<unknown>((resolve) => {
+          collectionTimer = setTimeout(() => resolve([]), RECONCILIATION_COLLECTION_TIMEOUT_MS);
+        }),
+      ]);
+      if (collectionTimer) clearTimeout(collectionTimer);
+      reportedSessionIds = isBoundedSessionIdList(candidate) ? candidate : [];
+      if (this.ws !== socket || this.state !== 'AUTHENTICATING') return;
       const auth: AuthRequestV2 = {
         type: 'auth',
         token: this.token,
         role: 'extension',
         protocolVersion: PROTOCOL_VERSION,
         browserName: this.browserName || undefined,
+        temporaryTabSessionIds: reportedSessionIds,
       };
-      this.ws!.send(JSON.stringify(auth));
+      socket.send(JSON.stringify(auth));
       // Start auth timeout — if server doesn't confirm within AUTH_TIMEOUT_MS, reconnect
       this.authTimer = setTimeout(() => {
         this.cleanup();
@@ -127,7 +143,7 @@ export class ReconnectingWebSocket {
             this.setState('CONNECTED');
             this.retryDelay = INITIAL_DELAY_MS;
             this.startHeartbeat();
-            this.callbacks.onConnected?.();
+            this.callbacks.onConnected?.(reportedSessionIds, parsed.finalizedSessionIds ?? []);
           } else if (
             this.state === 'AUTHENTICATING' &&
             'status' in parsed &&

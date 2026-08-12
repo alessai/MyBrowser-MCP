@@ -68,6 +68,7 @@ import {
   telemetryErrorCategory,
 } from '../../lib/telemetry-summary';
 import {
+  isBoundedSessionIdList,
   isToolRequestV2,
   type ToolResponseV2,
   type WsStatusResponse,
@@ -253,6 +254,7 @@ export default defineBackground(() => {
       if (termination.reason === 'session_closed') {
         await cleanupClosedSession(termination.sessionId, {
           scheduler,
+          temporaryTabs,
           sessionState,
           recordings: getRecordingManager(),
           clearEventMirrors: clearHandlersForSession,
@@ -496,6 +498,19 @@ export default defineBackground(() => {
     setBadge('disconnected');
   });
 
+  addMessageHandler('_os_temp_tab_sessions', async () => temporaryTabs.trackedSessionIds());
+
+  addMessageHandler('_os_reconcile_finalized_sessions', async (payload) => {
+    if (!isBoundedSessionIdList(payload)) return;
+    for (const sessionId of payload) {
+      try {
+        await temporaryTabs.cleanupSession(sessionId);
+      } catch {
+        recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RECONCILIATION_FAILED');
+      }
+    }
+  });
+
   addMessageHandler('_os_ws_receive', async (payload) => {
     try {
       await handleToolRequest(payload as string);
@@ -573,6 +588,14 @@ export default defineBackground(() => {
     networkCapture.clearTab(tabId);
     sessionState.clearTab(tabId).catch((error) => {
       recordExtensionIssue('tab_cleanup', 'Failed to clear closed tab state', { tabId, error });
+    });
+    temporaryTabs.forgetClosedTab(tabId).catch(() => {
+      recordExtensionIssue('temporary_tabs', 'TEMP_TAB_CLOSED_RECONCILE_FAILED');
+    });
+  });
+  chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+    temporaryTabs.replaceTab(removedTabId, addedTabId).catch(() => {
+      recordExtensionIssue('temporary_tabs', 'TEMP_TAB_REPLACED_RECONCILE_FAILED');
     });
   });
 
@@ -957,6 +980,11 @@ export default defineBackground(() => {
 
   chrome.runtime.onStartup.addListener(async () => {
     await ensureAlive();
+    try {
+      await temporaryTabs.retryPendingCleanup();
+    } catch {
+      recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RETRY_FAILED');
+    }
     try {
       await getRecordingManager().retryCleanupStates();
     } catch {

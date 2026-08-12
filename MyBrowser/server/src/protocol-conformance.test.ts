@@ -66,6 +66,41 @@ describe("protocol v2 conformance", () => {
     expect(extensionProtocol.isAuthRequestV2(request)).toBe(true);
   });
 
+  it("keeps bounded auth reconciliation guards equivalent across packages", () => {
+    const request = {
+      type: "auth", token: "token-a", role: "extension", protocolVersion: 2,
+      browserName: "browser-a", temporaryTabSessionIds: ["session-a", "session_b"],
+    };
+    const result = {
+      type: "auth", status: "ok", protocolVersion: 2,
+      browserId: "browser-a", finalizedSessionIds: ["session-a"],
+    };
+    expect(serverProtocol.isAuthRequestV2(request)).toBe(true);
+    expect(extensionProtocol.isAuthRequestV2(request)).toBe(true);
+    expect(serverProtocol.isAuthResultV2(result)).toBe(true);
+    expect(extensionProtocol.isAuthResultV2(result)).toBe(true);
+
+    for (const invalid of [
+      { ...request, role: "client" },
+      { ...request, temporaryTabSessionIds: ["same", "same"] },
+      { ...request, temporaryTabSessionIds: ["bad session"] },
+      { ...request, temporaryTabSessionIds: Array.from({ length: 65 }, (_, index) => `s${index}`) },
+      { ...request, extra: true },
+    ]) {
+      expect(serverProtocol.isAuthRequestV2(invalid)).toBe(false);
+      expect(extensionProtocol.isAuthRequestV2(invalid)).toBe(false);
+    }
+    for (const invalid of [
+      { ...result, finalizedSessionIds: ["same", "same"] },
+      { ...result, finalizedSessionIds: ["bad session"] },
+      { ...result, finalizedSessionIds: Array.from({ length: 65 }, (_, index) => `s${index}`) },
+      { ...result, extra: true },
+    ]) {
+      expect(serverProtocol.isAuthResultV2(invalid)).toBe(false);
+      expect(extensionProtocol.isAuthResultV2(invalid)).toBe(false);
+    }
+  });
+
   it("rejects invalid auth requests in both packages", () => {
     const request = {
       type: "auth",

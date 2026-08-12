@@ -9,6 +9,7 @@ import { recordIssue } from "./logger.js";
 import {
   PROTOCOL_VERSION,
   WS_CLOSE,
+  isAuthRequestV2,
   isAuthResultV2,
   isTraceContextV1,
   type AuthRequestV2,
@@ -107,6 +108,11 @@ export class FinalizedSessionRegistry {
     return this.entries.has(sessionId);
   }
 
+  intersect(sessionIds: readonly string[]): string[] {
+    this.pruneExpired();
+    return sessionIds.filter((sessionId) => this.entries.has(sessionId));
+  }
+
   private pruneExpired(): void {
     const now = this.now();
     for (const [sessionId, expiresAt] of this.entries) {
@@ -160,6 +166,7 @@ export interface WsServerResult {
   isHub: boolean;
   boundPort: number;
   pendingRecordingPersistCount: (sessionId?: string) => number;
+  finalizedSessionCount: () => number;
   /** Register a callback to be called when a client reconnects to the hub */
   onReconnect?: (cb: () => Promise<void>) => void;
 }
@@ -636,7 +643,11 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           return;
         }
 
-        const authRequest = msg as AuthRequestV2;
+        if (!isAuthRequestV2(msg)) {
+          ws.close(WS_CLOSE.unauthorized, "Invalid auth request");
+          return;
+        }
+        const authRequest = msg;
         connectionRole = authRequest.role;
 
         if (connectionRole === "extension") {
@@ -649,6 +660,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             status: "ok",
             protocolVersion: PROTOCOL_VERSION,
             browserId,
+            finalizedSessionIds: finalizedSessions.intersect(
+              authRequest.temporaryTabSessionIds ?? [],
+            ),
           }));
           recordIssue({
             level: "info",
@@ -1539,6 +1553,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     isHub: true,
     boundPort,
     pendingRecordingPersistCount,
+    finalizedSessionCount: () => finalizedSessions.size,
   };
 }
 
@@ -1790,6 +1805,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     isHub: false,
     boundPort: port,
     pendingRecordingPersistCount: () => 0,
+    finalizedSessionCount: () => 0,
     onReconnect: (cb: () => Promise<void>) => { reconnectCb = cb; },
   };
 }

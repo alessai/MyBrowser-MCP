@@ -1,3 +1,5 @@
+import { isValidV2SessionId } from "./session-id.js";
+
 export const PROTOCOL_VERSION = 2 as const;
 
 export const WS_CLOSE = {
@@ -41,6 +43,7 @@ export interface AuthRequestV2 {
   role: ConnectionRole;
   protocolVersion: typeof PROTOCOL_VERSION;
   browserName?: string;
+  temporaryTabSessionIds?: string[];
 }
 
 export interface AuthResultV2 {
@@ -48,6 +51,7 @@ export interface AuthResultV2 {
   status: "ok";
   protocolVersion: typeof PROTOCOL_VERSION;
   browserId?: string;
+  finalizedSessionIds?: string[];
 }
 
 export interface ToolRequestV2 {
@@ -154,6 +158,18 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
   return keys.length <= allowed.length && keys.every((key) => allowed.includes(key));
 }
 
+const MAX_RECONCILIATION_SESSIONS = 64;
+
+export function isBoundedSessionIdList(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > MAX_RECONCILIATION_SESSIONS) return false;
+  const seen = new Set<string>();
+  return value.every((sessionId) => {
+    if (!isValidV2SessionId(sessionId) || seen.has(sessionId)) return false;
+    seen.add(sessionId);
+    return true;
+  });
+}
+
 function validTiming(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
     && value >= 0 && value <= MAX_EXTENSION_TIMING_MS;
@@ -195,24 +211,32 @@ export function isExtensionTraceSummaryV1(value: unknown): value is ExtensionTra
 
 export function isAuthRequestV2(value: unknown): value is AuthRequestV2 {
   if (!isRecord(value)) return false;
-
+  if (!hasOnlyKeys(value, [
+    "type", "token", "role", "protocolVersion", "browserName", "temporaryTabSessionIds",
+  ])) return false;
   return (
     value.type === "auth" &&
     typeof value.token === "string" &&
     CONNECTION_ROLES.some((role) => role === value.role) &&
     value.protocolVersion === PROTOCOL_VERSION &&
-    (value.browserName === undefined || typeof value.browserName === "string")
+    (value.browserName === undefined || typeof value.browserName === "string") &&
+    (value.temporaryTabSessionIds === undefined || (
+      value.role === "extension" && isBoundedSessionIdList(value.temporaryTabSessionIds)
+    ))
   );
 }
 
 export function isAuthResultV2(value: unknown): value is AuthResultV2 {
   if (!isRecord(value)) return false;
-
+  if (!hasOnlyKeys(value, [
+    "type", "status", "protocolVersion", "browserId", "finalizedSessionIds",
+  ])) return false;
   return (
     value.type === "auth" &&
     value.status === "ok" &&
     value.protocolVersion === PROTOCOL_VERSION &&
-    (value.browserId === undefined || typeof value.browserId === "string")
+    (value.browserId === undefined || typeof value.browserId === "string") &&
+    (value.finalizedSessionIds === undefined || isBoundedSessionIdList(value.finalizedSessionIds))
   );
 }
 

@@ -285,6 +285,7 @@ describe("SessionStateStore", () => {
 describe("session_closed cleanup", () => {
   type CleanupDependencies = {
     scheduler: { cancelSession: (sessionId: string, code: "SESSION_CLOSED") => void };
+    temporaryTabs: { cleanupSession: (sessionId: string) => Promise<unknown> };
     sessionState: { clearSession: (sessionId: string) => Promise<void> };
     recordings: { abortSession: (sessionId: string) => Promise<void> };
     clearEventMirrors: (sessionId: string) => void;
@@ -303,6 +304,12 @@ describe("session_closed cleanup", () => {
         cancelSession: () => {
           order.push("scheduler.cancelSession");
           throw new Error("CANARY_SCHEDULER_SECRET");
+        },
+      },
+      temporaryTabs: {
+        cleanupSession: async () => {
+          order.push("temporaryTabs.cleanupSession");
+          throw new Error("CANARY_TAB_SECRET");
         },
       },
       sessionState: {
@@ -326,12 +333,14 @@ describe("session_closed cleanup", () => {
 
     expect(order).toEqual([
       "scheduler.cancelSession",
+      "temporaryTabs.cleanupSession",
       "sessionState.clearSession",
       "recordings.abortSession",
       "events.clearSession",
     ]);
     expect(failures).toEqual([
       "SESSION_CLEANUP_SCHEDULER_FAILED",
+      "SESSION_CLEANUP_TABS_FAILED",
       "SESSION_CLEANUP_RECORDINGS_FAILED",
     ]);
     expect(JSON.stringify(failures)).not.toContain("CANARY");
@@ -362,6 +371,7 @@ describe("session_closed cleanup", () => {
     const failures: string[] = [];
     const dependencies: CleanupDependencies = {
       scheduler: { cancelSession: () => undefined },
+      temporaryTabs: { cleanupSession: async () => undefined },
       sessionState: { clearSession: (sessionId) => state.clearSession(sessionId) },
       recordings: {
         abortSession: async (sessionId) => {

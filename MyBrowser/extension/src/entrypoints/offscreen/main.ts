@@ -161,8 +161,22 @@ chrome.runtime.onMessage.addListener(
 function connectWithConfig(url: string, token: string, browserName?: string): void {
   lastConfig = { url, token, browserName };
   ws.connect(url, token, {
-    onConnected() {
+    async beforeAuthenticate() {
+      try {
+        const sessionIds = await chrome.runtime.sendMessage({ type: '_os_temp_tab_sessions' });
+        return Array.isArray(sessionIds) ? sessionIds : [];
+      } catch {
+        return [];
+      }
+    },
+    onConnected(_reportedSessionIds, finalizedSessionIds) {
       postToBackground({ type: '_os_connected' });
+      if (finalizedSessionIds.length > 0) {
+        postToBackground({
+          type: '_os_reconcile_finalized_sessions',
+          payload: finalizedSessionIds,
+        });
+      }
     },
     onDisconnected() {
       postToBackground({ type: '_os_disconnected' });

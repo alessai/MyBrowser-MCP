@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROTOCOL_VERSION,
+  isAuthRequestV2,
   isAuthResultV2,
   isExtensionTraceSummaryV1,
   isTraceContextV1,
@@ -30,6 +31,31 @@ describe("protocol v2", () => {
         browserId: "browser-a",
       }),
     ).toBe(true);
+  });
+
+  it("accepts only bounded extension-owned session reconciliation fields", () => {
+    const sessions = ["session-a", "session_b"];
+    expect(isAuthRequestV2({
+      type: "auth", token: "token", role: "extension", protocolVersion: 2,
+      browserName: "browser-a", temporaryTabSessionIds: sessions,
+    })).toBe(true);
+    expect(isAuthResultV2({
+      type: "auth", status: "ok", protocolVersion: 2,
+      browserId: "browser-a", finalizedSessionIds: ["session-a"],
+    })).toBe(true);
+
+    for (const invalid of [
+      { type: "auth", token: "token", role: "client", protocolVersion: 2, temporaryTabSessionIds: sessions },
+      { type: "auth", token: "token", role: "extension", protocolVersion: 2, temporaryTabSessionIds: ["duplicate", "duplicate"] },
+      { type: "auth", token: "token", role: "extension", protocolVersion: 2, temporaryTabSessionIds: ["bad session"] },
+      { type: "auth", token: "token", role: "extension", protocolVersion: 2, temporaryTabSessionIds: Array.from({ length: 65 }, (_, index) => `s${index}`) },
+      { type: "auth", token: "token", role: "extension", protocolVersion: 2, temporaryTabSessionIds: sessions, extra: true },
+    ]) expect(isAuthRequestV2(invalid)).toBe(false);
+
+    expect(isAuthResultV2({
+      type: "auth", status: "ok", protocolVersion: 2,
+      finalizedSessionIds: ["duplicate", "duplicate"],
+    })).toBe(false);
   });
 
   it("rejects an auth result with no version", () => {

@@ -92,6 +92,7 @@ export function listHandlers(): EventHandler[] {
 
 type SessionCleanupFailureCode =
   | "SESSION_CLEANUP_SCHEDULER_FAILED"
+  | "SESSION_CLEANUP_TABS_FAILED"
   | "SESSION_CLEANUP_STATE_FAILED"
   | "SESSION_CLEANUP_RECORDINGS_FAILED"
   | "SESSION_CLEANUP_EVENTS_FAILED";
@@ -99,6 +100,9 @@ type SessionCleanupFailureCode =
 export interface SessionCleanupDependencies {
   scheduler: {
     cancelSession(sessionId: string, code: "SESSION_CLOSED"): void;
+  };
+  temporaryTabs: {
+    cleanupSession(sessionId: string): Promise<unknown>;
   };
   sessionState: {
     clearSession(sessionId: string): Promise<void>;
@@ -131,6 +135,9 @@ export async function cleanupClosedSession(
 
   await run("SESSION_CLEANUP_SCHEDULER_FAILED", () => (
     dependencies.scheduler.cancelSession(sessionId, "SESSION_CLOSED")
+  ));
+  await run("SESSION_CLEANUP_TABS_FAILED", () => (
+    dependencies.temporaryTabs.cleanupSession(sessionId)
   ));
   await run("SESSION_CLEANUP_STATE_FAILED", () => (
     dependencies.sessionState.clearSession(sessionId)
