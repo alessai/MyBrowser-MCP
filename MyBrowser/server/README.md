@@ -91,7 +91,16 @@ Useful support tools:
 3. `browser_get_console_logs` - returns browser page console logs
 4. `browser_network` - captures and inspects network requests
 5. `browser_set_viewport` / `browser_reset_viewport` - applies or clears iPhone, iPad, and desktop viewport emulation
-6. `list_browsers`, `select_browser`, `set_default_browser`, `get_default_browser`, `clear_default_browser` - manage multi-browser routing
+6. `list_browsers`, `select_browser`, `use_default_browser`, `set_default_browser`, `get_default_browser`, `clear_default_browser` - manage multi-browser routing
+7. `new_tab`, `keep_tab`, `browser_cleanup` - open temporary research tabs, preserve selected tabs, and clean up session-owned tabs
+
+## Browser Routing and Temporary Tabs
+
+Normal tool calls use the shared default browser. Use `select_browser` only when the user explicitly requests another browser; the session override expires after 30 minutes of tool inactivity and can be cleared immediately with `use_default_browser`. If a configured default is disconnected, routing fails closed instead of silently switching to another browser. `set_default_browser` updates the shared default and returns only the calling session to it.
+
+`new_tab` creates a session-owned temporary tab by default. Pass `temporary: false` when it should persist, or call `keep_tab` before cleanup. After browser research, call `browser_cleanup` on both success and failure paths. It closes tracked temporary tabs on currently connected browsers, releases the caller's tab claims, and restores default routing. Manual, pre-existing, popup-created, non-temporary, kept, and other-session tabs are never inferred as owned and are not closed.
+
+Finalized sessions are cleaned automatically. If a browser was disconnected during finalization, its extension reports only the bounded session IDs in its local temporary-tab registry during authenticated reconnect; the hub returns only the matching in-memory finalized sessions. Older compatible peers can omit these optional fields. Temporary ownership uses `chrome.storage.session`; exact survival across a full browser restart or extension reload depends on Chrome. An abrupt hub-process death loses in-memory finalization tombstones, and explicit cleanup intentionally leaves no standing intent for a disconnected browser because it could otherwise close newer tabs after reconnect.
 
 ## Optional Internal Tool Telemetry
 

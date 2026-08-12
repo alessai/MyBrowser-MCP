@@ -18,7 +18,7 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
     schema: {
       name: "list_browsers",
       description:
-        "List all connected browser instances. Each browser has a unique ID that can be used with select_browser to route tool commands to that browser.",
+        "List connected browsers. Let normal calls use the shared default; call select_browser only when the user explicitly requests another browser.",
       inputSchema: zodToJsonSchema(z.object({})),
     },
     handle: async (context) => {

@@ -32,4 +32,13 @@ describe("release package contract", () => {
     expect(serverPackage.scripts.clean).toContain("rmSync('dist'");
     expect(serverPackage.scripts.build).toContain("chmodSync('dist/index.js'");
   });
+
+  it("publishes the browser routing and temporary-tab operating contract", () => {
+    const browserTools = readFileSync(new URL("./tools/browser.ts", import.meta.url), "utf8");
+    const tabTools = readFileSync(new URL("./tools/tabs.ts", import.meta.url), "utf8");
+
+    expect(browserTools).toContain("only when the user explicitly requests another browser");
+    expect(tabTools).toContain("temporary tab by default");
+    expect(tabTools).toContain("including failure paths");
+  });
 });
