@@ -169,9 +169,11 @@ const policies = {
     tabId: TAB_ID,
   }),
   list_tabs: immutablePolicy({}),
-  new_tab: immutablePolicy({ url: url() }),
+  new_tab: immutablePolicy({ url: url(), temporary: boolean() }),
   close_tab: immutablePolicy({ tabId: TAB_ID }),
   select_tab: immutablePolicy({ tabId: TAB_ID }),
+  keep_tab: immutablePolicy({ tabId: TAB_ID, browserId: BROWSER_ID }),
+  browser_cleanup: immutablePolicy({}),
   browser_clipboard: immutablePolicy({
     action: enumeration("read", "write", "paste"),
     text: textLength(),

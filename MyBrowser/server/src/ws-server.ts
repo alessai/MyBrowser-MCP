@@ -178,6 +178,7 @@ const EVENT_MIRROR_CONTROL_TYPES = new Set([
   "browser_unregister_handler",
   "browser_list_handlers",
 ]);
+const TARGETED_TAB_LIFECYCLE_TYPES = new Set(["keep_tab", "cleanup_session_tabs"]);
 const RECORDING_CONTROL_TYPES = new Set([
   "renewRecordingReservation",
   "persistRecording",
@@ -1167,7 +1168,36 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         }
         let forwardedPayload = isRecord(msg.payload) ? msg.payload : {};
         let resolvedBrowserId: string | undefined;
-        if (EVENT_MIRROR_CONTROL_TYPES.has(msg.type)) {
+        if (TARGETED_TAB_LIFECYCLE_TYPES.has(msg.type)) {
+          const requestedBrowserId = typeof msg.targetBrowserId === "string"
+            ? msg.targetBrowserId
+            : undefined;
+          if (!requestedBrowserId) {
+            safeSend(ws, {
+              type: MESSAGE_RESPONSE_TYPE,
+              payload: { requestId: msg.id, error: "AUTH_ROLE_VIOLATION" },
+            });
+            return;
+          }
+          if (
+            msg.type === "keep_tab"
+            && (
+              typeof forwardedPayload.tabId !== "number"
+              || !Number.isSafeInteger(forwardedPayload.tabId)
+              || forwardedPayload.tabId < 0
+            )
+          ) {
+            safeSend(ws, {
+              type: MESSAGE_RESPONSE_TYPE,
+              payload: { requestId: msg.id, error: "INVALID_TOOL_PAYLOAD" },
+            });
+            return;
+          }
+          resolvedBrowserId = requestedBrowserId;
+          forwardedPayload = msg.type === "keep_tab"
+            ? { tabId: forwardedPayload.tabId }
+            : {};
+        } else if (EVENT_MIRROR_CONTROL_TYPES.has(msg.type)) {
           const ownHandlers = await stateManager.listEventHandlers(clientSessionId);
           if (msg.type === "browser_register_handler") {
             const rawHandler = isRecord(forwardedPayload.handler)

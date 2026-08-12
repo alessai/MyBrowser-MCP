@@ -32,7 +32,7 @@ import { screenshot, getConsoleLogs } from "./tools/media.js";
 import { setViewport, resetViewport, viewportInfo } from "./tools/viewport.js";
 
 // Tab tools
-import { listTabs, selectTab, newTab, closeTab } from "./tools/tabs.js";
+import { createTabTools } from "./tools/tabs.js";
 
 // ULTRA tools
 import { extract } from "./tools/extract.js";
@@ -251,6 +251,12 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   const { notesList, notesGet, notesArchive, notesUnarchive, notesDelete } = createNotesTools(stateManager);
   const { browserOn, browserOff, browserEventsList, browserWaitForEvent } = createEventsTools(stateManager, () => sessionId, getActiveBrowser);
   const { browserLock, browserUnlock, browserLocksList } = createLockTools(stateManager, () => sessionId);
+  const { listTabs, selectTab, newTab, closeTab, keepTab, browserCleanup } = createTabTools({
+    stateManager,
+    context,
+    getSessionId: () => sessionId,
+    getActiveBrowser,
+  });
   const { recordStart, recordStop, recordList } = createRecordingTools(
     stateManager,
     () => sessionId,
@@ -281,7 +287,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     // Viewport / device emulation
     setViewport, resetViewport, viewportInfo,
     // Tab management
-    listTabs, selectTab, newTab, closeTab,
+    listTabs, selectTab, newTab, closeTab, keepTab, browserCleanup,
     // ULTRA
     extract, find, fillForm, action, waitFor, assert,
     // Recording & Replay

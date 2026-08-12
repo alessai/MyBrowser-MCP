@@ -2703,6 +2703,67 @@ describe("WebSocket connection roles and session binding", () => {
 });
 
 describe("real loopback session topology", () => {
+  it("routes only approved tab-lifecycle requests to the explicitly named browser", async () => {
+    const server = await startHub();
+    const extensionA = await connect(server);
+    const browserA = (await authenticate(extensionA, "extension")).browserId as string;
+    const extensionB = await connect(server);
+    const browserB = (await authenticate(extensionB, "extension")).browserId as string;
+    const inboxA = createMessageInbox(extensionA);
+    const inboxB = createMessageInbox(extensionB);
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "register", "registerSession", { sessionId: "session-a" });
+    const clientInbox = createMessageInbox(client);
+
+    client.send(JSON.stringify({
+      id: "cleanup-a",
+      type: "cleanup_session_tabs",
+      payload: { sessionId: "spoofed", raw: "CANARY" },
+      targetBrowserId: browserA,
+    }));
+    const forwardedA = await inboxA.next();
+    expect(forwardedA).toMatchObject({
+      type: "cleanup_session_tabs",
+      payload: {},
+      sessionId: "session-a",
+    });
+    expect(inboxB.all).toEqual([]);
+    extensionA.send(JSON.stringify({
+      type: "messageResponse",
+      payload: { requestId: forwardedA.id, result: { closed: 1 } },
+    }));
+    await expect(clientInbox.next()).resolves.toMatchObject({
+      payload: { requestId: "cleanup-a", result: { closed: 1 } },
+    });
+
+    client.send(JSON.stringify({
+      id: "keep-b",
+      type: "keep_tab",
+      payload: { tabId: 9, raw: "CANARY" },
+      targetBrowserId: browserB,
+    }));
+    const forwardedB = await inboxB.next();
+    expect(forwardedB).toMatchObject({
+      type: "keep_tab",
+      payload: { tabId: 9 },
+      sessionId: "session-a",
+    });
+    expect(inboxA.all).toEqual([]);
+
+    client.send(JSON.stringify({
+      id: "invalid-keep",
+      type: "keep_tab",
+      payload: { tabId: "9" },
+      targetBrowserId: browserB,
+    }));
+    await expect(clientInbox.next()).resolves.toEqual({
+      type: "messageResponse",
+      payload: { requestId: "invalid-keep", error: "INVALID_TOOL_PAYLOAD" },
+    });
+    expect(inboxB.all).toEqual([]);
+  });
+
   it("preserves valid trace correlation through hub rewrites without trusting it for routing", async () => {
     const server = await startHub();
     const extension = await connect(server);
@@ -3597,6 +3658,7 @@ describe("real loopback session topology", () => {
     const clientB = await connect(server);
     await authenticate(clientB, "client");
     await callHubRpc(clientB, "register-b", "registerSession", { sessionId: "session-b" });
+    await callHubRpc(clientB, "select-b", "selectBrowser", { browserId });
     await callHubRpc(clientA, "lock-owner", "acquireLock", {
       name: "shutdown-lock",
       timeoutMs: 60_000,
