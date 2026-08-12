@@ -20,6 +20,8 @@ import {
 import { loadPreferences, savePreferences } from "./preferences.js";
 import { isValidV2SessionId } from "./session-id.js";
 
+export const SESSION_BROWSER_OVERRIDE_IDLE_MS = 1_800_000;
+
 export type { NoteMetadata, NoteStatus, Note, SaveNoteInput } from "./notes.js";
 
 // ---- Lock types (F3 browser_lock) ----
@@ -149,6 +151,7 @@ export type BrowserTargetResolution =
         | "no_browsers"
         | "multiple_browsers"
         | "session_browser_disconnected"
+        | "default_browser_disconnected"
         | "default_browser_duplicate";
       message: string;
       defaultBrowserName?: string;
@@ -205,6 +208,7 @@ export interface IStateManager {
   // Per-session browser targeting
   selectBrowser(sessionId: string, browserId: string): Promise<void>;
   getSessionBrowser(sessionId: string): Promise<string | undefined>;
+  clearSessionBrowser(sessionId: string): Promise<boolean>;
   setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo>;
   getDefaultBrowser(): Promise<DefaultBrowserInfo>;
   clearDefaultBrowser(): Promise<void>;
@@ -368,15 +372,29 @@ export class LocalStateManager implements IStateManager {
 
   // -- Sessions --
 
+  private expireSessionBrowserOverride(
+    session: { activeBrowserId?: string; lastActivity: number },
+    now: number,
+  ): void {
+    if (
+      session.activeBrowserId
+      && now - session.lastActivity >= SESSION_BROWSER_OVERRIDE_IDLE_MS
+    ) {
+      delete session.activeBrowserId;
+    }
+  }
+
   async registerSession(sessionId: string, name?: string): Promise<void> {
     if (!isValidV2SessionId(sessionId)) throw new Error("INVALID_SESSION_ID");
     const existing = this.sessions.get(sessionId);
+    const now = Date.now();
+    if (existing) this.expireSessionBrowserOverride(existing, now);
     this.sessions.set(sessionId, {
       id: sessionId,
       name: name ?? existing?.name ?? sessionId,
       ownedTabs: existing?.ownedTabs ?? new Set(),
       activeBrowserId: existing?.activeBrowserId,
-      lastActivity: Date.now(),
+      lastActivity: now,
     });
   }
 
@@ -395,7 +413,11 @@ export class LocalStateManager implements IStateManager {
 
   async touchSession(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId);
-    if (s) s.lastActivity = Date.now();
+    if (s) {
+      const now = Date.now();
+      this.expireSessionBrowserOverride(s, now);
+      s.lastActivity = now;
+    }
   }
 
   async listSessions(): Promise<SessionInfo[]> {
@@ -618,6 +640,13 @@ export class LocalStateManager implements IStateManager {
     return this.sessions.get(sessionId)?.activeBrowserId;
   }
 
+  async clearSessionBrowser(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session?.activeBrowserId) return false;
+    delete session.activeBrowserId;
+    return true;
+  }
+
   async setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo> {
     const browsers = this._listBrowsersFn();
     const browser = browsers.find((b) => b.id === browserId);
@@ -673,6 +702,16 @@ export class LocalStateManager implements IStateManager {
     }
 
     const defaultBrowserName = this.preferences.defaultBrowserName;
+    if (browsers.length === 0) {
+      return {
+        ok: false,
+        reason: "no_browsers",
+        message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}No browser connected. Connect a browser by installing the MyBrowser extension and entering the server address and auth token in the extension settings.`,
+        defaultBrowserName,
+        connectedBrowsers: browsers,
+      };
+    }
+
     if (defaultBrowserName) {
       const matches = browsers.filter((b) => b.name === defaultBrowserName);
       if (matches.length === 1) {
@@ -693,6 +732,13 @@ export class LocalStateManager implements IStateManager {
           connectedBrowsers: browsers,
         };
       }
+      return {
+        ok: false,
+        reason: "default_browser_disconnected",
+        message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}Default browser "${defaultBrowserName}" is not connected. Reconnect it, use select_browser for an explicit session override, or set_default_browser to change the shared default.`,
+        defaultBrowserName,
+        connectedBrowsers: browsers,
+      };
     }
 
     if (browsers.length === 1) {
@@ -705,24 +751,12 @@ export class LocalStateManager implements IStateManager {
       };
     }
 
-    if (browsers.length === 0) {
-      return {
-        ok: false,
-        reason: "no_browsers",
-        message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}No browser connected. Connect a browser by installing the MyBrowser extension and entering the server address and auth token in the extension settings.`,
-        defaultBrowserName,
-        connectedBrowsers: browsers,
-      };
-    }
-
     return {
       ok: false,
       reason: staleSelectedBrowserId
         ? "session_browser_disconnected"
         : "multiple_browsers",
-      message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}${defaultBrowserName
-        ? `Default browser "${defaultBrowserName}" is not connected, and multiple browsers are connected. Use select_browser to choose one for this session or set_default_browser to change the default.`
-        : "Multiple browsers connected. Use list_browsers and select_browser to choose one, or set_default_browser to save a shared default."}`,
+      message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}Multiple browsers connected. Use list_browsers and select_browser to choose one, or set_default_browser to save a shared default.`,
       defaultBrowserName,
       connectedBrowsers: browsers,
     };

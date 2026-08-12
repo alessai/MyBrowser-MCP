@@ -268,6 +268,7 @@ const policies = {
   browser_locks_list: immutablePolicy({}),
   list_browsers: immutablePolicy({}),
   select_browser: immutablePolicy({ browserId: BROWSER_ID }),
+  use_default_browser: immutablePolicy({}),
   set_default_browser: immutablePolicy({ browserId: BROWSER_ID }),
   get_default_browser: immutablePolicy({}),
   clear_default_browser: immutablePolicy({}),

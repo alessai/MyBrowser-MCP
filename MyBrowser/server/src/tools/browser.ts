@@ -62,7 +62,7 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
     schema: {
       name: "select_browser",
       description:
-        "Set the active browser for this session. All subsequent tool commands will be routed to this browser. Use list_browsers to see available browser IDs.",
+        "Set the active browser for this session. Use only when the user explicitly asked for a non-default browser. The override lasts until use_default_browser, browser_cleanup, session closure, or 30 minutes of tool inactivity.",
       inputSchema: zodToJsonSchema(SelectBrowserArgs),
     },
     handle: async (context, params) => {
@@ -90,6 +90,35 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
     },
   };
 
+  const useDefaultBrowser: Tool = {
+    schema: {
+      name: "use_default_browser",
+      description:
+        "Clear this session's browser override and return routing to the shared default browser.",
+      inputSchema: zodToJsonSchema(EmptyArgs),
+    },
+    handle: async (context) => {
+      const sessionId = getSessionId();
+      await sm.clearSessionBrowser(sessionId);
+      const resolution = await sm.resolveBrowserTarget(sessionId);
+      if (!resolution.ok) {
+        return {
+          content: [{
+            type: "text",
+            text: `Session browser override cleared. Routing now fails closed: ${resolution.message}`,
+          }],
+        };
+      }
+      if (!context.isClientMode) context.setActiveBrowser(resolution.browserId);
+      return {
+        content: [{
+          type: "text",
+          text: `Session now follows the shared default browser "${resolution.browserName}" (${resolution.browserId}).`,
+        }],
+      };
+    },
+  };
+
   const setDefaultBrowser: Tool = {
     schema: {
       name: "set_default_browser",
@@ -97,20 +126,19 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
         "Save a shared default browser by stable browser name. Use this when multiple browsers are connected and you want future tool calls to prefer one browser unless a session-specific select_browser override is set.",
       inputSchema: zodToJsonSchema(SetDefaultBrowserArgs),
     },
-    handle: async (_context, params) => {
+    handle: async (context, params) => {
       const { browserId } = SetDefaultBrowserArgs.parse(params);
       const info = await sm.setDefaultBrowser(browserId);
+      await sm.clearSessionBrowser(getSessionId());
       const name = info.resolvedBrowserName ?? info.defaultBrowserName ?? browserId;
       const resolvedId = info.resolvedBrowserId ?? browserId;
-      const sessionBrowser = await sm.getSessionBrowser(getSessionId());
-      const sessionNote =
-        sessionBrowser && sessionBrowser !== resolvedId
-          ? ` Note: this session is still pinned to ${sessionBrowser}; run select_browser with ${resolvedId} if you want this session to use the new default target immediately.`
-          : "";
+      if (!context.isClientMode && info.resolvedBrowserId) {
+        context.setActiveBrowser(info.resolvedBrowserId);
+      }
       return {
         content: [{
           type: "text",
-          text: `Default browser set to "${name}" (${resolvedId}). This stores the browser name, not the temporary ID. It is used whenever a session has not selected a different browser with select_browser.${sessionNote}`,
+          text: `Default browser set to "${name}" (${resolvedId}). This stores the browser name, not the temporary ID. This session now follows the new shared default.`,
         }],
       };
     },
@@ -146,5 +174,12 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
     },
   };
 
-  return { listBrowsers, selectBrowser, setDefaultBrowser, getDefaultBrowser, clearDefaultBrowser };
+  return {
+    listBrowsers,
+    selectBrowser,
+    useDefaultBrowser,
+    setDefaultBrowser,
+    getDefaultBrowser,
+    clearDefaultBrowser,
+  };
 }

@@ -238,6 +238,10 @@ export class HubStateManager implements IStateManager {
     return (await this.sendRpc("getSessionBrowser")) as string | undefined;
   }
 
+  async clearSessionBrowser(_sessionId: string): Promise<boolean> {
+    return (await this.sendRpc("clearSessionBrowser")) as boolean;
+  }
+
   async setDefaultBrowser(browserId: string): Promise<DefaultBrowserInfo> {
     return (await this.sendRpc("setDefaultBrowser", { browserId })) as DefaultBrowserInfo;
   }

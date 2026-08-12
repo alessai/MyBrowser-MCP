@@ -243,6 +243,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   const {
     listBrowsers,
     selectBrowser,
+    useDefaultBrowser,
     setDefaultBrowser,
     getDefaultBrowser,
     clearDefaultBrowser,
@@ -288,7 +289,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     // Site knowledge
     learn, siteInfo,
     // Multi-browser
-    listBrowsers, selectBrowser, setDefaultBrowser, getDefaultBrowser, clearDefaultBrowser,
+    listBrowsers, selectBrowser, useDefaultBrowser, setDefaultBrowser, getDefaultBrowser, clearDefaultBrowser,
     // Multi-session coordination
     claimTab, releaseTab, sessions, handoff,
     // Shared state

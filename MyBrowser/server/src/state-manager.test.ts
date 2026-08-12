@@ -1,9 +1,101 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "./context.js";
-import { LocalStateManager } from "./state-manager.js";
+import {
+  LocalStateManager,
+  SESSION_BROWSER_OVERRIDE_IDLE_MS,
+} from "./state-manager.js";
 import { createEventsTools } from "./tools/events.js";
 
 const LEASE_MS = 1_800_000;
+
+describe("LocalStateManager browser routing", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function createState() {
+    const state = new LocalStateManager();
+    let browsers = [
+      { id: "ubuntu", name: "ChromeUbunut", connectedAt: Date.now() },
+      { id: "windows", name: "Mainpc", connectedAt: Date.now() },
+    ];
+    state.setListBrowsersFn(() => browsers);
+    (state as unknown as { preferences: { defaultBrowserName?: string } }).preferences = {
+      defaultBrowserName: "ChromeUbunut",
+    };
+    return {
+      state,
+      setBrowsers(next: typeof browsers) {
+        browsers = next;
+      },
+    };
+  }
+
+  it("clears only the requested session browser override", async () => {
+    const { state } = createState();
+    await state.registerSession("session-a");
+    await state.registerSession("session-b");
+    await state.selectBrowser("session-a", "windows");
+    await state.selectBrowser("session-b", "windows");
+
+    await expect(state.clearSessionBrowser("session-a")).resolves.toBe(true);
+    await expect(state.clearSessionBrowser("session-a")).resolves.toBe(false);
+    await expect(state.resolveBrowserTarget("session-a")).resolves.toMatchObject({
+      ok: true,
+      browserId: "ubuntu",
+      source: "default",
+    });
+    await expect(state.getSessionBrowser("session-b")).resolves.toBe("windows");
+  });
+
+  it("expires an override at exactly 30 minutes of inactivity", async () => {
+    const { state } = createState();
+    await state.registerSession("session-a");
+    await state.selectBrowser("session-a", "windows");
+
+    vi.setSystemTime(Date.now() + SESSION_BROWSER_OVERRIDE_IDLE_MS - 1);
+    await state.touchSession("session-a");
+    await expect(state.getSessionBrowser("session-a")).resolves.toBe("windows");
+
+    await state.selectBrowser("session-a", "windows");
+    vi.setSystemTime(Date.now() + SESSION_BROWSER_OVERRIDE_IDLE_MS);
+    await state.touchSession("session-a");
+    await expect(state.getSessionBrowser("session-a")).resolves.toBeUndefined();
+  });
+
+  it("does not let reconnect refresh a stale browser override", async () => {
+    const { state } = createState();
+    await state.registerSession("session-a");
+    await state.selectBrowser("session-a", "windows");
+
+    vi.setSystemTime(Date.now() + SESSION_BROWSER_OVERRIDE_IDLE_MS);
+    await state.registerSession("session-a", "reconnected");
+
+    await expect(state.getSessionBrowser("session-a")).resolves.toBeUndefined();
+    await expect(state.resolveBrowserTarget("session-a")).resolves.toMatchObject({
+      ok: true,
+      browserId: "ubuntu",
+      source: "default",
+    });
+  });
+
+  it("fails closed when the configured default is disconnected", async () => {
+    const { state, setBrowsers } = createState();
+    await state.registerSession("session-a");
+    setBrowsers([{ id: "windows", name: "Mainpc", connectedAt: Date.now() }]);
+
+    await expect(state.resolveBrowserTarget("session-a")).resolves.toMatchObject({
+      ok: false,
+      reason: "default_browser_disconnected",
+      defaultBrowserName: "ChromeUbunut",
+    });
+  });
+});
 
 describe("LocalStateManager recording reservations", () => {
   beforeEach(() => {

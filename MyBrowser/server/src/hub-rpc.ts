@@ -96,6 +96,8 @@ export async function dispatchHubRpc(
       return { ok: true };
     case "getSessionBrowser":
       return await stateManager.getSessionBrowser(auth.sessionId);
+    case "clearSessionBrowser":
+      return await stateManager.clearSessionBrowser(auth.sessionId);
     case "setDefaultBrowser":
       return await stateManager.setDefaultBrowser(requireString(params, "browserId"));
     case "getDefaultBrowser":

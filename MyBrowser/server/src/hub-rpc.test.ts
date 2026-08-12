@@ -113,6 +113,7 @@ function createState() {
     clearEventHandlersForBrowser: vi.fn().mockResolvedValue(undefined),
     pushEvent: vi.fn().mockResolvedValue(undefined),
     releaseLocksForSession: vi.fn().mockResolvedValue(undefined),
+    clearSessionBrowser: vi.fn().mockResolvedValue(true),
   } as unknown as IStateManager;
 }
 
@@ -191,6 +192,16 @@ describe("dispatchHubRpc", () => {
     expect(state.releaseLocksForSession).toHaveBeenCalledWith("actual");
   });
 
+  it("clears only the authenticated session browser override", async () => {
+    const state = createState();
+
+    await dispatchHubRpc(state, AUTH, "clearSessionBrowser", {
+      sessionId: "spoofed",
+    });
+
+    expect(state.clearSessionBrowser).toHaveBeenCalledWith("actual");
+  });
+
   it.each([
     ["reserveRecording", "reserveRecording", { name: "demo", leaseMs: 1_800_000 }],
     ["renewRecordingReservation", "renewRecordingReservation", { name: "demo", leaseMs: 1_800_000 }],
@@ -257,6 +268,7 @@ describe("HubStateManager subject identity", () => {
       (state: HubStateManager) => state.selectBrowser("local", "b1"),
       { browserId: "b1" },
     ],
+    ["clearSessionBrowser", (state: HubStateManager) => state.clearSessionBrowser("local"), {}],
     ["getSessionBrowser", (state: HubStateManager) => state.getSessionBrowser("local"), {}],
     ["resolveBrowserTarget", (state: HubStateManager) => state.resolveBrowserTarget("local"), {}],
     [
