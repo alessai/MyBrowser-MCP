@@ -162,12 +162,11 @@ function connectWithConfig(url: string, token: string, browserName?: string): vo
   lastConfig = { url, token, browserName };
   ws.connect(url, token, {
     async beforeAuthenticate() {
-      try {
-        const sessionIds = await chrome.runtime.sendMessage({ type: '_os_temp_tab_sessions' });
-        return Array.isArray(sessionIds) ? sessionIds : [];
-      } catch {
-        return [];
-      }
+      const sessionIds = await chrome.runtime.sendMessage({ type: '_os_temp_tab_sessions' });
+      return Array.isArray(sessionIds) ? sessionIds : [];
+    },
+    onReconciliationError() {
+      postToBackground({ type: '_os_reconciliation_error' });
     },
     onConnected(reportedSessionIds, finalizedSessionIds) {
       postToBackground({ type: '_os_connected' });

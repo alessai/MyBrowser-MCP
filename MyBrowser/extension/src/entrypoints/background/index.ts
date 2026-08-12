@@ -18,6 +18,7 @@ import {
 } from '../../lib/request-scheduler';
 import { ChromeSessionStorageAdapter, SessionStateStore } from '../../lib/session-state';
 import { TemporaryTabManager } from '../../lib/temporary-tabs';
+import { isTrustedOffscreenSender } from '../../lib/offscreen-sender';
 import { NetworkCaptureController } from '../../lib/network-capture-controller';
 import {
   TOOL_METADATA,
@@ -102,6 +103,11 @@ export default defineBackground(() => {
   // =====================================================================
 
   const OFFSCREEN_PATH = '/offscreen.html';
+  const OFFSCREEN_URL = chrome.runtime.getURL(OFFSCREEN_PATH);
+
+  function trustedOffscreen(sender: chrome.runtime.MessageSender | undefined): boolean {
+    return isTrustedOffscreenSender(sender, chrome.runtime.id, OFFSCREEN_URL);
+  }
 
   async function ensureOffscreen(): Promise<void> {
     // getContexts is Chrome 116+. The @types/chrome typing has drifted:
@@ -425,12 +431,22 @@ export default defineBackground(() => {
     });
   }
 
+  async function reconcileFinalizedSessions(payload: unknown): Promise<void> {
+    for (const sessionId of intersectAdvertisedFinalizedSessions(payload)) {
+      try {
+        await temporaryTabs.cleanupSession(sessionId);
+      } catch {
+        recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RECONCILIATION_FAILED');
+      }
+    }
+  }
+
   // =====================================================================
   // Port connection handler
   // =====================================================================
 
   chrome.runtime.onConnect.addListener((p) => {
-    if (p.name !== 'offscreen') return;
+    if (p.name !== 'offscreen' || !trustedOffscreen(p.sender)) return;
     offscreenPort = p;
     const portGeneration = recordingPortGeneration.replace();
 
@@ -461,6 +477,18 @@ export default defineBackground(() => {
         recordingPortGeneration.disconnect(portGeneration);
         recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
         setBadge('disconnected');
+        return;
+      }
+
+      if (msg.type === '_os_reconciliation_error') {
+        recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RECONCILIATION_COLLECTION_FAILED');
+        return;
+      }
+
+      if (msg.type === '_os_reconcile_finalized_sessions') {
+        reconcileFinalizedSessions(msg.payload).catch(() => {
+          recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RECONCILIATION_FAILED');
+        });
         return;
       }
 
@@ -499,16 +527,18 @@ export default defineBackground(() => {
     setBadge('disconnected');
   });
 
-  addMessageHandler('_os_temp_tab_sessions', async () => temporaryTabs.trackedSessionIds());
+  addMessageHandler('_os_temp_tab_sessions', async (_payload, sender) => (
+    trustedOffscreen(sender) ? temporaryTabs.trackedSessionIds() : []
+  ));
 
-  addMessageHandler('_os_reconcile_finalized_sessions', async (payload) => {
-    for (const sessionId of intersectAdvertisedFinalizedSessions(payload)) {
-      try {
-        await temporaryTabs.cleanupSession(sessionId);
-      } catch {
-        recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RECONCILIATION_FAILED');
-      }
+  addMessageHandler('_os_reconciliation_error', async (_payload, sender) => {
+    if (trustedOffscreen(sender)) {
+      recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RECONCILIATION_COLLECTION_FAILED');
     }
+  });
+
+  addMessageHandler('_os_reconcile_finalized_sessions', async (payload, sender) => {
+    if (trustedOffscreen(sender)) await reconcileFinalizedSessions(payload);
   });
 
   addMessageHandler('_os_ws_receive', async (payload) => {

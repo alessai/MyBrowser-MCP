@@ -13,6 +13,7 @@ export type WsState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'CONNEC
 
 export interface ReconnectingWsCallbacks {
   beforeAuthenticate?: () => Promise<string[]>;
+  onReconciliationError?: () => void;
   onConnected?: (reportedSessionIds: string[], finalizedSessionIds: string[]) => void;
   onDisconnected?: () => void;
   onMessage?: (data: string) => void;
@@ -97,7 +98,17 @@ export class ReconnectingWebSocket {
     }
 
     let reportedSessionIds: string[] = [];
+    let reconciliationErrorReported = false;
     const socket = this.ws;
+    const reportReconciliationError = (): void => {
+      if (
+        reconciliationErrorReported
+        || this.ws !== socket
+        || this.state !== 'AUTHENTICATING'
+      ) return;
+      reconciliationErrorReported = true;
+      this.callbacks.onReconciliationError?.();
+    };
     const authenticate = (candidate: unknown): void => {
       reportedSessionIds = isBoundedSessionIdList(candidate) ? candidate : [];
       if (this.ws !== socket || this.state !== 'AUTHENTICATING') return;
@@ -125,9 +136,15 @@ export class ReconnectingWebSocket {
       }
       let collectionTimer: ReturnType<typeof setTimeout> | undefined;
       Promise.race([
-        Promise.resolve().then(() => this.callbacks.beforeAuthenticate!()).catch(() => []),
+        Promise.resolve().then(() => this.callbacks.beforeAuthenticate!()).catch(() => {
+          reportReconciliationError();
+          return [];
+        }),
         new Promise<unknown>((resolve) => {
-          collectionTimer = setTimeout(() => resolve([]), RECONCILIATION_COLLECTION_TIMEOUT_MS);
+          collectionTimer = setTimeout(() => {
+            reportReconciliationError();
+            resolve([]);
+          }, RECONCILIATION_COLLECTION_TIMEOUT_MS);
         }),
       ]).then((candidate) => {
         if (collectionTimer) clearTimeout(collectionTimer);

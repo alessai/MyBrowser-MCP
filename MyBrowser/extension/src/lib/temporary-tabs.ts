@@ -149,7 +149,8 @@ export class TemporaryTabManager {
       const nextSession = session ?? { tabs: [], cleanupPending: false };
       state.sessions[sessionId] = {
         tabs: [...nextSession.tabs, tabId],
-        cleanupPending: nextSession.cleanupPending,
+        // New live-session work must not inherit an earlier cleanup attempt.
+        cleanupPending: false,
       };
       try {
         await this.writeState(state);

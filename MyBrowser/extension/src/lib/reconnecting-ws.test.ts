@@ -62,14 +62,34 @@ describe('ReconnectingWebSocket temporary-tab reconciliation', () => {
   });
 
   it('authenticates with an empty list when collection exceeds two seconds', async () => {
+    const onReconciliationError = vi.fn();
     const client = new ReconnectingWebSocket();
     client.connect('ws://localhost:1234', 'secret', {
       beforeAuthenticate: () => new Promise(() => undefined),
+      onReconciliationError,
     });
     const socket = FakeWebSocket.instances[0]!;
     socket.open();
     await vi.advanceTimersByTimeAsync(2_000);
     expect(JSON.parse(socket.sent[0]!)).not.toHaveProperty('temporaryTabSessionIds');
+    expect(onReconciliationError).toHaveBeenCalledOnce();
+    client.disconnect();
+  });
+
+  it('reports a failed collection once and still authenticates', async () => {
+    const onReconciliationError = vi.fn();
+    const client = new ReconnectingWebSocket();
+    client.connect('ws://localhost:1234', 'secret', {
+      beforeAuthenticate: async () => { throw new Error('storage unavailable'); },
+      onReconciliationError,
+    });
+    const socket = FakeWebSocket.instances[0]!;
+
+    socket.open();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(JSON.parse(socket.sent[0]!)).not.toHaveProperty('temporaryTabSessionIds');
+    expect(onReconciliationError).toHaveBeenCalledOnce();
     client.disconnect();
   });
 

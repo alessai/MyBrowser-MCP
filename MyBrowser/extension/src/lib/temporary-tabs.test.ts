@@ -163,6 +163,22 @@ describe('TemporaryTabManager', () => {
     await expect(restarted.trackedSessionIds()).resolves.toEqual([]);
   });
 
+  it('does not close a tab opened after a partial live-session cleanup', async () => {
+    const { api, manager } = setup();
+    await manager.open('session-a', 'about:blank', true);
+    api.remove = vi.fn(async (tabId) => {
+      if (tabId === 1) throw new Error('temporarily unavailable');
+    });
+    await expect(manager.cleanupSession('session-a')).resolves.toEqual({ closed: 0, keptForRetry: 1 });
+
+    await expect(manager.open('session-a', 'about:blank', true)).resolves.toBe(2);
+    await manager.retryPendingCleanup();
+
+    expect(api.remove).toHaveBeenCalledTimes(1);
+    await expect(manager.keep('session-a', 2)).resolves.toBe(true);
+    await expect(manager.keep('session-a', 1)).resolves.toBe(true);
+  });
+
   it('treats the exact missing-tab error as cleaned', async () => {
     const { api, manager } = setup();
     await manager.open('session-a', 'about:blank', true);
