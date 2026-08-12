@@ -7,9 +7,11 @@
 // Falls back to one-shot sendMessage if the port is unavailable.
 
 import { ReconnectingWebSocket } from '../../lib/reconnecting-ws';
+import { sendToBackground } from '../../lib/messaging';
 import { PendingToolRequests } from '../../lib/offscreen-pending';
 import type { WsStatusResponse } from '../../lib/protocol';
 import { createOffscreenToolFrame } from '../../lib/telemetry-summary';
+import { createTemporaryTabReconciliationCallbacks } from '../../lib/temporary-tab-reconciliation';
 
 const ws = new ReconnectingWebSocket();
 const pendingToolRequests = new PendingToolRequests();
@@ -161,22 +163,10 @@ chrome.runtime.onMessage.addListener(
 function connectWithConfig(url: string, token: string, browserName?: string): void {
   lastConfig = { url, token, browserName };
   ws.connect(url, token, {
-    async beforeAuthenticate() {
-      const sessionIds = await chrome.runtime.sendMessage({ type: '_os_temp_tab_sessions' });
-      return Array.isArray(sessionIds) ? sessionIds : [];
-    },
-    onReconciliationError() {
-      postToBackground({ type: '_os_reconciliation_error' });
-    },
-    onConnected(reportedSessionIds, finalizedSessionIds) {
-      postToBackground({ type: '_os_connected' });
-      if (finalizedSessionIds.length > 0) {
-        postToBackground({
-          type: '_os_reconcile_finalized_sessions',
-          payload: { reportedSessionIds, finalizedSessionIds },
-        });
-      }
-    },
+    ...createTemporaryTabReconciliationCallbacks({
+      requestSessions: () => sendToBackground('_os_temp_tab_sessions'),
+      post: postToBackground,
+    }),
     onDisconnected() {
       postToBackground({ type: '_os_disconnected' });
     },

@@ -64,6 +64,28 @@ describe("tab lifecycle tools", () => {
     expect(JSON.stringify(result)).not.toContain("session-a");
   });
 
+  it("reports partial cleanup while a browser retains tabs for retry", async () => {
+    const { context, tools } = fixture();
+    vi.mocked(context.sendSocketMessageToBrowser).mockImplementation(async (browserId) => (
+      browserId === "browser-a"
+        ? { closed: 0, keptForRetry: 1 }
+        : { closed: 1, keptForRetry: 0 }
+    ));
+
+    const result = await tools.browserCleanup.handle(context, {});
+
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain("queued for retry");
+    expect(JSON.stringify(result)).toContain("browser-a");
+  });
+
+  it("rejects non-positive keep-tab IDs at the tool boundary", async () => {
+    const { context, tools } = fixture();
+
+    await expect(tools.keepTab.handle(context, { tabId: 0 })).rejects.toThrow();
+    expect(context.sendSocketMessageToBrowser).not.toHaveBeenCalled();
+  });
+
   it("resets claims and routing when browser enumeration fails", async () => {
     const { stateManager, context, tools } = fixture();
     vi.mocked(stateManager.listBrowsers).mockRejectedValueOnce(new Error("registry unavailable"));

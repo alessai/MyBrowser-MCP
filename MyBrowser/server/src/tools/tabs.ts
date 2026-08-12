@@ -12,7 +12,7 @@ const NewTabArgs = z.object({
 });
 const CloseTabArgs = z.object({ tabId: z.number().describe("The tab ID to close") });
 const KeepTabArgs = z.object({
-  tabId: z.number().describe("The temporary tab ID to preserve"),
+  tabId: z.number().int().positive().describe("The temporary tab ID to preserve"),
   browserId: z.string().optional().describe("Browser containing the tab. Defaults to this session's resolved browser."),
 });
 const CleanupArgs = z.object({});
@@ -117,14 +117,20 @@ export function createTabTools({
     handle: async () => {
       const sessionId = getSessionId();
       let browsers: Awaited<ReturnType<IStateManager["listBrowsers"]>> = [];
-      let outcomes: PromiseSettledResult<string>[] = [];
+      let outcomes: PromiseSettledResult<{ id: string; keptForRetry: number }>[] = [];
       let enumerationFailed = false;
       let resetFailed = false;
       try {
         browsers = await stateManager.listBrowsers();
         outcomes = await Promise.allSettled(browsers.map(async ({ id }) => {
-          await context.sendSocketMessageToBrowser(id, "cleanup_session_tabs", {});
-          return id;
+          const result = await context.sendSocketMessageToBrowser(id, "cleanup_session_tabs", {});
+          const keptForRetry = (result as { keptForRetry?: unknown } | undefined)?.keptForRetry;
+          return {
+            id,
+            keptForRetry: Number.isSafeInteger(keptForRetry) && (keptForRetry as number) > 0
+              ? keptForRetry as number
+              : 0,
+          };
         }));
       } catch {
         enumerationFailed = true;
@@ -138,14 +144,19 @@ export function createTabTools({
       const failed = outcomes.flatMap((outcome, index) =>
         outcome.status === "rejected" ? [browsers[index]!.id] : []
       );
+      const pending = outcomes.flatMap((outcome) =>
+        outcome.status === "fulfilled" && outcome.value.keptForRetry > 0
+          ? [outcome.value.id]
+          : []
+      );
       const cleaned = outcomes.length - failed.length;
-      const failedCleanup = enumerationFailed || resetFailed || failed.length > 0;
+      const failedCleanup = enumerationFailed || resetFailed || failed.length > 0 || pending.length > 0;
       return {
         content: [{
           type: "text",
           text: !failedCleanup
             ? `Browser cleanup completed on ${cleaned} connected browser(s); routing now follows the shared default.`
-            : `Browser cleanup was partial${failed.length > 0 ? ` on browser IDs: ${failed.join(", ")}` : ""}. Claims and routing reset was attempted.`,
+            : `Browser cleanup was partial${failed.length > 0 ? ` on browser IDs: ${failed.join(", ")}` : ""}${pending.length > 0 ? `; tabs remain queued for retry on browser IDs: ${pending.join(", ")}` : ""}. Claims and routing reset was attempted.`,
         }],
         ...(failedCleanup ? { isError: true } : {}),
       };
