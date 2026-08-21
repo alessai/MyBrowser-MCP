@@ -13,6 +13,19 @@ Important: MyBrowser has 2 parts.
 
 `npm` installs only the server. You still need the Chrome extension from GitHub Releases.
 
+## What's New in 1.1.7
+
+Version `1.1.7` adds automatic same-device setup to the Windows CMD installer.
+
+| Setup step | 1.1.6 | 1.1.7 |
+| --- | --- | --- |
+| Install or update with `install-mybrowser.cmd` | Yes | Yes |
+| Read `%USERPROFILE%\.mybrowser\config.json` | No | Yes |
+| Configure localhost, port, token, and browser name | Manual | Automatic |
+| Refresh a changed local token when the CMD is rerun | No | Yes |
+
+This automation comes from `install-mybrowser.cmd`. Installing the extension ZIP manually still works, but you must enter the connection settings in the extension popup yourself.
+
 ## Fastest Setup for Claude Code
 
 Add MyBrowser to Claude Code with one command:
@@ -23,9 +36,9 @@ claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 0.0.0.0 --port 
 
 Then:
 
-1. Download the Chrome extension from `https://github.com/alessai/MyBrowser-MCP/releases/latest`
-2. Load it in `chrome://extensions` using **Load unpacked**
-3. Open the extension popup and enter the host, port, and auth token from `~/.mybrowser/config.json`
+1. On Windows, download `mybrowser-windows-installer.zip` from `https://github.com/alessai/MyBrowser-MCP/releases/latest` and double-click `install-mybrowser.cmd`
+2. Approve **Load unpacked** once when Chrome opens `chrome://extensions`; the CMD has already supplied the local token and port
+3. On other platforms, download the extension ZIP, load it unpacked, and enter the settings manually
 
 If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybrowser` once to trigger the server and generate it.
 
@@ -156,7 +169,7 @@ The installer downloads and verifies the latest extension, then stores it at:
 %LOCALAPPDATA%\Alessai\MyBrowser\Extension
 ```
 
-When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. If the config does not exist yet, start MyBrowser MCP once and rerun the installer, or enter the settings manually. A later token or port change is detected and refreshed automatically.
+When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. If the config does not exist yet, start MyBrowser MCP once and rerun the installer, or enter the settings manually. If the token or port later changes, rerun `install-mybrowser.cmd`; it detects and refreshes the changed configuration.
 
 The local bootstrap contains the same token as the MCP config and stays under the current user's Local AppData. Do not share the installed extension folder.
 
