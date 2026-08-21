@@ -8,7 +8,7 @@ import {
   ensureContentScript,
 } from './tab-manager';
 import { sendToTab } from './messaging';
-import { runPreActionFallback } from './action-fallback';
+import { runActionOnce, runPreActionFallback } from './action-fallback';
 import { evaluateInMainWorld } from './page-eval';
 import {
   ensureAttached,
@@ -457,6 +457,7 @@ async function captureScreenshot(tabId: number): Promise<string> {
 export interface ToolContext {
   readonly sessionId: string;
   readonly expiresAt?: number;
+  readonly signal?: AbortSignal;
   input: InputDevice;
   services: RequestToolServices;
   getTabId: () => number;
@@ -545,7 +546,9 @@ const handlers: Record<string, ToolHandler> = {
         await delay(500);
       },
       'CLICK_OUTCOME_UNKNOWN',
+      ctx.signal,
     );
+    ctx.signal?.throwIfAborted();
     try { await ensureContentScript(tabId); } catch {}
     await waitForStableDOM(tabId);
   },
@@ -578,7 +581,9 @@ const handlers: Record<string, ToolHandler> = {
         }
       },
       'TYPE_OUTCOME_UNKNOWN',
+      ctx.signal,
     );
+    ctx.signal?.throwIfAborted();
     await waitForStableDOM(tabId);
   },
 
@@ -595,6 +600,7 @@ const handlers: Record<string, ToolHandler> = {
       if (!coords) throw new Error('No coordinates');
       await ctx.input.moveMouse(coords);
     } catch {
+      ctx.signal?.throwIfAborted();
       // CDP failed — use content script hover
       await sendToTab(tabId, 'cs_hover', { selector });
     }
@@ -606,7 +612,7 @@ const handlers: Record<string, ToolHandler> = {
     const key = args.key as string;
     const tabId = ctx.getTabId();
     await ensureContentScript(tabId);
-    try {
+    await runActionOnce(async () => {
       if (key === 'Enter') {
         await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
           await ctx.input.pressKey(key);
@@ -616,11 +622,7 @@ const handlers: Record<string, ToolHandler> = {
         await ctx.input.pressKey(key);
         if (key === 'PageDown') await delay(AFTER_ACTION_DELAY_MS);
       }
-    } catch {
-      // CDP failed — use content script
-      await sendToTab(tabId, 'cs_press_key', { key });
-      await delay(AFTER_ACTION_DELAY_MS);
-    }
+    }, 'PRESS_KEY_OUTCOME_UNKNOWN', ctx.signal);
     await waitForStableDOM(tabId);
   },
 
@@ -687,6 +689,10 @@ const handlers: Record<string, ToolHandler> = {
       : ctx.getTabId() > 0
         ? ctx.getTabId()
         : undefined;
+    if (tabId !== undefined && !isConsoleCaptureActive(tabId)) {
+      await enableRuntime(tabId);
+      clearConsoleLogs(tabId);
+    }
     return getConsoleLogs(tabId);
   },
 
@@ -886,6 +892,10 @@ const handlers: Record<string, ToolHandler> = {
     await chrome.tabs.update(tabId, { active: true });
     await ctx.setTabId(tabId);
     await ensureContentScript(tabId);
+    if (!isConsoleCaptureActive(tabId)) {
+      await enableRuntime(tabId);
+      clearConsoleLogs(tabId);
+    }
   },
 
   async new_tab(args, ctx) {
@@ -1418,8 +1428,9 @@ const handlers: Record<string, ToolHandler> = {
 
     if (action === 'paste') {
       // Simulate Ctrl+V
-      try {
-        await ensureAttached(tabId);
+      await ensureAttached(tabId);
+      ctx.signal?.throwIfAborted();
+      return runActionOnce(async () => {
         await sendCommand(tabId, 'Input.dispatchKeyEvent', {
           type: 'keyDown',
           modifiers: 2, // Control
@@ -1436,12 +1447,7 @@ const handlers: Record<string, ToolHandler> = {
           windowsVirtualKeyCode: 86,
         });
         return { success: true, action: 'paste' };
-      } catch {
-        // Fallback: dispatch paste event via content script
-        await ensureContentScript(tabId);
-        await sendToTab(tabId, 'cs_press_key', { key: 'v' });
-        return { success: true, action: 'paste', note: 'Used content-script fallback — Ctrl modifier may not be applied' };
-      }
+      }, 'PASTE_OUTCOME_UNKNOWN', ctx.signal);
     }
 
     throw new Error(`Unknown clipboard action: ${action}`);

@@ -64,7 +64,7 @@ export const screenshot: Tool = {
 export const getConsoleLogs: Tool = {
   schema: {
     name: "browser_get_console_logs",
-    description: "Get the console logs from the browser",
+    description: "Get captured console logs. The first call starts capture for the tab and may return an empty list; call again after the behavior under test.",
     inputSchema: zodToJsonSchema(ConsoleLogsArgs),
   },
   handle: async (context, params) => {

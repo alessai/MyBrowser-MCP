@@ -99,4 +99,26 @@ describe('console assertion truthfulness', () => {
       message: 'console_no_errors: console capture is not active for this tab',
     });
   });
+
+  it('starts capture through the console-log tool before assertions can pass', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(888_888);
+    const sendCommand = vi.fn(async () => undefined);
+    vi.stubGlobal('chrome', {
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+        sendCommand,
+      },
+    });
+
+    await expect(handleTool('browser_get_console_logs', {}, ctx)).resolves.toEqual([]);
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 888_888 },
+      'Runtime.enable',
+      undefined,
+    );
+    expect(evaluateConsoleNoErrors(888_888).passed).toBe(true);
+    vi.unstubAllGlobals();
+  });
 });

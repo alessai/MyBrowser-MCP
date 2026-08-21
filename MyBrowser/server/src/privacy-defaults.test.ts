@@ -5,6 +5,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,5 +59,18 @@ describe('private local defaults', () => {
     });
     expect(statSync(siteFile).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(siteFile, 'utf8'))).toMatchObject({ domain: 'example.com' });
+  });
+
+  it.runIf(process.platform !== 'win32')('refuses symlinked storage without chmodding its target', async () => {
+    const myBrowserDir = join(home, '.mybrowser');
+    const target = join(home, 'shared-sites');
+    mkdirSync(myBrowserDir, { recursive: true });
+    mkdirSync(target, { mode: 0o777 });
+    chmodSync(target, 0o777);
+    symlinkSync(target, join(myBrowserDir, 'sites'));
+    const { ensureDirectories } = await import('./site-knowledge');
+
+    expect(ensureDirectories).toThrow('Refusing unsafe MyBrowser directory');
+    expect(statSync(target).mode & 0o777).toBe(0o777);
   });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -51,6 +52,10 @@ const SITES_DIR = join(MYBROWSER_DIR, "sites");
 export function ensureDirectories(): void {
   for (const directory of [MYBROWSER_DIR, SITES_DIR, join(MYBROWSER_DIR, "recordings")]) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const stats = lstatSync(directory);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Error(`Refusing unsafe MyBrowser directory: ${directory}`);
+    }
     chmodSync(directory, 0o700);
   }
   for (const entry of readdirSync(SITES_DIR, { withFileTypes: true })) {

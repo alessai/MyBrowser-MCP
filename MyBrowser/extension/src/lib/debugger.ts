@@ -396,20 +396,22 @@ export function startNetworkCapture(networkCapture: NetworkCaptureController): (
 
 // Cleanup on tab close (guarded for WXT build-time evaluation)
 export function initDebuggerCleanup(): void {
-  const clearTabState = (tabId: number) => {
+  const clearAttachmentState = (tabId: number) => {
     attachedTabs.delete(tabId);
     runtimeEnabledTabs.delete(tabId);
-    consoleLogsByTab.delete(tabId);
-    pendingRequestsByTab.delete(tabId);
     const timer = detachTimers.get(tabId);
     if (timer) {
       clearTimeout(timer);
       detachTimers.delete(tabId);
     }
   };
-  chrome.tabs.onRemoved.addListener(clearTabState);
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    clearAttachmentState(tabId);
+    consoleLogsByTab.delete(tabId);
+    pendingRequestsByTab.delete(tabId);
+  });
   chrome.debugger.onDetach.addListener((source) => {
-    if (source.tabId !== undefined) clearTabState(source.tabId);
+    if (source.tabId !== undefined) clearAttachmentState(source.tabId);
   });
 }
 
