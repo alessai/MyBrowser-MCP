@@ -53,6 +53,7 @@ try {
     $release = ConvertFrom-MyBrowserReleaseRecord (Get-TestReleaseRecord)
     Assert-True ($release.Version -eq '1.2.3') 'Valid release metadata was rejected.'
     Assert-Throw { ConvertFrom-MyBrowserReleaseRecord (Get-TestReleaseRecord -Draft $true) } 'draft or prerelease'
+    Assert-Throw { ConvertFrom-MyBrowserReleaseRecord (Get-TestReleaseRecord -Prerelease $true) } 'draft or prerelease'
     Assert-Throw { ConvertFrom-MyBrowserReleaseRecord (Get-TestReleaseRecord -Tag 'v9.9.9') } 'does not match'
     Assert-Throw { ConvertFrom-MyBrowserReleaseRecord (Get-TestReleaseRecord -Digest '') } 'no valid SHA-256'
     Assert-Throw { ConvertFrom-MyBrowserReleaseRecord (Get-TestReleaseRecord -Size 0) } 'outside the accepted range'
@@ -62,7 +63,17 @@ try {
     $twoAssets.assets += $twoAssets.assets[0]
     Assert-Throw { ConvertFrom-MyBrowserReleaseRecord $twoAssets } 'exactly one'
 
-    foreach ($unsafePath in @('/root.js', 'C:\root.js', '..\escape.js', 'a/../../escape.js', 'file.js:stream')) {
+    foreach ($unsafePath in @(
+        '/root.js',
+        'C:\root.js',
+        '..\escape.js',
+        'a/../../escape.js',
+        'file.js:stream',
+        'CON',
+        'assets/NUL.js',
+        'assets/file.',
+        'assets/file '
+    )) {
         Assert-True (-not (Test-SafeArchiveEntry $unsafePath)) "Unsafe archive path was accepted: '$unsafePath'."
     }
     Assert-True (Test-SafeArchiveEntry 'assets/background.js') 'Safe archive path was rejected.'
@@ -99,6 +110,29 @@ try {
     Assert-Throw {
         Expand-MyBrowserArchive -ZipPath $unsafeZip -Destination (Join-Path $root 'unsafe') -ExpectedVersion '1.2.3'
     } 'unsafe path'
+
+    $duplicateZip = Join-Path $root 'duplicate.zip'
+    $duplicate = [System.IO.Compression.ZipFile]::Open($duplicateZip, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($name in @('manifest.json', 'assets/file.js', 'assets/FILE.js')) {
+            $entry = $duplicate.CreateEntry($name)
+            $writer = New-Object System.IO.StreamWriter($entry.Open())
+            try {
+                if ($name -eq 'manifest.json') {
+                    $writer.Write('{"name":"MyBrowser","manifest_version":3,"version":"1.2.3"}')
+                }
+            }
+            finally {
+                $writer.Dispose()
+            }
+        }
+    }
+    finally {
+        $duplicate.Dispose()
+    }
+    Assert-Throw {
+        Expand-MyBrowserArchive -ZipPath $duplicateZip -Destination (Join-Path $root 'duplicate') -ExpectedVersion '1.2.3'
+    } 'duplicate path'
 
     $target = Join-Path $root 'installed'
     $stageOne = Join-Path $root 'stage-one'

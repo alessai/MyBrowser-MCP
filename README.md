@@ -158,6 +158,8 @@ The installer downloads and verifies the latest extension, then stores it at:
 
 On the first install, Chrome opens `chrome://extensions`. Turn on **Developer mode**, click **Load unpacked**, and select the folder shown by the installer. This is the only manual installation step Chrome requires.
 
+If MyBrowser was previously loaded from another folder, remove that unpacked copy first so Chrome does not run two copies.
+
 For later updates, run `install-mybrowser.cmd` again. Close Chrome when prompted; the installer replaces the extension only after Chrome has fully exited, then reopens Chrome with the new version. It never force-closes Chrome.
 
 #### 4. Manual installation on other platforms

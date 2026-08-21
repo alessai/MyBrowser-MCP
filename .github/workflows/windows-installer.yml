@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/windows-installer.yml'
+      - 'README.md'
       - 'scripts/windows/**'
   push:
     paths:
       - '.github/workflows/windows-installer.yml'
+      - 'README.md'
       - 'scripts/windows/**'
   workflow_dispatch:
 
@@ -25,8 +27,21 @@ jobs:
         shell: pwsh
         run: .\scripts\windows\install-mybrowser.tests.ps1
 
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $issues = Invoke-ScriptAnalyzer -Path scripts/windows -Recurse -Severity Error,Warning
+          if ($issues) {
+            $issues | Format-List RuleName, ScriptName, Line, Message
+            exit 1
+          }
+
       - name: Smoke test the CMD installer
         shell: cmd
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: scripts\windows\install-mybrowser.cmd -InstallDirectory "%RUNNER_TEMP%\MyBrowser\Extension" -NoLaunch
 
       - name: Verify installed manifest
@@ -36,3 +51,20 @@ jobs:
           if ($manifest.name -ne 'MyBrowser' -or $manifest.manifest_version -ne 3) {
             throw 'CMD installer produced an invalid extension manifest.'
           }
+
+      - name: Package the installer
+        shell: powershell
+        run: |
+          Compress-Archive -Path @(
+            'scripts/windows/install-mybrowser.cmd',
+            'scripts/windows/install-mybrowser.ps1',
+            'scripts/windows/README.md'
+          ) -DestinationPath "$env:RUNNER_TEMP\mybrowser-windows-installer.zip"
+
+      - name: Upload the installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mybrowser-windows-installer
+          path: ${{ runner.temp }}\mybrowser-windows-installer.zip
+          if-no-files-found: error
+          retention-days: 14

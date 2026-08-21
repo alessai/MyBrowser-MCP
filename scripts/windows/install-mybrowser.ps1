@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 $script:ReleaseApiUrl = 'https://api.github.com/repos/alessai/MyBrowser-MCP/releases/latest'
 $script:AssetPattern = '^mybrowser-extension-(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)-chrome\.zip$'
@@ -93,6 +94,9 @@ function Get-MyBrowserRelease {
         'User-Agent' = 'MyBrowser-Windows-Installer'
         'X-GitHub-Api-Version' = '2022-11-28'
     }
+    if ($env:GITHUB_TOKEN) {
+        $headers.Authorization = "Bearer $env:GITHUB_TOKEN"
+    }
 
     try {
         $release = Invoke-RestMethod -Uri $script:ReleaseApiUrl -Headers $headers -TimeoutSec 30
@@ -136,6 +140,10 @@ function Test-SafeArchiveEntry {
 
     foreach ($part in $parts) {
         if ($part -eq '.' -or $part -eq '..') {
+            return $false
+        }
+        if ($part.EndsWith('.') -or $part.EndsWith(' ') -or
+            $part -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)') {
             return $false
         }
     }
@@ -196,7 +204,7 @@ function Expand-MyBrowserArchive {
 
     $manifestName = [string](Get-MyBrowserProperty $manifest 'name')
     $manifestVersion = Get-MyBrowserProperty $manifest 'manifest_version'
-    if ($manifestName -ne 'MyBrowser' -or [int]$manifestVersion -ne 3) {
+    if ($manifestName -ne 'MyBrowser' -or [string]$manifestVersion -ne '3') {
         throw 'Extension manifest is not the expected MyBrowser Manifest V3 package.'
     }
     $extensionVersion = [string](Get-MyBrowserProperty $manifest 'version')
@@ -235,7 +243,7 @@ function Get-InstalledMyBrowserVersion {
     }
     $manifestName = [string](Get-MyBrowserProperty $manifest 'name')
     $manifestVersion = Get-MyBrowserProperty $manifest 'manifest_version'
-    if ($manifestName -ne 'MyBrowser' -or [int]$manifestVersion -ne 3) {
+    if ($manifestName -ne 'MyBrowser' -or [string]$manifestVersion -ne '3') {
         throw "Refusing to replace '$Path' because it is not MyBrowser Manifest V3."
     }
 
@@ -254,7 +262,7 @@ function Wait-ChromeExit {
     }
 
     Write-Output ''
-    Write-Output 'Close every Google Chrome window to continue the update.'
+    Write-Output 'Close every Google Chrome window, including Beta or Canary, to continue the update.'
     Write-Output 'MyBrowser will wait; it will not force-close Chrome.'
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while (Get-Process -Name chrome -ErrorAction SilentlyContinue) {
@@ -300,9 +308,8 @@ function Install-MyBrowserDirectory {
     )
 
     $backup = "$TargetDirectory.backup-$([Guid]::NewGuid().ToString('N'))"
-    $hadExisting = Test-Path -LiteralPath $TargetDirectory
     try {
-        if ($hadExisting) {
+        if (Test-Path -LiteralPath $TargetDirectory) {
             Move-Item -LiteralPath $TargetDirectory -Destination $backup
         }
         Move-Item -LiteralPath $StagedDirectory -Destination $TargetDirectory
@@ -345,7 +352,7 @@ function Invoke-MyBrowserInstaller {
         [bool]$Reinstall
     )
 
-    if ($PSVersionTable.PSVersion.Major -lt 5) {
+    if ($PSVersionTable.PSVersion -lt [version]'5.1') {
         throw 'MyBrowser requires Windows PowerShell 5.1 or PowerShell 7.'
     }
     if (-not $TargetDirectory) {
@@ -396,7 +403,7 @@ function Invoke-MyBrowserInstaller {
     try {
         New-Item -ItemType Directory -Path $work | Out-Null
         Write-Output "Downloading MyBrowser $($release.Version)..."
-        Invoke-WebRequest -Uri $release.Url -OutFile $zipPath -UseBasicParsing -TimeoutSec 120 -Headers @{
+        Invoke-WebRequest -Uri $release.Url -OutFile $zipPath -UseBasicParsing -TimeoutSec 300 -Headers @{
             'User-Agent' = 'MyBrowser-Windows-Installer'
         }
         Assert-MyBrowserDigest -Path $zipPath -ExpectedSha256 $release.Sha256 -ExpectedSize $release.Size
