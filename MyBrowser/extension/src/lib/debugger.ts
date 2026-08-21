@@ -91,10 +91,16 @@ async function handleError(err: Error, target: Debuggee): Promise<void> {
     // Already good
   } else if (kind === 'otherExtension') {
     // Can't debug chrome-extension:// pages — clean up and throw
-    if (target.tabId !== undefined) attachedTabs.delete(target.tabId);
+    if (target.tabId !== undefined) {
+      attachedTabs.delete(target.tabId);
+      runtimeEnabledTabs.delete(target.tabId);
+    }
     throw err;
   } else if (kind === 'debuggerDetached') {
-    if (target.tabId !== undefined) attachedTabs.delete(target.tabId);
+    if (target.tabId !== undefined) {
+      attachedTabs.delete(target.tabId);
+      runtimeEnabledTabs.delete(target.tabId);
+    }
     await doAttach(target, '1.3');
   } else {
     throw err;
@@ -122,6 +128,7 @@ export async function ensureAttached(tabId: number): Promise<void> {
     if (kind === 'alreadyAttached') {
       try {
         await doDetach(target);
+        runtimeEnabledTabs.delete(tabId);
         await doAttach(target, '1.3');
         const wasAttached = attachedTabs.has(tabId);
         attachedTabs.add(tabId);
@@ -131,6 +138,7 @@ export async function ensureAttached(tabId: number): Promise<void> {
       }
     } else if (kind === 'otherExtension') {
       attachedTabs.delete(tabId);
+      runtimeEnabledTabs.delete(tabId);
       let diag = '';
       try {
         const tab = await chrome.tabs.get(tabId);
@@ -160,6 +168,7 @@ export function scheduleDetach(tabId: number): void {
     setTimeout(async () => {
       detachTimers.delete(tabId);
       attachedTabs.delete(tabId);
+      runtimeEnabledTabs.delete(tabId);
       await doDetach({ tabId });
     }, DETACH_DELAY_MS),
   );
@@ -183,6 +192,7 @@ export async function sendCommand<T = unknown>(
 export async function enableRuntime(tabId: number): Promise<void> {
   await ensureAttached(tabId);
   await sendCommand(tabId, 'Runtime.enable');
+  runtimeEnabledTabs.add(tabId);
 }
 
 export async function enablePageDomain(tabId: number): Promise<void> {
@@ -204,6 +214,11 @@ export interface ConsoleEntry {
 
 const MAX_CONSOLE_ENTRIES = 100;
 const consoleLogsByTab = new Map<number, ConsoleEntry[]>();
+const runtimeEnabledTabs = new Set<number>();
+
+export function isConsoleCaptureActive(tabId: number): boolean {
+  return runtimeEnabledTabs.has(tabId);
+}
 
 export function getConsoleLogs(tabId?: number): ConsoleEntry[] {
   if (tabId !== undefined) {
@@ -381,8 +396,9 @@ export function startNetworkCapture(networkCapture: NetworkCaptureController): (
 
 // Cleanup on tab close (guarded for WXT build-time evaluation)
 export function initDebuggerCleanup(): void {
-  chrome.tabs.onRemoved.addListener((tabId) => {
+  const clearTabState = (tabId: number) => {
     attachedTabs.delete(tabId);
+    runtimeEnabledTabs.delete(tabId);
     consoleLogsByTab.delete(tabId);
     pendingRequestsByTab.delete(tabId);
     const timer = detachTimers.get(tabId);
@@ -390,6 +406,10 @@ export function initDebuggerCleanup(): void {
       clearTimeout(timer);
       detachTimers.delete(tabId);
     }
+  };
+  chrome.tabs.onRemoved.addListener(clearTabState);
+  chrome.debugger.onDetach.addListener((source) => {
+    if (source.tabId !== undefined) clearTabState(source.tabId);
   });
 }
 

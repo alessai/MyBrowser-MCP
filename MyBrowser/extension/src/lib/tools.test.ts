@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { NetworkCaptureController } from './network-capture-controller';
 import type { ToolContext } from './tools';
-import { handleTool } from './tools';
+import { evaluateConsoleNoErrors, handleTool, waitForReadyNetworkIdle } from './tools';
 
 function context() {
   let tabId = -1;
@@ -68,5 +68,35 @@ describe('temporary tab tool handlers', () => {
       keptForRetry: 0,
     });
     expect(temporaryTabs.cleanupSession).toHaveBeenCalledWith('session-a');
+  });
+});
+
+describe('network idle readiness', () => {
+  it('waits for the current document to complete before checking quiet traffic', async () => {
+    let now = 0;
+    const calls: string[] = [];
+    const states = ['loading', 'complete'];
+    const wait = vi.fn(async () => { calls.push('idle'); });
+
+    await expect(waitForReadyNetworkIdle(7, 1_000, 100, {
+      enable: async () => { calls.push('enable'); },
+      evaluate: async () => ({ result: { value: states.shift() } }),
+      wait,
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+    })).resolves.toBe(100);
+
+    expect(calls).toEqual(['enable', 'idle']);
+    expect(wait).toHaveBeenCalledWith(7, 500, 900, 100);
+  });
+});
+
+describe('console assertion truthfulness', () => {
+  it('fails when console capture was never enabled for the tab', () => {
+    expect(evaluateConsoleNoErrors(999_999)).toEqual({
+      type: 'console_no_errors',
+      passed: false,
+      message: 'console_no_errors: console capture is not active for this tab',
+    });
   });
 });

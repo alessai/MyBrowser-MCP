@@ -8,10 +8,13 @@ import {
   ensureContentScript,
 } from './tab-manager';
 import { sendToTab } from './messaging';
+import { runPreActionFallback } from './action-fallback';
+import { evaluateInMainWorld } from './page-eval';
 import {
   ensureAttached,
   sendCommand,
   getConsoleLogs,
+  isConsoleCaptureActive,
   clearConsoleLogs,
   enableRuntime,
   enablePageDomain,
@@ -82,6 +85,78 @@ try {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+export async function waitForReadyNetworkIdle(
+  tabId: number,
+  timeoutMs: number,
+  pollIntervalMs: number,
+  dependencies: {
+    enable: (tabId: number) => Promise<void>;
+    evaluate: (
+      tabId: number,
+      method: string,
+      params?: Record<string, unknown>,
+    ) => Promise<unknown>;
+    wait: (
+      tabId: number,
+      quietWindowMs: number,
+      timeoutMs: number,
+      pollIntervalMs: number,
+    ) => Promise<void>;
+    now: () => number;
+    sleep: (ms: number) => Promise<void>;
+  } = {
+    enable: enableNetworkDomain,
+    evaluate: sendCommand,
+    wait: waitForNetworkIdle,
+    now: Date.now,
+    sleep: delay,
+  },
+): Promise<number> {
+  const startedAt = dependencies.now();
+  await dependencies.enable(tabId);
+  while (true) {
+    const ready = await dependencies.evaluate(tabId, 'Runtime.evaluate', {
+      expression: 'document.readyState',
+      returnByValue: true,
+    }) as {
+      result?: { value?: string };
+    } | undefined;
+    if (ready?.result?.value === 'complete') break;
+    const remaining = timeoutMs - (dependencies.now() - startedAt);
+    if (remaining <= 0) throw new Error('NETWORK_IDLE_TIMEOUT');
+    await dependencies.sleep(Math.min(pollIntervalMs, remaining));
+  }
+  const remaining = timeoutMs - (dependencies.now() - startedAt);
+  if (remaining <= 0) throw new Error('NETWORK_IDLE_TIMEOUT');
+  await dependencies.wait(
+    tabId,
+    Math.max(500, pollIntervalMs),
+    remaining,
+    pollIntervalMs,
+  );
+  return dependencies.now() - startedAt;
+}
+
+export function evaluateConsoleNoErrors(tabId: number): {
+  type: 'console_no_errors';
+  passed: boolean;
+  message: string;
+} {
+  const captureActive = isConsoleCaptureActive(tabId);
+  const errorLogs = getConsoleLogs(tabId)
+    .filter((log) => log.type === 'error' || log.type === 'exception');
+  const passed = captureActive && errorLogs.length === 0;
+  return {
+    type: 'console_no_errors',
+    passed,
+    message: !captureActive
+      ? 'console_no_errors: console capture is not active for this tab'
+      : passed
+        ? 'console_no_errors: no errors in console'
+        : `console_no_errors: ${errorLogs.length} error(s) found — ${errorLogs.slice(0, 3).map((log) => log.message).join('; ')}`,
+  };
 }
 
 function sanitizeDownloadDirectory(directory: string | undefined): string | undefined {
@@ -444,24 +519,33 @@ const handlers: Record<string, ToolHandler> = {
     const tabId = ctx.getTabId();
     await ensureContentScript(tabId);
     const selector = await resolveTarget(tabId, args);
-    // Try CDP click first, fall back to content script DOM events
-    try {
-      await scrollIntoView(tabId, selector);
-      const coords = await sendToTab<{ x: number; y: number } | null>(tabId, 'getElementCoordinates', {
-        selector, options: { clickable: true },
-      });
-      if (!coords) throw new Error('No coordinates');
-      await ctx.input.moveMouse(coords);
-      await delay(200);
-      await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
-        await ctx.input.click(coords);
+    let clickCoordinates: { x: number; y: number } | undefined;
+    await runPreActionFallback(
+      async () => {
+        await scrollIntoView(tabId, selector);
+        const coords = await sendToTab<{ x: number; y: number } | null>(
+          tabId,
+          'getElementCoordinates',
+          { selector, options: { clickable: true } },
+        );
+        if (!coords) throw new Error('No coordinates');
+        await ctx.input.moveMouse(coords);
+        await delay(200);
+        clickCoordinates = coords;
+      },
+      async () => {
+        const coords = clickCoordinates!;
+        await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
+          await ctx.input.click(coords);
+          await delay(500);
+        });
+      },
+      async () => {
+        await sendToTab(tabId, 'cs_click', { selector });
         await delay(500);
-      });
-    } catch {
-      // CDP failed — use content script click
-      await sendToTab(tabId, 'cs_click', { selector });
-      await delay(500);
-    }
+      },
+      'CLICK_OUTCOME_UNKNOWN',
+    );
     try { await ensureContentScript(tabId); } catch {}
     await waitForStableDOM(tabId);
   },
@@ -472,25 +556,29 @@ const handlers: Record<string, ToolHandler> = {
     const tabId = ctx.getTabId();
     await ensureContentScript(tabId);
     const selector = await resolveTarget(tabId, args);
-    // Try CDP type first, fall back to content script
-    try {
-      await scrollIntoView(tabId, selector);
-      await ctx.input.type(typedText, selector);
-      if (submit) {
-        await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
-          await ctx.input.pressKey('Enter');
-          await delay(AFTER_ACTION_DELAY_MS);
-        });
-        try { await ensureContentScript(tabId); } catch {}
-      }
-    } catch {
-      // CDP failed — use content script type
-      await sendToTab(tabId, 'cs_type', { selector, text: typedText, submit });
-      if (submit) {
-        await delay(1000);
-        try { await ensureContentScript(tabId); } catch {}
-      }
-    }
+    await runPreActionFallback(
+      async () => {
+        await scrollIntoView(tabId, selector);
+      },
+      async () => {
+        await ctx.input.type(typedText, selector);
+        if (submit) {
+          await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
+            await ctx.input.pressKey('Enter');
+            await delay(AFTER_ACTION_DELAY_MS);
+          });
+          try { await ensureContentScript(tabId); } catch {}
+        }
+      },
+      async () => {
+        await sendToTab(tabId, 'cs_type', { selector, text: typedText, submit });
+        if (submit) {
+          await delay(1000);
+          try { await ensureContentScript(tabId); } catch {}
+        }
+      },
+      'TYPE_OUTCOME_UNKNOWN',
+    );
     await waitForStableDOM(tabId);
   },
 
@@ -734,10 +822,10 @@ const handlers: Record<string, ToolHandler> = {
 
     // For network_idle, use tracked pending requests from the debugger.
     if (condition === 'network_idle') {
-      const start = Date.now();
-      await enableNetworkDomain(tabId);
-      await waitForNetworkIdle(tabId, Math.max(500, pollInterval), timeout, pollInterval);
-      return { met: true, waitedMs: Date.now() - start };
+      return {
+        met: true,
+        waitedMs: await waitForReadyNetworkIdle(tabId, timeout, pollInterval),
+      };
     }
 
     await ensureContentScript(tabId);
@@ -779,17 +867,9 @@ const handlers: Record<string, ToolHandler> = {
 
     // Handle console_no_errors in background (logs are captured at background level)
     if (hasConsoleCheck) {
-      const logs = getConsoleLogs(tabId);
-      const errorLogs = logs.filter((l) => l.type === 'error' || l.type === 'exception');
-      const consolePassed = errorLogs.length === 0;
-      result.results.push({
-        type: 'console_no_errors',
-        passed: consolePassed,
-        message: consolePassed
-          ? 'console_no_errors: no errors in console'
-          : `console_no_errors: ${errorLogs.length} error(s) found — ${errorLogs.slice(0, 3).map((l) => l.message).join('; ')}`,
-      });
-      if (!consolePassed) result.passed = false;
+      const consoleResult = evaluateConsoleNoErrors(tabId);
+      result.results.push(consoleResult);
+      if (!consoleResult.passed) result.passed = false;
     }
 
     return result;
@@ -905,7 +985,7 @@ const handlers: Record<string, ToolHandler> = {
     const code = args.code as string;
     const timeout = (args.timeout as number) || 5000;
     const tabId = ctx.getTabId();
-    // Try CDP first, fall back to content script eval
+    // Try CDP first, then preserve page-world semantics through scripting MAIN.
     try {
       await ensureAttached(tabId);
       const result = await sendCommand<{
@@ -930,18 +1010,7 @@ const handlers: Record<string, ToolHandler> = {
       if (r.value !== undefined) return { value: r.value };
       return { value: r.description || String(r) };
     } catch {
-      // CDP failed — fall back to content script eval
-      await ensureContentScript(tabId);
-      // Wrap code to return JSON-serializable result
-      const wrappedCode = `try { JSON.stringify(eval(${JSON.stringify(code)})) } catch(e) { JSON.stringify({__error: e.message}) }`;
-      const raw = await sendToTab<string>(tabId, 'cs_eval', { code: wrappedCode });
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed?.__error) return { error: parsed.__error };
-        return { value: parsed };
-      } catch {
-        return { value: raw };
-      }
+      return evaluateInMainWorld(tabId, code);
     }
   },
 

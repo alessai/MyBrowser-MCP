@@ -2,6 +2,7 @@
 // Registers all message handlers and sends 'ready' on load.
 
 import { addMessageHandler, sendToBackground } from '../../lib/messaging';
+import { requestFormSubmit } from '../../lib/form-submit';
 import { generateAriaSnapshot, getLastSnapshot } from '../../lib/aria-snapshot';
 import { generateSelector } from '../../lib/selector-engine';
 import {
@@ -967,8 +968,7 @@ function registerHandlers(): (() => void)[] {
       if (submit) {
         const form = el.closest('form');
         if (form) {
-          form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-          form.submit?.();
+          requestFormSubmit(form);
         } else {
           el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
           el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', bubbles: true }));

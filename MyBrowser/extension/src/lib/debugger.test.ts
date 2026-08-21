@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { sendCommand } from "./debugger";
+import { enableRuntime, isConsoleCaptureActive, sendCommand } from "./debugger";
 
 describe("sendCommand", () => {
   let attach: ReturnType<typeof vi.fn>;
@@ -39,5 +39,13 @@ describe("sendCommand", () => {
 
     await expect(sendCommand(4, "Network.enable")).rejects.toThrow("Network.enable failed");
     expect(command).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports console capture only after Runtime.enable succeeds", async () => {
+    command.mockResolvedValue(undefined);
+
+    expect(isConsoleCaptureActive(44)).toBe(false);
+    await enableRuntime(44);
+    expect(isConsoleCaptureActive(44)).toBe(true);
   });
 });
