@@ -9,7 +9,7 @@ Important: installing this npm package is only half of the setup. You also need 
 ## Fastest Setup for Claude Code
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 0.0.0.0 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 Then install the Chrome extension from:
@@ -36,7 +36,7 @@ npm install -g @alessai/mybrowser-mcp
 ## Start
 
 ```bash
-mybrowser-mcp --host 0.0.0.0 --port 9009
+mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 On first run, MyBrowser writes its config to:
@@ -69,7 +69,7 @@ Then:
   "mcpServers": {
     "mybrowser": {
       "command": "mybrowser-mcp",
-      "args": ["--host", "0.0.0.0", "--port", "9009"]
+      "args": ["--host", "127.0.0.1", "--port", "9009"]
     }
   }
 }
@@ -109,7 +109,7 @@ Internal telemetry is an opt-in, local development aid for diagnosing repeated t
 Enable it explicitly when starting an MCP client process:
 
 ```bash
-mybrowser-mcp --trace-internal --host 0.0.0.0 --port 9009
+mybrowser-mcp --trace-internal --host 127.0.0.1 --port 9009
 ```
 
 Optional storage controls:
@@ -120,7 +120,7 @@ mybrowser-mcp \
   --trace-dir ~/.mybrowser/traces \
   --trace-retention-days 14 \
   --trace-max-mb 256 \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 9009
 ```
 
@@ -159,7 +159,7 @@ The benchmark compares the real disabled `TelemetryManager.runToolCall()` path a
 If you already installed the package globally, the equivalent Claude Code command is:
 
 ```bash
-claude mcp add mybrowser -- mybrowser-mcp --host 0.0.0.0 --port 9009
+claude mcp add mybrowser -- mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 ## Repository

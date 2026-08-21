@@ -31,7 +31,7 @@ This automation comes from `install-mybrowser.cmd`. Installing the extension ZIP
 Add MyBrowser to Claude Code with one command:
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 0.0.0.0 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 Then:
@@ -136,7 +136,7 @@ Example prompts you can give your MCP client:
 ### Claude Code one-liner
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 0.0.0.0 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 ### Global npm install
@@ -150,7 +150,7 @@ npm install -g @alessai/mybrowser-mcp
 #### 2. Start the server once
 
 ```bash
-mybrowser-mcp --host 0.0.0.0 --port 9009
+mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 On first run, MyBrowser creates `~/.mybrowser/config.json` and stores the shared auth token there.
@@ -217,7 +217,7 @@ Example MCP config using the installed binary:
   "mcpServers": {
     "mybrowser": {
       "command": "mybrowser-mcp",
-      "args": ["--host", "0.0.0.0", "--port", "9009"]
+      "args": ["--host", "127.0.0.1", "--port", "9009"]
     }
   }
 }
@@ -226,7 +226,7 @@ Example MCP config using the installed binary:
 Example Claude Code command using the installed binary instead of `npx`:
 
 ```bash
-claude mcp add mybrowser -- mybrowser-mcp --host 0.0.0.0 --port 9009
+claude mcp add mybrowser -- mybrowser-mcp --host 127.0.0.1 --port 9009
 ```
 
 ## How It Works
@@ -243,6 +243,7 @@ This is why you need both the npm package and the extension zip.
 1. The server runs on your machine or your own network
 2. The extension connects only to the server address you configure
 3. The server and extension share an auth token from `~/.mybrowser/config.json`
+4. Fresh installs bind to `127.0.0.1`; use `--host 0.0.0.0` only when you intentionally expose the authenticated server through a trusted network or tunnel
 4. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
 
 ## Diagnostics and Support

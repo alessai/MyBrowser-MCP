@@ -2,7 +2,7 @@
   "mcpServers": {
     "mybrowser": {
       "command": "node",
-      "args": ["/mnt/sandisk/projects/BrowserMCP/MyBrowser/server/dist/index.js", "--host", "0.0.0.0"],
+      "args": ["/mnt/sandisk/projects/BrowserMCP/MyBrowser/server/dist/index.js", "--host", "127.0.0.1"],
       "env": {}
     }
   }

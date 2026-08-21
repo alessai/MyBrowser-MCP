@@ -1,4 +1,14 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -39,8 +49,15 @@ const SITES_DIR = join(MYBROWSER_DIR, "sites");
 // ---------------------------------------------------------------------------
 
 export function ensureDirectories(): void {
-  mkdirSync(SITES_DIR, { recursive: true });
-  mkdirSync(join(MYBROWSER_DIR, "recordings"), { recursive: true });
+  for (const directory of [MYBROWSER_DIR, SITES_DIR, join(MYBROWSER_DIR, "recordings")]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+  }
+  for (const entry of readdirSync(SITES_DIR, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".json")) {
+      chmodSync(join(SITES_DIR, entry.name), 0o600);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,11 +82,20 @@ export function loadSiteKnowledge(domain: string): SiteKnowledge | null {
 }
 
 export function saveSiteKnowledge(domain: string, knowledge: SiteKnowledge): void {
-  mkdirSync(SITES_DIR, { recursive: true });
+  ensureDirectories();
   const file = siteFile(domain);
-  const tmp = file + ".tmp";
-  writeFileSync(tmp, JSON.stringify(knowledge, null, 2) + "\n");
-  renameSync(tmp, file);
+  const tmp = join(SITES_DIR, `.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tmp, JSON.stringify(knowledge, null, 2) + "\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, file);
+    chmodSync(file, 0o600);
+  } finally {
+    if (existsSync(tmp)) unlinkSync(tmp);
+  }
 }
 
 export function getSiteKnowledge(domain: string): SiteKnowledge | null {
