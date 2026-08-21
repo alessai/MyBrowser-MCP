@@ -1,0 +1,50 @@
+# MyBrowser MCP installation for agents
+
+MyBrowser has two parts: an MCP server launched by the user's MCP client and an unpacked Chrome extension. Prefer the same-device setup below unless the user explicitly requests remote browser control.
+
+## Same-device setup
+
+1. Add the MCP server to the user's client with this command and arguments:
+
+   ```text
+   npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
+   ```
+
+2. Restart or reload the MCP client so the server runs once and creates the private local config:
+
+   ```text
+   ~/.mybrowser/config.json
+   ```
+
+3. On Windows, download `mybrowser-windows-installer.zip` from the latest GitHub release, extract it, and run `install-mybrowser.cmd` without Administrator privileges:
+
+   ```text
+   https://github.com/alessai/MyBrowser-MCP/releases/latest
+   ```
+
+   The installer verifies the release, installs to `%LOCALAPPDATA%\Alessai\MyBrowser\Extension`, and imports the local port and MCP token without printing or copying the token.
+
+4. Chrome requires one manual trust step that must not be bypassed. Ask the user to open `chrome://extensions`, enable Developer mode, choose Load unpacked, and select:
+
+   ```text
+   %LOCALAPPDATA%\Alessai\MyBrowser\Extension
+   ```
+
+5. On Linux or macOS, download the latest `mybrowser-extension-*-chrome.zip`, extract it to a stable folder, load that folder unpacked in Chrome, then enter `127.0.0.1`, port `9009`, and the token from `~/.mybrowser/config.json` in the extension popup. Never display the token in chat or logs.
+
+6. Verify the result with MyBrowser's `browser_diagnostics` or `list_browsers` tool. A connected browser must appear before claiming installation succeeded.
+
+## Existing Windows installation
+
+Rerun `install-mybrowser.cmd`. If it updates files, let the user close all Chrome windows when prompted; do not force-kill Chrome. Reopen Chrome and verify the connected extension version with `browser_diagnostics`.
+
+## Safety boundaries
+
+- Do not request Administrator or UAC elevation.
+- Do not edit Chrome profile databases, registry policy, or extension storage directly.
+- Do not print, echo, copy, or commit the MCP token.
+- Do not use `0.0.0.0` for a same-device setup. Remote access requires an explicit user request and a trusted tunnel or network.
+- Do not claim Chrome's one-time Load unpacked approval can be automated on ordinary unmanaged Chrome.
+- Do not report success until the MCP tool surface can see a connected browser.
+
+Full documentation: https://github.com/alessai/MyBrowser-MCP#readme

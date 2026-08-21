@@ -41,4 +41,15 @@ describe("release package contract", () => {
     expect(tabTools).toContain("temporary tab by default");
     expect(tabTools).toContain("including failure paths");
   });
+
+  it("publishes a safe low-friction agent installation handoff", () => {
+    const instructions = readFileSync(new URL("../../../llms.txt", import.meta.url), "utf8");
+
+    expect(instructions).toContain("--host 127.0.0.1");
+    expect(instructions).toContain("install-mybrowser.cmd");
+    expect(instructions).toContain("Load unpacked");
+    expect(instructions).toContain("Never display the token");
+    expect(instructions).toContain("do not force-kill Chrome");
+    expect(instructions).toContain("browser_diagnostics");
+  });
 });

@@ -28,6 +28,8 @@ This automation comes from `install-mybrowser.cmd`. Installing the extension ZIP
 
 ## Fastest Setup for Claude Code
 
+Giving this repository to an installation agent? Use [`llms.txt`](llms.txt) for the shortest safe handoff.
+
 Add MyBrowser to Claude Code with one command:
 
 ```bash
