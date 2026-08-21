@@ -56,6 +56,11 @@ jobs:
           if ((Get-Content '.output/chrome-mv3/mybrowser.local.json' -Raw).Trim() -ne 'null') {
             throw 'Extension build contains a non-empty public bootstrap.'
           }
+          $extensionZip = @(Get-ChildItem '.output/mybrowser-extension-*-chrome.zip')
+          if ($extensionZip.Count -ne 1) {
+            throw 'Extension build did not produce exactly one release ZIP.'
+          }
+          Copy-Item $extensionZip[0].FullName "$env:RUNNER_TEMP\$($extensionZip[0].Name)"
 
       - name: Verify paired release metadata
         working-directory: MyBrowser/server
@@ -173,6 +178,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: mybrowser-extension
-          path: MyBrowser/extension/.output/mybrowser-extension-*-chrome.zip
+          path: ${{ runner.temp }}\mybrowser-extension-*-chrome.zip
           if-no-files-found: error
           retention-days: 14
