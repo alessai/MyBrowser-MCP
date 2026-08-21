@@ -291,3 +291,7 @@ cd MyBrowser/extension
 npm install
 npm run build
 ```
+
+### npm releases
+
+Maintainers publish the server package by creating a matching GitHub release tag, such as `v1.1.7`. The `publish-npm.yml` workflow verifies that the tag matches the package version, packs and tests the exact npm tarball, publishes it through npm Trusted Publishing, and verifies the public registry result. GitHub supplies a short-lived OIDC identity for that workflow; the repository stores no npm publish token and releases require no npm browser login or OTP.
