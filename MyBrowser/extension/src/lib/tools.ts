@@ -1323,10 +1323,10 @@ const handlers: Record<string, ToolHandler> = {
     const files = args.files as string[];
     const tabId = ctx.getTabId();
 
-    // Use CDP to set files on the input element
+    // Resolve the input before starting the one-shot file assignment.
+    let nodeId: number;
     try {
       await ensureAttached(tabId);
-      // First, find the DOM node for the file input
       const docResult = await sendCommand<{ root: { nodeId: number } }>(tabId, 'DOM.getDocument');
       if (!docResult?.root) throw new Error('Failed to get document root');
 
@@ -1335,23 +1335,22 @@ const handlers: Record<string, ToolHandler> = {
         selector,
       });
       if (!queryResult?.nodeId) throw new Error(`File input not found: ${selector}`);
-
-      await sendCommand(tabId, 'DOM.setFileInputFiles', {
-        nodeId: queryResult.nodeId,
-        files,
-      });
-
-      return { uploaded: true, files, selector };
-    } catch (cdpError) {
-      // Fallback: try via content script (limited — only works for some cases)
-      await ensureContentScript(tabId);
-      await sendToTab(tabId, 'cs_click', { selector });
+      nodeId = queryResult.nodeId;
+    } catch (error) {
+      ctx.signal?.throwIfAborted();
       throw new Error(
-        `File upload via CDP failed: ${cdpError instanceof Error ? cdpError.message : cdpError}. ` +
-        `Note: File upload requires Chrome debugger access. Close DevTools or disable the conflicting extension, then retry. ` +
-        `The file input was clicked as a fallback — you may need to manually select files.`,
+        `File upload requires Chrome debugger access: ${error instanceof Error ? error.message : error}. ` +
+        'Close DevTools or disable the conflicting extension, then retry.',
       );
     }
+    ctx.signal?.throwIfAborted();
+    await runActionOnce(async () => {
+      await sendCommand(tabId, 'DOM.setFileInputFiles', {
+        nodeId,
+        files,
+      });
+    }, 'UPLOAD_OUTCOME_UNKNOWN', ctx.signal);
+    return { uploaded: true, files, selector };
   },
 
   // === ULTRA: File download via chrome.downloads ===
@@ -1369,6 +1368,7 @@ const handlers: Record<string, ToolHandler> = {
       if (!pageUrl.startsWith('http')) throw new Error('Cannot download non-HTTP page');
       const resolvedFilename = buildDownloadFilename(pageUrl, directory, filename);
 
+      ctx.signal?.throwIfAborted();
       const downloadId = await chrome.downloads.download({
         url: pageUrl,
         filename: resolvedFilename,
@@ -1383,6 +1383,7 @@ const handlers: Record<string, ToolHandler> = {
 
     const resolvedFilename = buildDownloadFilename(url, directory, filename);
 
+    ctx.signal?.throwIfAborted();
     const downloadId = await chrome.downloads.download({
       url,
       filename: resolvedFilename,
@@ -1404,24 +1405,26 @@ const handlers: Record<string, ToolHandler> = {
 
     if (action === 'write') {
       if (!text) throw new Error('Text is required for clipboard write');
-      // Use CDP to write to clipboard
       try {
         await ensureAttached(tabId);
-        // Copy text by evaluating in page context
-        await sendCommand(tabId, 'Runtime.evaluate', {
-          expression: `navigator.clipboard.writeText(${JSON.stringify(text)})`,
-          awaitPromise: true,
-          returnByValue: true,
-        });
-        return { success: true, action: 'write' };
       } catch {
-        // Fallback: use content script
+        ctx.signal?.throwIfAborted();
         await ensureContentScript(tabId);
+        ctx.signal?.throwIfAborted();
         await sendToTab(tabId, 'cs_eval', {
           code: `navigator.clipboard.writeText(${JSON.stringify(text)}).then(() => 'ok').catch(e => e.message)`,
         });
         return { success: true, action: 'write' };
       }
+      ctx.signal?.throwIfAborted();
+      await runActionOnce(async () => {
+        await sendCommand(tabId, 'Runtime.evaluate', {
+          expression: `navigator.clipboard.writeText(${JSON.stringify(text)})`,
+          awaitPromise: true,
+          returnByValue: true,
+        });
+      }, 'CLIPBOARD_WRITE_OUTCOME_UNKNOWN', ctx.signal);
+      return { success: true, action: 'write' };
     }
 
     if (action === 'read') {
