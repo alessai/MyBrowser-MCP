@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   dispatchScheduledRequest,
@@ -31,6 +31,33 @@ function meta(overrides: Partial<RequestMeta> = {}): RequestMeta {
 }
 
 describe("RequestScheduler", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("aborts expired running work and advances the queue", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const scheduler = new RequestScheduler();
+    const hung = deferred<void>();
+    let runningSignal: AbortSignal | undefined;
+    let nextStarted = false;
+
+    const running = scheduler.runTab(1, meta({ expiresAt: 1_000 }), async (signal) => {
+      runningSignal = signal;
+      return hung.promise;
+    });
+    const next = scheduler.runTab(1, meta({ requestId: "next", expiresAt: 10_000 }), async () => {
+      nextStarted = true;
+    });
+    const rejection = expect(running).rejects.toThrow("REQUEST_EXPIRED");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejection;
+    await expect(next).resolves.toBeUndefined();
+    expect(runningSignal?.aborted).toBe(true);
+    expect(nextStarted).toBe(true);
+    hung.resolve();
+  });
+
   it("invokes the optional start callback exactly once for every queue kind", async () => {
     let now = 10;
     const scheduler = new RequestScheduler({ now: () => now++ });

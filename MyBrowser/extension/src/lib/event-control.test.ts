@@ -4,6 +4,7 @@ import {
   addHandler,
   clearHandlers,
   listHandlers,
+  resetHandlersAfterTransportDisconnect,
   type EventHandler,
 } from './events';
 import { handleTool, type ToolContext } from './tools';
@@ -36,6 +37,14 @@ function context(sessionId: string): ToolContext {
 
 describe('production event mirror controls', () => {
   beforeEach(() => clearHandlers());
+
+  it('drops local mirrors when the browser transport disconnects', () => {
+    addHandler(handler('handler-a', 'session-a'));
+
+    resetHandlersAfterTransportDisconnect();
+
+    expect(listHandlers()).toEqual([]);
+  });
 
   it('derives registered handler ownership from the injected request session', async () => {
     await handleTool(

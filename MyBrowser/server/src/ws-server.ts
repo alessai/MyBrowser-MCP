@@ -63,6 +63,7 @@ export interface WsServerOptions {
   sessionReconnectGraceMs?: number;
   finalizedSessionTtlMs?: number;
   finalizedSessionLimit?: number;
+  clientReconnectDelayMs?: number;
 }
 
 interface RecordingRetryPayload {
@@ -1566,6 +1567,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
 async function connectAsClient(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
+  const clientReconnectDelayMs = options.clientReconnectDelayMs ?? 3_000;
   const bindHost = host === "0.0.0.0" ? "127.0.0.1" : host;
   const url = `ws://${bindHost}:${port}`;
   let ws: WebSocket | null = null;
@@ -1585,7 +1587,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       reconnect();
-    }, 3000);
+    }, clientReconnectDelayMs);
   };
 
   const clearHeartbeatTimeout = () => {
@@ -1744,6 +1746,9 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
         // Re-register session after reconnect
         if (reconnectCb) reconnectCb().catch(() => {
           console.error("[MyBrowser MCP] RECONNECT_CALLBACK_FAILED");
+          // Re-enter the normal reconnect loop. The old hub-side session
+          // binding may still be inside its liveness/grace window.
+          if (ws?.readyState === WebSocket.OPEN) ws.terminate();
         });
         return;
       }

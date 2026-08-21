@@ -2598,6 +2598,42 @@ describe("WebSocket v2 authentication", () => {
       protocolVersion: PROTOCOL_VERSION,
     });
   }, 7_000);
+
+  it("retries the connection when session registration after reconnect fails", async () => {
+    let firstConnection: WebSocket | undefined;
+    let connectionCount = 0;
+    let resolveRecovered!: () => void;
+    const recovered = new Promise<void>((resolve) => { resolveRecovered = resolve; });
+    const port = await startFakeHub((ws) => {
+      connectionCount += 1;
+      if (connectionCount === 1) firstConnection = ws;
+      ws.send(JSON.stringify({
+        type: "auth",
+        status: "ok",
+        protocolVersion: PROTOCOL_VERSION,
+      }));
+    });
+    const result = await createWebSocketServer({
+      host: "127.0.0.1",
+      port,
+      token: TOKEN,
+      context: new Context(),
+      clientReconnectDelayMs: 1,
+    });
+    servers.push(result);
+    let registrations = 0;
+    result.onReconnect?.(async () => {
+      registrations += 1;
+      if (registrations === 1) throw new Error("SESSION_IDENTITY_MISMATCH");
+      resolveRecovered();
+    });
+
+    firstConnection!.close();
+
+    await expect(recovered).resolves.toBeUndefined();
+    expect(registrations).toBe(2);
+    expect(connectionCount).toBe(3);
+  });
 });
 
 describe("WebSocket connection roles and session binding", () => {

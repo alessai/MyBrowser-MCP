@@ -60,4 +60,12 @@ describe('input navigation lifecycle', () => {
     })).rejects.toThrow('action failed');
     expect(navigationListeners.size).toBe(0);
   });
+
+  it('stops before a browser side effect after its request is aborted', async () => {
+    const controller = new AbortController();
+    const device = new InputDevice(7, controller.signal);
+    controller.abort();
+
+    await expect(device.click({ x: 1, y: 1 })).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });

@@ -60,6 +60,7 @@ import {
   listHandlers,
   cleanupClosedSession,
   clearHandlersForSession,
+  resetHandlersAfterTransportDisconnect,
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
 import { importInstallerBootstrap } from '../../lib/installer-bootstrap';
@@ -348,14 +349,6 @@ export default defineBackground(() => {
       });
       telemetryBuilder?.setResolvedTabId(tabId);
 
-      const context = new RequestToolContext({
-        sessionId: request.sessionId,
-        requestId: request.id,
-        expiresAt,
-        tabId,
-        sessionState,
-        services: { networkCapture, temporaryTabs },
-      });
       const requestMeta = {
         requestId: request.id,
         sessionId: request.sessionId,
@@ -364,8 +357,17 @@ export default defineBackground(() => {
           onStart: (startedAt: number) => telemetryBuilder.markQueueStarted(startedAt),
         }),
       };
-      const work = async (): Promise<unknown> => {
+      const work = async (signal: AbortSignal): Promise<unknown> => {
         if (expiresAt <= Date.now()) throw new Error('REQUEST_EXPIRED');
+        const context = new RequestToolContext({
+          sessionId: request.sessionId,
+          requestId: request.id,
+          expiresAt,
+          tabId,
+          sessionState,
+          services: { networkCapture, temporaryTabs },
+          signal,
+        });
         const run = () => handleTool(request.type, request.payload, context);
         telemetryBuilder?.markHandlerStarted();
         try {
@@ -477,6 +479,7 @@ export default defineBackground(() => {
 
       if (msg.type === '_os_disconnected') {
         recordingPortGeneration.disconnect(portGeneration);
+        resetHandlersAfterTransportDisconnect();
         recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
         setBadge('disconnected');
         return;
@@ -525,6 +528,7 @@ export default defineBackground(() => {
 
   addMessageHandler('_os_disconnected', async () => {
     disconnectRecordingTransport();
+    resetHandlersAfterTransportDisconnect();
     recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
     setBadge('disconnected');
   });

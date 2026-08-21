@@ -36,10 +36,14 @@ export class InputDevice {
   readonly keyboard: Keyboard;
   readonly mouse: Mouse;
 
-  constructor(tabId: number) {
+  constructor(tabId: number, private readonly signal?: AbortSignal) {
     this.tabId = tabId;
     this.keyboard = new Keyboard(tabId);
     this.mouse = new Mouse(tabId, this.keyboard);
+  }
+
+  private checkAborted(): void {
+    this.signal?.throwIfAborted();
   }
 
   updateTabId(tabId: number): void {
@@ -49,14 +53,18 @@ export class InputDevice {
   }
 
   async click(coords: Coordinates, options?: { clickCount?: number }): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     const scaled = await scaleCoords(this.tabId, coords);
+    this.checkAborted();
     await this.mouse.click(scaled.x, scaled.y, options);
   }
 
   async moveMouse(coords: Coordinates): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     const scaled = await scaleCoords(this.tabId, coords);
+    this.checkAborted();
     await this.mouse.move(scaled.x, scaled.y);
   }
 
@@ -65,43 +73,61 @@ export class InputDevice {
   }
 
   async type(text: string, selector?: string): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     if (selector) {
       const inputType = await sendToTab<string | null>(this.tabId, 'getInputType', { selector });
+      this.checkAborted();
       if (inputType && SPECIAL_INPUT_TYPES.has(inputType)) {
         await sendToTab(this.tabId, 'setInputValue', { selector, value: text });
       } else {
         await sendToTab(this.tabId, 'selectText', { selector });
+        this.checkAborted();
         await this.keyboard.press('Backspace');
       }
     }
+    this.checkAborted();
     await this.keyboard.type(text);
   }
 
   async fill(text: string): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     await sendCommand(this.tabId, 'Input.insertText', { text });
   }
 
   async pressKey(key: string): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     const keys = key.split('+');
-    for (const k of keys) await this.keyboard.down(k);
-    for (const k of keys.reverse()) await this.keyboard.up(k);
+    for (const k of keys) {
+      this.checkAborted();
+      await this.keyboard.down(k);
+    }
+    for (const k of keys.reverse()) {
+      this.checkAborted();
+      await this.keyboard.up(k);
+    }
   }
 
   async wheel(options: { deltaX?: number; deltaY?: number }): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     await this.mouse.wheel(options);
   }
 
   async dragAndDrop(start: Coordinates, end: Coordinates): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     const scaledStart = await scaleCoords(this.tabId, start);
     const scaledEnd = await scaleCoords(this.tabId, end);
+    this.checkAborted();
     await this.mouse.move(scaledStart.x, scaledStart.y);
+    this.checkAborted();
     await this.mouse.down();
+    this.checkAborted();
     await this.mouse.move(scaledEnd.x, scaledEnd.y);
+    this.checkAborted();
     await this.mouse.up();
   }
 
@@ -111,6 +137,7 @@ export class InputDevice {
   }
 
   async resetMousePosition(): Promise<void> {
+    this.checkAborted();
     await ensureAttached(this.tabId);
     await this.mouse.move(-1, -1);
   }

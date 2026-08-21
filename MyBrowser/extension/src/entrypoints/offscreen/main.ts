@@ -23,6 +23,7 @@ let lastConfig: { url: string; token: string; browserName?: string } | null = nu
 
 let port: chrome.runtime.Port | null = null;
 let portRetryDelay = 200;
+let backgroundPortWasLost = false;
 const PORT_MAX_RETRY_DELAY = 10_000;
 
 function ensurePort(): chrome.runtime.Port | null {
@@ -34,6 +35,13 @@ function ensurePort(): chrome.runtime.Port | null {
     return null;
   }
   portRetryDelay = 200; // Reset backoff on successful connect
+  if (backgroundPortWasLost) {
+    backgroundPortWasLost = false;
+    if (ws.getState() === 'CONNECTED') {
+      void postToBackground({ type: '_os_disconnected' });
+      ws.forceReconnect();
+    }
+  }
   port.onDisconnect.addListener(() => {
     try {
       if (ws.getState() === 'CONNECTED') {
@@ -41,6 +49,7 @@ function ensurePort(): chrome.runtime.Port | null {
       }
     } finally {
       port = null;
+      backgroundPortWasLost = true;
       schedulePortRetry();
     }
   });

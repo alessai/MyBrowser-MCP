@@ -15,7 +15,7 @@ export interface RequestMeta {
 
 interface QueueEntry {
   meta: RequestMeta;
-  work: () => Promise<unknown>;
+  work: (signal: AbortSignal) => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 }
@@ -60,24 +60,24 @@ export class RequestScheduler {
     return this.globalPending;
   }
 
-  runTab<T>(tabId: number, meta: RequestMeta, work: () => Promise<T>): Promise<T> {
+  runTab<T>(tabId: number, meta: RequestMeta, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     return this.enqueue(this.tabQueues, tabId, this.maxPendingPerTab, meta, work);
   }
 
-  runSession<T>(sessionId: string, meta: RequestMeta, work: () => Promise<T>): Promise<T> {
+  runSession<T>(sessionId: string, meta: RequestMeta, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     return this.enqueue(this.sessionQueues, sessionId, Number.POSITIVE_INFINITY, meta, work);
   }
 
-  runGlobal<T>(meta: RequestMeta, work: () => Promise<T>): Promise<T> {
+  runGlobal<T>(meta: RequestMeta, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     return this.enqueue(this.globalQueues, 'global', Number.POSITIVE_INFINITY, meta, work);
   }
 
-  async runUnqueued<T>(meta: RequestMeta, work: () => Promise<T>): Promise<T> {
+  async runUnqueued<T>(meta: RequestMeta, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.closedSessions.has(meta.sessionId)) throw new Error('SESSION_CLOSED');
     const startedAt = this.now();
     try { meta.onStart?.(startedAt); } catch { /* telemetry callbacks are inert */ }
     if (meta.expiresAt <= startedAt) throw new Error('REQUEST_EXPIRED');
-    return work();
+    return this.runWithDeadline(meta, startedAt, work);
   }
 
   cancelTab(tabId: number, code: ProtocolErrorCode): void {
@@ -98,7 +98,7 @@ export class RequestScheduler {
     key: K,
     maxPendingForQueue: number,
     meta: RequestMeta,
-    work: () => Promise<T>,
+    work: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     if (this.closedSessions.has(meta.sessionId)) {
       return Promise.reject(new Error('SESSION_CLOSED'));
@@ -149,7 +149,7 @@ export class RequestScheduler {
       if (entry.meta.expiresAt <= startedAt) {
         throw new Error('REQUEST_EXPIRED');
       }
-      entry.resolve(await entry.work());
+      entry.resolve(await this.runWithDeadline(entry.meta, startedAt, entry.work));
     } catch (error) {
       entry.reject(error instanceof Error ? error : new Error(String(error)));
     } finally {
@@ -161,6 +161,27 @@ export class RequestScheduler {
         queue.running = false;
         queues.delete(key);
       }
+    }
+  }
+
+  private async runWithDeadline<T>(
+    meta: RequestMeta,
+    startedAt: number,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const operation = work(controller.signal);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('REQUEST_EXPIRED'));
+      }, Math.max(0, meta.expiresAt - startedAt));
+    });
+    try {
+      return await Promise.race([operation, expired]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -187,7 +208,7 @@ export function dispatchScheduledRequest<T>(
   queue: RequestQueueKind,
   tabId: number,
   meta: RequestMeta,
-  work: () => Promise<T>,
+  work: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   switch (queue) {
     case 'tab':

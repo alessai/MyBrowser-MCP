@@ -80,6 +80,10 @@ export function clearHandlers(): void {
   handlers.length = 0;
 }
 
+export function resetHandlersAfterTransportDisconnect(): void {
+  clearHandlers();
+}
+
 export function clearHandlersForSession(sessionId: string): void {
   for (let index = handlers.length - 1; index >= 0; index -= 1) {
     if (handlers[index]?.sessionId === sessionId) handlers.splice(index, 1);
