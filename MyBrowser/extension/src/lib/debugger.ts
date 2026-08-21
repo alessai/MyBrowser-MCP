@@ -58,6 +58,15 @@ function notifyAttached(tabId: number): void {
   }
 }
 
+function markAttached(tabId: number): void {
+  const wasAttached = attachedTabs.has(tabId);
+  attachedTabs.add(tabId);
+  if (!wasAttached) {
+    pendingRequestsByTab.delete(tabId);
+    notifyAttached(tabId);
+  }
+}
+
 export function getAttachedTabs(): number[] {
   return Array.from(attachedTabs);
 }
@@ -87,8 +96,9 @@ async function handleError(err: Error, target: Debuggee): Promise<void> {
   const kind = classifyError(err.message);
   if (kind === 'notAttached') {
     await doAttach(target, '1.3');
+    if (target.tabId !== undefined) markAttached(target.tabId);
   } else if (kind === 'alreadyAttached') {
-    // Already good
+    if (target.tabId !== undefined) markAttached(target.tabId);
   } else if (kind === 'otherExtension') {
     // Can't debug chrome-extension:// pages — clean up and throw
     if (target.tabId !== undefined) {
@@ -102,6 +112,7 @@ async function handleError(err: Error, target: Debuggee): Promise<void> {
       runtimeEnabledTabs.delete(target.tabId);
     }
     await doAttach(target, '1.3');
+    if (target.tabId !== undefined) markAttached(target.tabId);
   } else {
     throw err;
   }
@@ -118,21 +129,18 @@ export async function ensureAttached(tabId: number): Promise<void> {
   const target: Debuggee = { tabId };
   try {
     await doAttach(target, '1.3');
-    const wasAttached = attachedTabs.has(tabId);
-    attachedTabs.add(tabId);
-    if (!wasAttached) notifyAttached(tabId);
+    markAttached(tabId);
   } catch (e) {
     if (!(e instanceof Error)) throw e;
     const kind = classifyError(e.message);
 
     if (kind === 'alreadyAttached') {
       try {
+        attachedTabs.delete(tabId);
         await doDetach(target);
         runtimeEnabledTabs.delete(tabId);
         await doAttach(target, '1.3');
-        const wasAttached = attachedTabs.has(tabId);
-        attachedTabs.add(tabId);
-        if (!wasAttached) notifyAttached(tabId);
+        markAttached(tabId);
       } catch {
         throw e;
       }
@@ -154,7 +162,6 @@ export async function ensureAttached(tabId: number): Promise<void> {
       );
     } else {
       await handleError(e, target);
-      attachedTabs.add(tabId);
     }
   }
 }

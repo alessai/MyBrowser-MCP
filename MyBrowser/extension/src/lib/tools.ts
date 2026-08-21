@@ -660,8 +660,9 @@ const handlers: Record<string, ToolHandler> = {
       await ctx.input.moveMouse(startCoords);
       await delay(AFTER_ACTION_DELAY_MS);
       await ctx.input.dragAndDrop(startCoords, endCoords);
-    } catch {
-      throw new Error('Drag requires Chrome debugger access which is currently unavailable. Close Chrome DevTools and any conflicting extensions, then retry.');
+    } catch (error) {
+      ctx.signal?.throwIfAborted();
+      throw new Error('DRAG_OUTCOME_UNKNOWN', { cause: error });
     }
     await waitForStableDOM(tabId);
   },
@@ -671,6 +672,7 @@ const handlers: Record<string, ToolHandler> = {
     const tabId = ctx.getTabId();
     await ensureContentScript(tabId);
     const selector = await resolveTarget(tabId, args);
+    ctx.signal?.throwIfAborted();
     await sendToTab(tabId, 'selectOption', { selector, values, selectMethod: 'value' });
     await waitForStableDOM(tabId);
   },
@@ -789,6 +791,7 @@ const handlers: Record<string, ToolHandler> = {
   async browser_fill_form(args, ctx) {
     const tabId = ctx.getTabId();
     await ensureContentScript(tabId);
+    ctx.signal?.throwIfAborted();
     return sendToTab(tabId, 'browser_fill_form', {
       fields: args.fields,
       submitAfter: args.submitAfter ?? false,
@@ -893,8 +896,10 @@ const handlers: Record<string, ToolHandler> = {
     await ctx.setTabId(tabId);
     await ensureContentScript(tabId);
     if (!isConsoleCaptureActive(tabId)) {
-      await enableRuntime(tabId);
-      clearConsoleLogs(tabId);
+      try {
+        await enableRuntime(tabId);
+        clearConsoleLogs(tabId);
+      } catch { /* selecting a tab must not require debugger access */ }
     }
   },
 
@@ -995,33 +1000,41 @@ const handlers: Record<string, ToolHandler> = {
     const code = args.code as string;
     const timeout = (args.timeout as number) || 5000;
     const tabId = ctx.getTabId();
-    // Try CDP first, then preserve page-world semantics through scripting MAIN.
+    // Use scripting MAIN only when debugger preparation fails before evaluation starts.
     try {
       await ensureAttached(tabId);
-      const result = await sendCommand<{
+    } catch {
+      ctx.signal?.throwIfAborted();
+      return evaluateInMainWorld(tabId, code);
+    }
+    ctx.signal?.throwIfAborted();
+    let result: {
         result: { type: string; value?: unknown; description?: string; className?: string };
         exceptionDetails?: { exception?: { description?: string }; text?: string };
-      }>(tabId, 'Runtime.evaluate', {
+      } | undefined;
+    try {
+      result = await sendCommand(tabId, 'Runtime.evaluate', {
         expression: code,
         returnByValue: true,
         awaitPromise: true,
         timeout,
       });
-      if (result?.exceptionDetails) {
-        const desc =
-          result.exceptionDetails.exception?.description ||
-          result.exceptionDetails.text ||
-          'Unknown evaluation error';
-        return { error: desc };
-      }
-      const r = result?.result;
-      if (!r) return { value: undefined };
-      if (r.type === 'undefined') return { value: undefined };
-      if (r.value !== undefined) return { value: r.value };
-      return { value: r.description || String(r) };
-    } catch {
-      return evaluateInMainWorld(tabId, code);
+    } catch (error) {
+      ctx.signal?.throwIfAborted();
+      throw new Error('EVAL_OUTCOME_UNKNOWN', { cause: error });
     }
+    if (result?.exceptionDetails) {
+      const desc =
+        result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        'Unknown evaluation error';
+      return { error: desc };
+    }
+    const r = result?.result;
+    if (!r) return { value: undefined };
+    if (r.type === 'undefined') return { value: undefined };
+    if (r.value !== undefined) return { value: r.value };
+    return { value: r.description || String(r) };
   },
 
   // === ULTRA Phase 5: Storage inspection ===
@@ -1035,10 +1048,12 @@ const handlers: Record<string, ToolHandler> = {
     const tabId = ctx.getTabId();
     try {
       await ensureAttached(tabId);
-    } catch (e) {
+    } catch {
+      ctx.signal?.throwIfAborted();
       // For localStorage/sessionStorage, try content script fallback
       if (storageType !== 'cookies') {
         await ensureContentScript(tabId);
+        ctx.signal?.throwIfAborted();
         const st = storageType === 'sessionStorage' ? 'sessionStorage' : 'localStorage';
         if (action === 'get' && key) {
           const val = await sendToTab<string | null>(tabId, 'cs_eval', { code: `${st}.getItem(${JSON.stringify(key)})` });
@@ -1059,6 +1074,7 @@ const handlers: Record<string, ToolHandler> = {
       }
       throw new Error('Storage (cookies) requires Chrome debugger access which is currently unavailable.');
     }
+    ctx.signal?.throwIfAborted();
 
     // --- Cookies via CDP Network.getCookies ---
     if (storageType === 'cookies') {

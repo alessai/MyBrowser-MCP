@@ -43,6 +43,21 @@ describe('pre-action fallback', () => {
     )).rejects.toMatchObject({ name: 'AbortError' });
     expect(fallback).not.toHaveBeenCalled();
   });
+
+  it('preserves aborts from the primary action instead of relabeling them', async () => {
+    const controller = new AbortController();
+
+    await expect(runPreActionFallback(
+      async () => undefined,
+      async () => {
+        controller.abort();
+        throw new Error('action interrupted');
+      },
+      async () => 'fallback',
+      'OUTCOME_UNKNOWN',
+      controller.signal,
+    )).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });
 
 describe('unrepeatable actions', () => {

@@ -993,18 +993,6 @@ function registerHandlers(): (() => void)[] {
     }),
   );
 
-  // Content-script-based press key
-  cleanups.push(
-    addMessageHandler('cs_press_key', async (payload: unknown) => {
-      const { key } = payload as { key: string };
-      const target = document.activeElement || document.body;
-      target.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true }));
-      target.dispatchEvent(new KeyboardEvent('keypress', { key, code: key, bubbles: true }));
-      target.dispatchEvent(new KeyboardEvent('keyup', { key, code: key, bubbles: true }));
-      return { pressed: true, key };
-    }),
-  );
-
   // Annotation overlay — user presses the hotkey, SW routes the command here,
   // we mount the overlay. The overlay resolves with {note, metadata} on Save
   // or null on Cancel. On Save we message the SW to capture + upload.

@@ -15,6 +15,7 @@ export async function runPreActionFallback<T>(
   try {
     return await act();
   } catch (error) {
+    signal?.throwIfAborted();
     throw new Error(unknownOutcomeCode, { cause: error });
   }
 }

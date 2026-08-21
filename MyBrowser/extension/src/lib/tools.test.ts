@@ -121,4 +121,41 @@ describe('console assertion truthfulness', () => {
     expect(evaluateConsoleNoErrors(888_888).passed).toBe(true);
     vi.unstubAllGlobals();
   });
+
+  it('does not make tab selection depend on debugger availability', async () => {
+    const { ctx } = context();
+    vi.stubGlobal('chrome', {
+      tabs: {
+        update: vi.fn(async () => undefined),
+        sendMessage: vi.fn(async () => ({ ok: true })),
+      },
+      debugger: {
+        attach: vi.fn(async () => { throw new Error('debugger unavailable'); }),
+      },
+    });
+
+    await expect(handleTool('select_tab', { tabId: 777_777 }, ctx)).resolves.toBeUndefined();
+    expect(ctx.setTabId).toHaveBeenCalledWith(777_777);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('evaluation outcome boundaries', () => {
+  it('does not rerun code after CDP evaluation has started', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(666_666);
+    const executeScript = vi.fn(async () => [{ result: '{}' }]);
+    vi.stubGlobal('chrome', {
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        sendCommand: vi.fn(async () => { throw new Error('response lost'); }),
+      },
+      scripting: { executeScript },
+    });
+
+    await expect(handleTool('browser_eval', { code: 'globalThis.sideEffect = true' }, ctx))
+      .rejects.toThrow('EVAL_OUTCOME_UNKNOWN');
+    expect(executeScript).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });
