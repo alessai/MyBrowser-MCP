@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -45,8 +45,14 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
           package=$(node -p "require('./package.json').name")
-          if ! git merge-base --is-ancestor HEAD origin/main; then
+          tag_commit=$(git rev-parse "$RELEASE_TAG^{commit}")
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
             echo "Release tag $RELEASE_TAG is not on main." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] &&
+             ! git diff --quiet "$tag_commit" HEAD -- MyBrowser; then
+            echo "Current MyBrowser source does not match release tag $RELEASE_TAG." >&2
             exit 1
           fi
           if [[ "$RELEASE_TAG" != "v$version" ]]; then
@@ -81,7 +87,9 @@ jobs:
             echo "$contents" >&2
             exit 1
           fi
+          integrity=$(node -e "const fs=require('node:fs');const c=require('node:crypto');process.stdout.write('sha512-'+c.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$tarball")
           echo "tarball=$tarball" >> "$GITHUB_ENV"
+          echo "integrity=$integrity" >> "$GITHUB_ENV"
 
       - name: Smoke test the exact tarball
         shell: bash
@@ -105,11 +113,16 @@ jobs:
         run: |
           set -euo pipefail
           for _ in {1..12}; do
-            published=$(npm view "$package" version --registry=https://registry.npmjs.org 2>/dev/null || true)
-            if [[ "$published" == "$version" ]]; then
+            published=$(npm view "$package@$version" dist.integrity --registry=https://registry.npmjs.org 2>/dev/null || true)
+            if [[ "$published" == "$integrity" ]]; then
+              latest=$(npm view "$package" version --registry=https://registry.npmjs.org)
+              if [[ "$latest" != "$version" ]]; then
+                echo "npm latest resolves to $latest instead of $version." >&2
+                exit 1
+              fi
               exit 0
             fi
             sleep 10
           done
-          echo "npm latest did not resolve to $package@$version." >&2
+          echo "npm did not serve the verified integrity for $package@$version." >&2
           exit 1
