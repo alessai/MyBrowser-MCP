@@ -118,6 +118,7 @@ export class InputDevice {
   // Wait for navigation if one starts during an action
   async waitForTabIfNavigationStarted(tabId: number, action: () => Promise<void>): Promise<void> {
     let navigationPromise: Promise<void> | null = null;
+    let actionError: unknown;
 
     const onBeforeNavigate = (details: { tabId: number; frameId: number }) => {
       if (details.tabId !== tabId || details.frameId !== 0) return;
@@ -128,32 +129,67 @@ export class InputDevice {
     };
 
     chrome.webNavigation.onBeforeNavigate.addListener(onBeforeNavigate);
-    await action();
-    chrome.webNavigation.onBeforeNavigate.removeListener(onBeforeNavigate);
-    if (navigationPromise) await navigationPromise;
+    try {
+      await action();
+    } catch (error) {
+      actionError = error;
+    } finally {
+      chrome.webNavigation.onBeforeNavigate.removeListener(onBeforeNavigate);
+    }
+
+    try {
+      if (navigationPromise) await navigationPromise;
+    } catch (error) {
+      if (actionError === undefined) throw error;
+    }
+    if (actionError !== undefined) throw actionError;
   }
 }
 
 // Wait for tab to finish loading
-function waitForTabLoad(tabId: number): Promise<void> {
-  return new Promise((resolve) => {
-    const check = () => {
-      chrome.tabs.get(tabId, (tab) => {
-        if (tab?.status === 'complete') {
-          resolve();
-        } else {
-          setTimeout(check, 100);
-        }
-      });
+export function waitForTabLoad(tabId: number, timeoutMs = 30_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      if (pollTimer !== undefined) clearTimeout(pollTimer);
+      clearTimeout(timeoutTimer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
     };
-    // Also listen for the completed event
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+
     const onUpdated = (id: number, info: chrome.tabs.TabChangeInfo) => {
-      if (id === tabId && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
+      if (id === tabId && info.status === 'complete') finish();
+    };
+    const onRemoved = (id: number) => {
+      if (id === tabId) finish(new Error('TAB_CLOSED'));
+    };
+    const check = async () => {
+      if (settled) return;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status === 'complete') finish();
+        else pollTimer = setTimeout(check, 100);
+      } catch {
+        finish(new Error('TAB_CLOSED'));
       }
     };
+    const timeoutTimer = setTimeout(
+      () => finish(new Error('TAB_LOAD_TIMEOUT')),
+      timeoutMs,
+    );
+
     chrome.tabs.onUpdated.addListener(onUpdated);
-    check();
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    void check();
   });
 }

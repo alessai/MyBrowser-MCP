@@ -11,6 +11,7 @@ import {
 } from '../../lib/keepalive-policy';
 import { handleTool } from '../../lib/tools';
 import { resolveTabId, injectIntoAllTabs } from '../../lib/tab-manager';
+import { captureAnnotationTab, openAnnotationOverlay } from '../../lib/annotation';
 import { RequestToolContext, resolveInitialTab } from '../../lib/request-context';
 import {
   dispatchScheduledRequest,
@@ -825,14 +826,13 @@ export default defineBackground(() => {
    * is wider than 2 × viewport.width, downsample before returning.
    */
   async function captureViewportPng(
+    tabId: number,
     windowId: number | undefined,
     viewportWidth: number,
     viewportHeight: number,
   ): Promise<string> {
-    const dataUrl = await chrome.tabs.captureVisibleTab(
-      windowId ?? chrome.windows.WINDOW_ID_CURRENT,
-      { format: 'png' },
-    );
+    if (windowId === undefined) throw new Error('annotation_save: missing sender window');
+    const dataUrl = await captureAnnotationTab(tabId, windowId);
     const comma = dataUrl.indexOf(',');
     if (comma < 0) throw new Error('Invalid capture data URL');
 
@@ -943,6 +943,7 @@ export default defineBackground(() => {
       // overlay here: if the save fails, the content script will restore
       // the UI so the user can retry without losing their drawing.
       const pngBase64 = await captureViewportPng(
+        tabId,
         windowId,
         p.metadata.viewport.width,
         p.metadata.viewport.height,
@@ -1008,7 +1009,7 @@ export default defineBackground(() => {
         recordExtensionIssue('annotation', 'Unsupported page for annotation', { url: tab.url }, 'warn');
         return;
       }
-      await sendToTab(tab.id, 'open_annotation_overlay');
+      await openAnnotationOverlay(tab.id);
     } catch (e) {
       console.error('[MyBrowser] OPEN_ANNOTATION_FAILED');
       recordExtensionIssue('annotation', 'open_annotation command failed', e);

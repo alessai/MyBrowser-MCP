@@ -82,15 +82,11 @@ export async function ensureContentScript(tabId: number): Promise<void> {
 }
 
 export async function injectContentScript(tabId: number): Promise<void> {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content-scripts/content.js'],
-      injectImmediately: true,
-    });
-  } catch (e) {
-    console.warn(`Unable to inject tab ${tabId}: ${(e as Error).message}`);
-  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content-scripts/content.js'],
+    injectImmediately: true,
+  });
 }
 
 export async function injectIntoAllTabs(): Promise<void> {
@@ -98,7 +94,9 @@ export async function injectIntoAllTabs(): Promise<void> {
   await Promise.all(
     tabs.map((t) => {
       if (t.id === undefined || !isInjectableUrl(t.url)) return;
-      return injectContentScript(t.id);
+      return injectContentScript(t.id).catch((error) => {
+        console.warn(`Unable to inject tab ${t.id}: ${(error as Error).message}`);
+      });
     }),
   );
 }
