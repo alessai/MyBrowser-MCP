@@ -17,7 +17,7 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Test with Windows PowerShell 5.1
         shell: powershell
@@ -62,7 +62,7 @@ jobs:
           ) -DestinationPath "$env:RUNNER_TEMP\mybrowser-windows-installer.zip"
 
       - name: Upload the installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mybrowser-windows-installer
           path: ${{ runner.temp }}\mybrowser-windows-installer.zip
