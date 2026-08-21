@@ -156,7 +156,7 @@ The installer downloads and verifies the latest extension, then stores it at:
 %LOCALAPPDATA%\Alessai\MyBrowser\Extension
 ```
 
-When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. If the config does not exist yet, start MyBrowser MCP once and rerun the installer with `-Force`, or enter the settings manually.
+When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. If the config does not exist yet, start MyBrowser MCP once and rerun the installer, or enter the settings manually. A later token or port change is detected and refreshed automatically.
 
 The local bootstrap contains the same token as the MCP config and stays under the current user's Local AppData. Do not share the installed extension folder.
 

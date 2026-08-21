@@ -189,6 +189,18 @@ try {
     Assert-True ($bootstrap.authToken -eq 'local-secret') 'Bootstrap token is invalid.'
     Assert-True ($bootstrap.browserName -eq 'MAINPC') 'Bootstrap browser name is invalid.'
 
+    $firstBootstrapId = $bootstrap.bootstrapId
+    Write-MyBrowserBootstrap -Directory $bootstrapDirectory -Config $mcpConfig -BrowserName 'MAINPC'
+    $sameBootstrap = Get-Content -LiteralPath (Join-Path $bootstrapDirectory 'mybrowser.local.json') -Raw | ConvertFrom-Json
+    Assert-True ($sameBootstrap.bootstrapId -eq $firstBootstrapId) 'Unchanged MCP config must keep a stable bootstrap identifier.'
+    Assert-True (Test-MyBrowserBootstrapCurrent -Directory $bootstrapDirectory -Config $mcpConfig -BrowserName 'MAINPC') 'Current bootstrap was not recognized.'
+
+    $rotatedConfig = [pscustomobject]@{ Token = 'rotated-secret'; Port = 9010 }
+    Write-MyBrowserBootstrap -Directory $bootstrapDirectory -Config $rotatedConfig -BrowserName 'MAINPC'
+    $rotatedBootstrap = Get-Content -LiteralPath (Join-Path $bootstrapDirectory 'mybrowser.local.json') -Raw | ConvertFrom-Json
+    Assert-True ($rotatedBootstrap.bootstrapId -ne $firstBootstrapId) 'Rotated MCP config must change the bootstrap identifier.'
+    Assert-True (-not (Test-MyBrowserBootstrapCurrent -Directory $bootstrapDirectory -Config $mcpConfig -BrowserName 'MAINPC')) 'Stale bootstrap was accepted as current.'
+
     Assert-True ($null -eq (Read-MyBrowserMcpConfig -Path (Join-Path $root 'missing-config.json'))) 'Missing MCP config must be optional.'
 
     $oversizedConfigPath = Join-Path $root 'oversized-config.json'
@@ -222,6 +234,13 @@ try {
         [System.IO.File]::WriteAllText($invalidPath, $invalidConfig, (New-Object System.Text.UTF8Encoding($false)))
         Assert-Throw { Read-MyBrowserMcpConfig -Path $invalidPath } 'MCP config'
     }
+
+    $invalidOptionalPath = Join-Path $root 'invalid-optional-config.json'
+    [System.IO.File]::WriteAllText($invalidOptionalPath, 'not-json', (New-Object System.Text.UTF8Encoding($false)))
+    $warnings = @()
+    $optionalConfig = Read-OptionalMyBrowserMcpConfig -Path $invalidOptionalPath -WarningVariable warnings -WarningAction SilentlyContinue
+    Assert-True ($null -eq $optionalConfig) 'Invalid optional MCP config must fall back to manual setup.'
+    Assert-True (($warnings -join "`n") -match 'configure the extension manually') 'Invalid optional MCP config warning is not actionable.'
 
     Assert-Throw {
         Write-MyBrowserBootstrap -Directory $bootstrapDirectory -Config $mcpConfig -BrowserName "MAIN`nPC"

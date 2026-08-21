@@ -2,7 +2,6 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   srcDir: 'src',
-  publicDir: 'public',
   manifest: {
     name: 'MyBrowser',
     version: '1.1.7',

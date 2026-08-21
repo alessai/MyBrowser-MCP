@@ -275,7 +275,7 @@ function Read-MyBrowserMcpConfig {
     }
 
     try {
-        $config = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        $config = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     }
     catch {
         throw "MCP config is invalid JSON: '$Path'."
@@ -309,6 +309,35 @@ function Read-MyBrowserMcpConfig {
     }
 }
 
+function Read-OptionalMyBrowserMcpConfig {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        return Read-MyBrowserMcpConfig -Path $Path
+    }
+    catch {
+        Write-Warning "Local MCP config could not be used; configure the extension manually, then fix '$Path' and rerun the installer."
+        return $null
+    }
+}
+
+function Get-MyBrowserBootstrapId {
+    param(
+        [Parameter(Mandatory = $true)][object]$Config,
+        [Parameter(Mandatory = $true)][string]$BrowserName
+    )
+
+    $material = "1`n$($Config.Token)`n$($Config.Port)`n$BrowserName"
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($material))
+        return ([System.BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant()).Substring(0, 32)
+    }
+    finally {
+        $hasher.Dispose()
+    }
+}
+
 function Write-MyBrowserBootstrap {
     param(
         [Parameter(Mandatory = $true)][string]$Directory,
@@ -322,7 +351,7 @@ function Write-MyBrowserBootstrap {
 
     $bootstrap = [ordered]@{
         schemaVersion = 1
-        bootstrapId = [Guid]::NewGuid().ToString('N')
+        bootstrapId = Get-MyBrowserBootstrapId -Config $Config -BrowserName $BrowserName
         serverAddress = '127.0.0.1'
         serverPort = $Config.Port
         authToken = $Config.Token
@@ -331,6 +360,32 @@ function Write-MyBrowserBootstrap {
     $json = $bootstrap | ConvertTo-Json -Compress
     $path = Join-Path $Directory 'mybrowser.local.json'
     [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Test-MyBrowserBootstrapCurrent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][object]$Config,
+        [Parameter(Mandatory = $true)][string]$BrowserName
+    )
+
+    $path = Join-Path $Directory 'mybrowser.local.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $file = Get-Item -LiteralPath $path
+        if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt $script:MaxMcpConfigBytes) {
+            return $false
+        }
+        $bootstrap = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $actualId = Get-MyBrowserProperty $bootstrap 'bootstrapId'
+        $expectedId = Get-MyBrowserBootstrapId -Config $Config -BrowserName $BrowserName
+        return $actualId -eq $expectedId
+    }
+    catch {
+        return $false
+    }
 }
 
 function Wait-ChromeExit {
@@ -447,7 +502,7 @@ function Invoke-MyBrowserInstaller {
         $LocalMcpConfigPath = Join-Path $env:USERPROFILE '.mybrowser\config.json'
     }
     $mcpConfig = if ($LocalMcpConfigPath) {
-        Read-MyBrowserMcpConfig -Path ([System.IO.Path]::GetFullPath($LocalMcpConfigPath))
+        Read-OptionalMyBrowserMcpConfig -Path ([System.IO.Path]::GetFullPath($LocalMcpConfigPath))
     }
     else {
         $null
@@ -464,15 +519,19 @@ function Invoke-MyBrowserInstaller {
             return
         }
         if ($installed -eq $latest -and -not $Reinstall) {
-            Write-Output "MyBrowser $installedVersion is already up to date."
-            if (-not $SkipLaunch) {
-                $chrome = Find-ChromeExecutable
-                if ($chrome) {
-                    try { Start-Process -FilePath $chrome -ArgumentList 'chrome://extensions/' }
-                    catch { Write-Warning 'MyBrowser is up to date, but Chrome could not be opened.' }
+            $bootstrapCurrent = -not $mcpConfig -or (Test-MyBrowserBootstrapCurrent -Directory $TargetDirectory -Config $mcpConfig -BrowserName ([Environment]::MachineName))
+            if ($bootstrapCurrent) {
+                Write-Output "MyBrowser $installedVersion is already up to date."
+                if (-not $SkipLaunch) {
+                    $chrome = Find-ChromeExecutable
+                    if ($chrome) {
+                        try { Start-Process -FilePath $chrome -ArgumentList 'chrome://extensions/' }
+                        catch { Write-Warning 'MyBrowser is up to date, but Chrome could not be opened.' }
+                    }
                 }
+                return
             }
-            return
+            Write-Output 'Local MCP config changed; refreshing the installed extension.'
         }
     }
 

@@ -11,6 +11,9 @@ on:
       - 'MyBrowser/extension/src/public/mybrowser.local.json'
       - 'MyBrowser/extension/src/lib/installer-bootstrap*'
       - 'MyBrowser/extension/src/entrypoints/background/index.ts'
+      - 'MyBrowser/server/package*.json'
+      - 'MyBrowser/server/src/release-contract.test.ts'
+      - 'MyBrowser/server/src/version.ts'
   push:
     paths:
       - '.github/workflows/windows-installer.yml'
@@ -21,6 +24,9 @@ on:
       - 'MyBrowser/extension/src/public/mybrowser.local.json'
       - 'MyBrowser/extension/src/lib/installer-bootstrap*'
       - 'MyBrowser/extension/src/entrypoints/background/index.ts'
+      - 'MyBrowser/server/package*.json'
+      - 'MyBrowser/server/src/release-contract.test.ts'
+      - 'MyBrowser/server/src/version.ts'
   workflow_dispatch:
 
 jobs:
@@ -33,7 +39,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: MyBrowser/extension/package-lock.json
+          cache-dependency-path: |
+            MyBrowser/extension/package-lock.json
+            MyBrowser/server/package-lock.json
 
       - name: Test and build the extension bootstrap
         working-directory: MyBrowser/extension
@@ -41,10 +49,20 @@ jobs:
           npm ci
           npm test -- src/lib/installer-bootstrap.test.ts
           npx tsc --noEmit
-          npm run build
+          npm run zip
           if (-not (Test-Path '.output/chrome-mv3/mybrowser.local.json')) {
             throw 'Extension build omitted the installer bootstrap placeholder.'
           }
+          if ((Get-Content '.output/chrome-mv3/mybrowser.local.json' -Raw).Trim() -ne 'null') {
+            throw 'Extension build contains a non-empty public bootstrap.'
+          }
+
+      - name: Verify paired release metadata
+        working-directory: MyBrowser/server
+        run: |
+          npm ci
+          npm test -- src/release-contract.test.ts
+          npm run check
 
       - name: Test with Windows PowerShell 5.1
         shell: powershell
@@ -102,6 +120,38 @@ jobs:
           }
           Write-Output $output
 
+      - name: Refresh rotated local MCP config
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYBROWSER_NO_PAUSE: '1'
+        run: |
+          @{
+            token = 'ROTATED_WINDOWS_BOOTSTRAP_CANARY_9247'
+            host = '0.0.0.0'
+            port = 9011
+          } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\MyBrowserMcp\config.json" -Encoding UTF8
+          & .\scripts\windows\install-mybrowser.cmd `
+            -InstallDirectory "$env:RUNNER_TEMP\MyBrowser\Extension" `
+            -McpConfigPath "$env:RUNNER_TEMP\MyBrowserMcp\config.json" `
+            -NoLaunch *> "$env:RUNNER_TEMP\refresh-output.txt"
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content "$env:RUNNER_TEMP\refresh-output.txt"
+            throw 'CMD installer failed to refresh the local MCP config.'
+          }
+          $bootstrap = Get-Content "$env:RUNNER_TEMP\MyBrowser\Extension\mybrowser.local.json" -Raw | ConvertFrom-Json
+          if ($bootstrap.serverPort -ne 9011 -or $bootstrap.authToken -ne 'ROTATED_WINDOWS_BOOTSTRAP_CANARY_9247') {
+            throw 'CMD installer did not refresh the rotated local MCP config.'
+          }
+          $output = Get-Content "$env:RUNNER_TEMP\refresh-output.txt" -Raw
+          if ($output.Contains('ROTATED_WINDOWS_BOOTSTRAP_CANARY_9247')) {
+            throw 'CMD installer exposed the rotated MCP token in output.'
+          }
+          if (-not $output.Contains('Local MCP config changed; refreshing')) {
+            throw 'CMD installer did not take the same-version refresh path.'
+          }
+          Write-Output $output
+
       - name: Package the installer
         shell: powershell
         run: |
@@ -116,5 +166,13 @@ jobs:
         with:
           name: mybrowser-windows-installer
           path: ${{ runner.temp }}\mybrowser-windows-installer.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the extension artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mybrowser-extension
+          path: MyBrowser/extension/.output/mybrowser-extension-*-chrome.zip
           if-no-files-found: error
           retention-days: 14

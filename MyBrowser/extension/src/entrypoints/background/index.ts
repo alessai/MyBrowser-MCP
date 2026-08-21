@@ -1058,7 +1058,7 @@ export default defineBackground(() => {
       await runGlobalKeepalive({
         retryTemporaryTabCleanup: () => temporaryTabs.retryPendingCleanup(),
         retryRecordingCleanup: () => getRecordingManager().retryCleanupStates(),
-        ensureAlive,
+        ensureAlive: ensureConfiguredAndAlive,
         reportTemporaryTabFailure: () => {
           recordExtensionIssue('temporary_tabs', 'TEMP_TAB_RETRY_FAILED');
         },

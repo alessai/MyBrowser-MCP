@@ -19,7 +19,7 @@ When double-clicked, the CMD window waits at the end so instructions and errors 
 
 No administrator rights are required.
 
-If the MCP config does not exist yet, start MyBrowser MCP once and rerun the installer with `-Force`, or configure the extension manually. The bootstrap always connects to `127.0.0.1`; it never publishes the token or sends it to GitHub.
+If the MCP config does not exist yet, start MyBrowser MCP once and rerun the installer, or configure the extension manually. The installer refreshes the extension when the local token, port, or machine name changes. The bootstrap always connects to `127.0.0.1`; it never publishes the token or sends it to GitHub.
 
 The installed `mybrowser.local.json` contains the same local token as `%USERPROFILE%\.mybrowser\config.json`. It remains inside the current user's Local AppData directory; do not share the installed extension folder.
 
