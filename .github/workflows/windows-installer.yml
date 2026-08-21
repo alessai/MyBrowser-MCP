@@ -1,0 +1,38 @@
+name: Windows installer
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-installer.yml'
+      - 'scripts/windows/**'
+  push:
+    paths:
+      - '.github/workflows/windows-installer.yml'
+      - 'scripts/windows/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test with Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\windows\install-mybrowser.tests.ps1
+
+      - name: Test with PowerShell 7
+        shell: pwsh
+        run: .\scripts\windows\install-mybrowser.tests.ps1
+
+      - name: Smoke test the CMD installer
+        shell: cmd
+        run: scripts\windows\install-mybrowser.cmd -InstallDirectory "%RUNNER_TEMP%\MyBrowser\Extension" -NoLaunch
+
+      - name: Verify installed manifest
+        shell: powershell
+        run: |
+          $manifest = Get-Content "$env:RUNNER_TEMP\MyBrowser\Extension\manifest.json" -Raw | ConvertFrom-Json
+          if ($manifest.name -ne 'MyBrowser' -or $manifest.manifest_version -ne 3) {
+            throw 'CMD installer produced an invalid extension manifest.'
+          }

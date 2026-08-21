@@ -142,7 +142,25 @@ mybrowser-mcp --host 0.0.0.0 --port 9009
 
 On first run, MyBrowser creates `~/.mybrowser/config.json` and stores the shared auth token there.
 
-#### 3. Download the Chrome extension
+#### 3. Install the Chrome extension on Windows
+
+Download `mybrowser-windows-installer.zip` from the latest release, extract it, and double-click:
+
+```text
+install-mybrowser.cmd
+```
+
+The installer downloads and verifies the latest extension, then stores it at:
+
+```text
+%LOCALAPPDATA%\Alessai\MyBrowser\Extension
+```
+
+On the first install, Chrome opens `chrome://extensions`. Turn on **Developer mode**, click **Load unpacked**, and select the folder shown by the installer. This is the only manual installation step Chrome requires.
+
+For later updates, run `install-mybrowser.cmd` again. Close Chrome when prompted; the installer replaces the extension only after Chrome has fully exited, then reopens Chrome with the new version. It never force-closes Chrome.
+
+#### 4. Manual installation on other platforms
 
 Download the Chrome extension zip from the latest release:
 
@@ -154,7 +172,7 @@ Look for a file named like:
 mybrowser-extension-1.1.6-chrome.zip
 ```
 
-#### 4. Load the extension in Chrome
+Load the extension in Chrome:
 
 1. Unzip the downloaded file
 2. Open `chrome://extensions`
