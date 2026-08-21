@@ -2,9 +2,10 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   srcDir: 'src',
+  publicDir: 'public',
   manifest: {
     name: 'MyBrowser',
-    version: '1.1.6',
+    version: '1.1.7',
     description: 'Always-on browser automation via MCP over Tailscale',
     permissions: [
       'debugger',

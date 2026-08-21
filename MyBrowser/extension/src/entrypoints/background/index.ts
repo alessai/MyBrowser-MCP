@@ -61,6 +61,7 @@ import {
   clearHandlersForSession,
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
+import { importInstallerBootstrap } from '../../lib/installer-bootstrap';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
 import { parseInboundWsFrame, reportToolFailure } from '../../lib/background-privacy';
 import {
@@ -592,6 +593,26 @@ export default defineBackground(() => {
     }
   }
 
+  let installerBootstrapImport: Promise<void> | null = null;
+  function ensureInstallerBootstrap(): Promise<void> {
+    if (installerBootstrapImport) return installerBootstrapImport;
+    installerBootstrapImport = importInstallerBootstrap()
+      .then((result) => {
+        if (result === 'invalid') {
+          recordExtensionIssue('bootstrap', 'INSTALLER_BOOTSTRAP_INVALID');
+        }
+      })
+      .catch(() => {
+        recordExtensionIssue('bootstrap', 'INSTALLER_BOOTSTRAP_FAILED');
+      });
+    return installerBootstrapImport;
+  }
+
+  async function ensureConfiguredAndAlive(): Promise<void> {
+    await ensureInstallerBootstrap();
+    await ensureAlive();
+  }
+
   // =====================================================================
   // State
   // =====================================================================
@@ -998,18 +1019,18 @@ export default defineBackground(() => {
   // Lifecycle — always-on, survive hours of inactivity
   // =====================================================================
 
-  ensureAlive().catch((e) => {
+  ensureConfiguredAndAlive().catch((e) => {
     recordExtensionIssue('lifecycle', 'Init failed', e);
     console.error('[MyBrowser] INIT_FAILED');
   });
 
   chrome.runtime.onInstalled.addListener(async () => {
-    await ensureAlive();
+    await ensureConfiguredAndAlive();
     await injectIntoAllTabs();
   });
 
   chrome.runtime.onStartup.addListener(async () => {
-    await ensureAlive();
+    await ensureConfiguredAndAlive();
     try {
       await temporaryTabs.retryPendingCleanup();
     } catch {

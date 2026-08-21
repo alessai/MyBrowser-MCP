@@ -156,6 +156,10 @@ The installer downloads and verifies the latest extension, then stores it at:
 %LOCALAPPDATA%\Alessai\MyBrowser\Extension
 ```
 
+When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. If the config does not exist yet, start MyBrowser MCP once and rerun the installer with `-Force`, or enter the settings manually.
+
+The local bootstrap contains the same token as the MCP config and stays under the current user's Local AppData. Do not share the installed extension folder.
+
 On the first install, Chrome opens `chrome://extensions`. Turn on **Developer mode**, click **Load unpacked**, and select the folder shown by the installer. This is the only manual installation step Chrome requires.
 
 If MyBrowser was previously loaded from another folder, remove that unpacked copy first so Chrome does not run two copies.
@@ -171,7 +175,7 @@ Download the Chrome extension zip from the latest release:
 Look for a file named like:
 
 ```text
-mybrowser-extension-1.1.6-chrome.zip
+mybrowser-extension-1.1.7-chrome.zip
 ```
 
 Load the extension in Chrome:
@@ -184,7 +188,7 @@ Load the extension in Chrome:
 
 #### 5. Connect the extension
 
-Open the extension popup and enter:
+The Windows installer configures the extension automatically when the MCP config was available. For manual installations, open the extension popup and enter:
 
 1. Server address
 2. Port

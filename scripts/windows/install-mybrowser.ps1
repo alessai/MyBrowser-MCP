@@ -3,6 +3,7 @@ param(
     [string]$InstallDirectory,
     [ValidateRange(0, 3600)]
     [int]$ChromeExitTimeoutSeconds = 300,
+    [string]$McpConfigPath,
     [switch]$NoLaunch,
     [switch]$Force
 )
@@ -16,6 +17,7 @@ $script:AssetPattern = '^mybrowser-extension-(?<version>[0-9]+\.[0-9]+\.[0-9]+(?
 $script:MaxDownloadBytes = 50MB
 $script:MaxExpandedBytes = 100MB
 $script:MaxArchiveEntries = 1000
+$script:MaxMcpConfigBytes = 16KB
 
 function Get-MyBrowserProperty {
     param(
@@ -254,6 +256,83 @@ function Get-InstalledMyBrowserVersion {
     return $version
 }
 
+function Read-MyBrowserMcpConfig {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "MCP config is not a regular file: '$Path'."
+    }
+
+    $file = Get-Item -LiteralPath $Path
+    if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "MCP config must not be a redirected file: '$Path'."
+    }
+    if ($file.Length -le 0 -or $file.Length -gt $script:MaxMcpConfigBytes) {
+        throw "MCP config size is outside the accepted range: '$Path'."
+    }
+
+    try {
+        $config = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "MCP config is invalid JSON: '$Path'."
+    }
+
+    $tokenValue = Get-MyBrowserProperty $config 'token'
+    if (($tokenValue -isnot [string]) -or
+        $tokenValue.Length -eq 0 -or
+        $tokenValue.Length -gt 512 -or
+        $tokenValue -match '[\x00-\x1f\x7f]') {
+        throw "MCP config contains an invalid token: '$Path'."
+    }
+
+    $portValue = Get-MyBrowserProperty $config 'port'
+    if ($null -eq $portValue -or $portValue -is [bool] -or $portValue -is [string]) {
+        throw "MCP config contains an invalid port: '$Path'."
+    }
+    try {
+        [decimal]$numericPort = $portValue
+    }
+    catch {
+        throw "MCP config contains an invalid port: '$Path'."
+    }
+    if ($numericPort -ne [decimal]::Truncate($numericPort) -or $numericPort -lt 1 -or $numericPort -gt 65535) {
+        throw "MCP config contains an invalid port: '$Path'."
+    }
+
+    [pscustomobject]@{
+        Token = $tokenValue
+        Port = [int]$numericPort
+    }
+}
+
+function Write-MyBrowserBootstrap {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][object]$Config,
+        [Parameter(Mandatory = $true)][string]$BrowserName
+    )
+
+    if ($BrowserName.Length -eq 0 -or $BrowserName.Length -gt 128 -or $BrowserName -match '[\x00-\x1f\x7f]') {
+        throw 'The Windows browser name is invalid.'
+    }
+
+    $bootstrap = [ordered]@{
+        schemaVersion = 1
+        bootstrapId = [Guid]::NewGuid().ToString('N')
+        serverAddress = '127.0.0.1'
+        serverPort = $Config.Port
+        authToken = $Config.Token
+        browserName = $BrowserName
+    }
+    $json = $bootstrap | ConvertTo-Json -Compress
+    $path = Join-Path $Directory 'mybrowser.local.json'
+    [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Wait-ChromeExit {
     param([ValidateRange(0, 3600)][int]$TimeoutSeconds)
 
@@ -347,6 +426,7 @@ function Install-MyBrowserDirectory {
 function Invoke-MyBrowserInstaller {
     param(
         [string]$TargetDirectory,
+        [string]$LocalMcpConfigPath,
         [int]$ExitTimeoutSeconds,
         [bool]$SkipLaunch,
         [bool]$Reinstall
@@ -362,6 +442,16 @@ function Invoke-MyBrowserInstaller {
         $TargetDirectory = Join-Path $env:LOCALAPPDATA 'Alessai\MyBrowser\Extension'
     }
     $TargetDirectory = [System.IO.Path]::GetFullPath($TargetDirectory)
+
+    if (-not $LocalMcpConfigPath -and $env:USERPROFILE) {
+        $LocalMcpConfigPath = Join-Path $env:USERPROFILE '.mybrowser\config.json'
+    }
+    $mcpConfig = if ($LocalMcpConfigPath) {
+        Read-MyBrowserMcpConfig -Path ([System.IO.Path]::GetFullPath($LocalMcpConfigPath))
+    }
+    else {
+        $null
+    }
 
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $release = Get-MyBrowserRelease
@@ -408,6 +498,9 @@ function Invoke-MyBrowserInstaller {
         }
         Assert-MyBrowserDigest -Path $zipPath -ExpectedSha256 $release.Sha256 -ExpectedSize $release.Size
         Expand-MyBrowserArchive -ZipPath $zipPath -Destination $stage -ExpectedVersion $release.Version | Out-Null
+        if ($mcpConfig) {
+            Write-MyBrowserBootstrap -Directory $stage -Config $mcpConfig -BrowserName ([Environment]::MachineName)
+        }
 
         if ($installedVersion) {
             Wait-ChromeExit -TimeoutSeconds $ExitTimeoutSeconds
@@ -415,6 +508,12 @@ function Invoke-MyBrowserInstaller {
         Install-MyBrowserDirectory -StagedDirectory $stage -TargetDirectory $TargetDirectory
         Write-Output "Installed MyBrowser $($release.Version) at:"
         Write-Output $TargetDirectory
+        if ($mcpConfig) {
+            Write-Output 'Configured MyBrowser for the local MCP server at 127.0.0.1.'
+        }
+        else {
+            Write-Warning 'Local MCP config was not found; configure the extension token manually after loading it.'
+        }
 
         if (-not $SkipLaunch) {
             $chrome = Find-ChromeExecutable
@@ -464,6 +563,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     try {
         Invoke-MyBrowserInstaller `
             -TargetDirectory $InstallDirectory `
+            -LocalMcpConfigPath $McpConfigPath `
             -ExitTimeoutSeconds $ChromeExitTimeoutSeconds `
             -SkipLaunch ([bool]$NoLaunch) `
             -Reinstall ([bool]$Force)

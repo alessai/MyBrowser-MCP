@@ -8,8 +8,10 @@ The installer:
 2. Downloads the Chrome extension ZIP.
 3. Verifies its size and GitHub SHA-256 digest.
 4. Rejects unsafe ZIP paths or unexpected manifests.
-5. Installs to `%LOCALAPPDATA%\Alessai\MyBrowser\Extension`.
-6. Opens `chrome://extensions` for the one-time **Load unpacked** approval.
+5. Reads `%USERPROFILE%\.mybrowser\config.json` when the MCP server is installed for the same Windows user.
+6. Adds a localhost-only bootstrap without printing or copying the MCP token.
+7. Installs to `%LOCALAPPDATA%\Alessai\MyBrowser\Extension`.
+8. Opens `chrome://extensions` for the one-time **Load unpacked** approval.
 
 Run the same CMD again to update. If Chrome is open, the installer waits up to five minutes for you to close it. It does not kill Chrome. The existing extension is replaced only after the new package passes validation, and a failed replacement restores the previous directory.
 
@@ -17,12 +19,17 @@ When double-clicked, the CMD window waits at the end so instructions and errors 
 
 No administrator rights are required.
 
+If the MCP config does not exist yet, start MyBrowser MCP once and rerun the installer with `-Force`, or configure the extension manually. The bootstrap always connects to `127.0.0.1`; it never publishes the token or sends it to GitHub.
+
+The installed `mybrowser.local.json` contains the same local token as `%USERPROFILE%\.mybrowser\config.json`. It remains inside the current user's Local AppData directory; do not share the installed extension folder.
+
 ## Options
 
 Pass PowerShell options through the CMD file:
 
 ```cmd
 install-mybrowser.cmd -ChromeExitTimeoutSeconds 600
+install-mybrowser.cmd -McpConfigPath C:\path\to\.mybrowser\config.json
 install-mybrowser.cmd -Force
 install-mybrowser.cmd -NoLaunch
 ```

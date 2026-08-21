@@ -6,11 +6,21 @@ on:
       - '.github/workflows/windows-installer.yml'
       - 'README.md'
       - 'scripts/windows/**'
+      - 'MyBrowser/extension/package*.json'
+      - 'MyBrowser/extension/wxt.config.ts'
+      - 'MyBrowser/extension/src/public/mybrowser.local.json'
+      - 'MyBrowser/extension/src/lib/installer-bootstrap*'
+      - 'MyBrowser/extension/src/entrypoints/background/index.ts'
   push:
     paths:
       - '.github/workflows/windows-installer.yml'
       - 'README.md'
       - 'scripts/windows/**'
+      - 'MyBrowser/extension/package*.json'
+      - 'MyBrowser/extension/wxt.config.ts'
+      - 'MyBrowser/extension/src/public/mybrowser.local.json'
+      - 'MyBrowser/extension/src/lib/installer-bootstrap*'
+      - 'MyBrowser/extension/src/entrypoints/background/index.ts'
   workflow_dispatch:
 
 jobs:
@@ -18,6 +28,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: MyBrowser/extension/package-lock.json
+
+      - name: Test and build the extension bootstrap
+        working-directory: MyBrowser/extension
+        run: |
+          npm ci
+          npm test -- src/lib/installer-bootstrap.test.ts
+          npx tsc --noEmit
+          npm run build
+          if (-not (Test-Path '.output/chrome-mv3/mybrowser.local.json')) {
+            throw 'Extension build omitted the installer bootstrap placeholder.'
+          }
 
       - name: Test with Windows PowerShell 5.1
         shell: powershell
@@ -38,11 +65,22 @@ jobs:
             exit 1
           }
 
+      - name: Create local MCP config
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\MyBrowserMcp" | Out-Null
+          @{
+            token = 'SECRET_WINDOWS_BOOTSTRAP_CANARY_8412'
+            host = '0.0.0.0'
+            port = 9010
+          } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\MyBrowserMcp\config.json" -Encoding UTF8
+
       - name: Smoke test the CMD installer
         shell: cmd
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: scripts\windows\install-mybrowser.cmd -InstallDirectory "%RUNNER_TEMP%\MyBrowser\Extension" -NoLaunch
+          MYBROWSER_NO_PAUSE: '1'
+        run: scripts\windows\install-mybrowser.cmd -InstallDirectory "%RUNNER_TEMP%\MyBrowser\Extension" -McpConfigPath "%RUNNER_TEMP%\MyBrowserMcp\config.json" -NoLaunch > "%RUNNER_TEMP%\installer-output.txt" 2>&1
 
       - name: Verify installed manifest
         shell: powershell
@@ -51,6 +89,18 @@ jobs:
           if ($manifest.name -ne 'MyBrowser' -or $manifest.manifest_version -ne 3) {
             throw 'CMD installer produced an invalid extension manifest.'
           }
+          $bootstrap = Get-Content "$env:RUNNER_TEMP\MyBrowser\Extension\mybrowser.local.json" -Raw | ConvertFrom-Json
+          if ($bootstrap.serverAddress -ne '127.0.0.1' -or
+              $bootstrap.serverPort -ne 9010 -or
+              $bootstrap.authToken -ne 'SECRET_WINDOWS_BOOTSTRAP_CANARY_8412' -or
+              $bootstrap.bootstrapId -notmatch '^[0-9a-f]{32}$') {
+            throw 'CMD installer produced an invalid local bootstrap.'
+          }
+          $output = Get-Content "$env:RUNNER_TEMP\installer-output.txt" -Raw
+          if ($output.Contains('SECRET_WINDOWS_BOOTSTRAP_CANARY_8412')) {
+            throw 'CMD installer exposed the MCP token in output.'
+          }
+          Write-Output $output
 
       - name: Package the installer
         shell: powershell

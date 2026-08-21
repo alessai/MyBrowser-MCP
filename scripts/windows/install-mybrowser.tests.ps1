@@ -168,6 +168,65 @@ try {
         Assert-Throw { Get-InstalledMyBrowserVersion -Path $redirected } 'redirected install directory'
     }
 
+    $mcpConfigPath = Join-Path $root 'config.json'
+    [System.IO.File]::WriteAllText(
+        $mcpConfigPath,
+        '{"token":"local-secret","host":"0.0.0.0","port":9010}',
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    $mcpConfig = Read-MyBrowserMcpConfig -Path $mcpConfigPath
+    Assert-True ($mcpConfig.Token -eq 'local-secret') 'MCP token was not read.'
+    Assert-True ($mcpConfig.Port -eq 9010) 'MCP port was not read.'
+
+    $bootstrapDirectory = Join-Path $root 'bootstrap'
+    New-Item -ItemType Directory -Path $bootstrapDirectory | Out-Null
+    Write-MyBrowserBootstrap -Directory $bootstrapDirectory -Config $mcpConfig -BrowserName 'MAINPC'
+    $bootstrap = Get-Content -LiteralPath (Join-Path $bootstrapDirectory 'mybrowser.local.json') -Raw | ConvertFrom-Json
+    Assert-True ($bootstrap.schemaVersion -eq 1) 'Bootstrap schema version is invalid.'
+    Assert-True ($bootstrap.bootstrapId -match '^[0-9a-f]{32}$') 'Bootstrap identifier is invalid.'
+    Assert-True ($bootstrap.serverAddress -eq '127.0.0.1') 'Bootstrap must use localhost.'
+    Assert-True ($bootstrap.serverPort -eq 9010) 'Bootstrap port is invalid.'
+    Assert-True ($bootstrap.authToken -eq 'local-secret') 'Bootstrap token is invalid.'
+    Assert-True ($bootstrap.browserName -eq 'MAINPC') 'Bootstrap browser name is invalid.'
+
+    Assert-True ($null -eq (Read-MyBrowserMcpConfig -Path (Join-Path $root 'missing-config.json'))) 'Missing MCP config must be optional.'
+
+    $oversizedConfigPath = Join-Path $root 'oversized-config.json'
+    [System.IO.File]::WriteAllText($oversizedConfigPath, ('a' * 16385), (New-Object System.Text.UTF8Encoding($false)))
+    Assert-Throw { Read-MyBrowserMcpConfig -Path $oversizedConfigPath } 'MCP config size'
+
+    $redirectedConfigPath = Join-Path $root 'redirected-config.json'
+    $configSymlinkCreated = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $redirectedConfigPath -Target $mcpConfigPath | Out-Null
+        $configSymlinkCreated = $true
+    }
+    catch {
+        Write-Output 'MCP config symlink test skipped because this host cannot create one.'
+    }
+    if ($configSymlinkCreated) {
+        Assert-Throw { Read-MyBrowserMcpConfig -Path $redirectedConfigPath } 'redirected file'
+    }
+
+    foreach ($invalidConfig in @(
+        '{"token":"","port":9009}',
+        '{"token":"secret\nvalue","port":9009}',
+        ('{"token":"' + ('a' * 513) + '","port":9009}'),
+        '{"token":"secret","port":0}',
+        '{"token":"secret","port":65536}',
+        '{"token":"secret","port":9009.5}',
+        '{"token":"secret"}',
+        'not-json'
+    )) {
+        $invalidPath = Join-Path $root ("invalid-config-$([Guid]::NewGuid().ToString('N')).json")
+        [System.IO.File]::WriteAllText($invalidPath, $invalidConfig, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-Throw { Read-MyBrowserMcpConfig -Path $invalidPath } 'MCP config'
+    }
+
+    Assert-Throw {
+        Write-MyBrowserBootstrap -Directory $bootstrapDirectory -Config $mcpConfig -BrowserName "MAIN`nPC"
+    } 'browser name'
+
     Write-Output 'Windows installer tests passed.'
 }
 finally {
