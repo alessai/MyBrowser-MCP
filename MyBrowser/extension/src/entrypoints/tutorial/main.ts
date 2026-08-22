@@ -9,7 +9,7 @@ async function checkConnection(): Promise<void> {
   if (!connectionDot || !connectionLabel || !connectionDetail) return;
   connectionDot.dataset.state = 'checking';
   connectionLabel.textContent = 'Checking connection';
-  connectionDetail.textContent = 'Looking for MyBrowser on 127.0.0.1:9009.';
+  connectionDetail.textContent = 'Looking for the configured MyBrowser server.';
   try {
     const status = await sendToBackground<WsStatusResponse>('ws_status');
     if (status.state === 'CONNECTED') {

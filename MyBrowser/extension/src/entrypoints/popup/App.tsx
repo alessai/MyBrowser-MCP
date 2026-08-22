@@ -279,7 +279,7 @@ export default function App() {
               {settings.authToken
                 ? 'Token'
                 : isLoopbackAddress(settings.serverAddress)
-                  ? 'Automatic local'
+                  ? 'No token (local only)'
                   : 'Missing'}
             </span>
           </div>

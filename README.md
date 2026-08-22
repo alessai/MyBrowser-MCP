@@ -231,7 +231,7 @@ This is why you need both the npm package and the extension zip.
 1. Fresh installs bind to `127.0.0.1`
 2. Ordinary local mode accepts a blank extension token only from a loopback peer with a `chrome-extension://` WebSocket origin
 3. Websites, MCP clients, wildcard listeners, explicit `--token`, `--ensure-hub`, standalone `--hub`, and remote connections still require the configured token
-4. Local programs can imitate protocol headers, so do not forward or expose the ordinary tokenless listener; use an authenticated hub for remote access
+4. The origin check blocks websites, not other installed extensions or local programs; use ordinary mode only on a trusted single-user device and never forward it
 5. Use `--host 0.0.0.0` only when you intentionally expose an authenticated server through a trusted network or tunnel
 6. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
 

@@ -21,6 +21,18 @@ export function isLoopbackHost(host: string): boolean {
   return ["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase());
 }
 
+export function allowsAutomaticLocalExtensionAuth(
+  host: string,
+  options: { hub?: boolean; ensureHub?: boolean; token?: string },
+): boolean {
+  return (
+    !options.hub
+    && !options.ensureHub
+    && options.token === undefined
+    && isLoopbackHost(host)
+  );
+}
+
 export function assertLoopbackHubHost(host: string): void {
   if (!isLoopbackHost(host)) {
     throw new Error("--ensure-hub requires a loopback host");

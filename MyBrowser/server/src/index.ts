@@ -5,10 +5,10 @@ import { program } from "commander";
 import { fileURLToPath } from "node:url";
 import { loadOrCreateConfig, validateConfigOverrides } from "./auth.js";
 import {
+  allowsAutomaticLocalExtensionAuth,
   assertLoopbackHubHost,
   createDetachedHubEnsurer,
   HUB_AUTOSTART_TOKEN_ENV,
-  isLoopbackHost,
 } from "./hub-autostart.js";
 import { createServerWithTools } from "./server.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -68,12 +68,7 @@ program
       token: opts.token ?? (opts.hub ? process.env[HUB_AUTOSTART_TOKEN_ENV] : undefined),
     });
     const telemetryConfig = resolveProcessTelemetryConfig(opts, opts.hub === true);
-    const localExtensionAuth = (
-      !opts.hub
-      && !opts.ensureHub
-      && opts.token === undefined
-      && isLoopbackHost(config.host)
-    );
+    const localExtensionAuth = allowsAutomaticLocalExtensionAuth(config.host, opts);
 
     console.error(`[MyBrowser MCP] WebSocket server: ws://${config.host}:${config.port}`);
     const tokenSource = opts.token ? "provided by --token" : "see ~/.mybrowser/config.json";

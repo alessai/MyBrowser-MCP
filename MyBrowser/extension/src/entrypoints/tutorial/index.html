@@ -32,7 +32,7 @@
             <span class="connection-dot" id="connection-dot" aria-hidden="true"></span>
             <strong id="connection-label">Checking connection</strong>
           </div>
-          <p id="connection-detail">Looking for MyBrowser on 127.0.0.1:9009.</p>
+          <p id="connection-detail">Looking for the configured MyBrowser server.</p>
           <button class="small-button" id="check-connection" type="button">Check again</button>
         </div>
       </section>
@@ -76,6 +76,8 @@
           <p class="boundary-note">
             This zero-entry path is for ordinary same-device use. Standalone hubs and remote
             connections still require token authentication.
+            Use it only on a trusted single-user device: other local software and browser
+            extensions share this local trust boundary.
           </p>
         </div>
       </section>

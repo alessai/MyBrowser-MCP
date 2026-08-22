@@ -1,10 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  allowsAutomaticLocalExtensionAuth,
   buildHubEnvironment,
   createDetachedHubEnsurer,
   HUB_AUTOSTART_TOKEN_ENV,
 } from "./hub-autostart.js";
+
+describe("automatic local extension auth policy", () => {
+  it("allows only ordinary loopback startup without an explicit token", () => {
+    expect(allowsAutomaticLocalExtensionAuth("127.0.0.1", {})).toBe(true);
+    expect(allowsAutomaticLocalExtensionAuth("0.0.0.0", {})).toBe(false);
+    expect(allowsAutomaticLocalExtensionAuth("127.0.0.1", { token: "explicit" })).toBe(false);
+    expect(allowsAutomaticLocalExtensionAuth("127.0.0.1", { hub: true })).toBe(false);
+    expect(allowsAutomaticLocalExtensionAuth("127.0.0.1", { ensureHub: true })).toBe(false);
+  });
+});
 
 const options = {
   host: "127.0.0.1",
