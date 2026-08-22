@@ -4,7 +4,7 @@ export default defineConfig({
   srcDir: 'src',
   manifest: {
     name: 'MyBrowser',
-    version: '1.1.7',
+    version: '1.2.0',
     description: 'Local and remote browser automation through MCP',
     permissions: [
       'debugger',
