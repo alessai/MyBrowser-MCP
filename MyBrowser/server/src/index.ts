@@ -2,7 +2,13 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { program } from "commander";
-import { loadOrCreateConfig } from "./auth.js";
+import { fileURLToPath } from "node:url";
+import { loadOrCreateConfig, validateConfigOverrides } from "./auth.js";
+import {
+  assertLoopbackHubHost,
+  createDetachedHubEnsurer,
+  HUB_AUTOSTART_TOKEN_ENV,
+} from "./hub-autostart.js";
 import { createServerWithTools } from "./server.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { initializePersistentLogging } from "./logger.js";
@@ -33,6 +39,7 @@ interface CliOptions extends TelemetryCliOptions {
   token?: string;
   session?: string;
   hub?: boolean;
+  ensureHub?: boolean;
 }
 
 program
@@ -43,30 +50,51 @@ program
   .option("--token <token>", "Shared secret for authentication")
   .option("--session <name>", "Human-readable session name for multi-agent coordination")
   .option("--hub", "Run as standalone hub server (no MCP stdio transport)")
+  .option("--ensure-hub", "Use a detached local hub that survives the MCP client process")
   .option("--trace-internal", "Record private local AI-tool telemetry")
   .option("--trace-dir <path>", "Private local telemetry directory")
   .option("--trace-retention-days <days>", "Telemetry retention in days", Number)
   .option("--trace-max-mb <megabytes>", "Maximum aggregate telemetry size", Number)
   .action(async (opts: CliOptions) => {
+    if (opts.hub && opts.ensureHub) {
+      throw new Error("--hub and --ensure-hub cannot be used together");
+    }
+    validateConfigOverrides(opts);
+    if (opts.ensureHub && opts.host !== undefined) assertLoopbackHubHost(opts.host);
     const config = loadOrCreateConfig({
       host: opts.host,
       port: opts.port,
-      token: opts.token,
+      token: opts.token ?? (opts.hub ? process.env[HUB_AUTOSTART_TOKEN_ENV] : undefined),
     });
     const telemetryConfig = resolveProcessTelemetryConfig(opts, opts.hub === true);
 
     console.error(`[MyBrowser MCP] WebSocket server: ws://${config.host}:${config.port}`);
-    console.error(`[MyBrowser MCP] Auth token: [redacted] (see ~/.mybrowser/config.json)`);
+    const tokenSource = opts.token ? "provided by --token" : "see ~/.mybrowser/config.json";
+    console.error(`[MyBrowser MCP] Auth token: [redacted] (${tokenSource})`);
     if (opts.session) {
       console.error(`[MyBrowser MCP] Session name: ${opts.session}`);
     }
 
+    const ensureHub = opts.ensureHub
+      ? createDetachedHubEnsurer({
+        ...config,
+        entrypoint: fileURLToPath(import.meta.url),
+      })
+      : undefined;
+    await ensureHub?.();
     const server = await createServerWithTools({
       host: config.host,
       port: config.port,
       token: config.token,
       sessionName: opts.session,
       telemetryConfig,
+      requireHub: opts.hub === true,
+      clientOnly: opts.ensureHub === true,
+      onHubUnavailable: ensureHub
+        ? () => {
+          void ensureHub().catch(() => console.error("[MyBrowser MCP] HUB_RECOVERY_FAILED"));
+        }
+        : undefined,
     });
 
     if (opts.hub) {

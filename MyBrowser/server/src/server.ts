@@ -94,6 +94,9 @@ export interface ServerOptions {
   sessionName?: string;
   telemetryConfig?: TelemetryConfig;
   telemetry?: TelemetryManager;
+  requireHub?: boolean;
+  clientOnly?: boolean;
+  onHubUnavailable?: () => void;
 }
 
 export let stateManager: IStateManager;
@@ -215,7 +218,15 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   ensureDirectories();
   ensureNotesDirectories();
 
-  const wss = await createWebSocketServer({ host, port, token, context });
+  const wss = await createWebSocketServer({
+    host,
+    port,
+    token,
+    context,
+    requireHub: options.requireHub,
+    clientOnly: options.clientOnly,
+    onHubUnavailable: options.onHubUnavailable,
+  });
   stateManager = wss.stateManager;
 
   const registerSession = async (): Promise<void> => {

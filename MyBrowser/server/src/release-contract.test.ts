@@ -47,6 +47,7 @@ describe("release package contract", () => {
     const projectMcp = readFileSync(new URL("../../.mcp.json", import.meta.url), "utf8");
 
     expect(instructions).toContain("--host 127.0.0.1");
+    expect(instructions).toContain("--ensure-hub");
     expect(instructions).toContain("install-mybrowser.cmd");
     expect(instructions).toContain("Load unpacked");
     expect(instructions).toContain("Never display the token");

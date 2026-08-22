@@ -19,7 +19,6 @@ import {
 import { SessionConnectionRegistry } from "./session-connections.js";
 import { isValidV2SessionId } from "./session-id.js";
 import { dispatchHubRpc } from "./hub-rpc.js";
-import net from "node:net";
 
 // Hard cap on incoming WS frames: notes can carry a base64 PNG, but nothing
 // else this server handles is remotely this large. 32 MB covers a ~20 MB
@@ -64,6 +63,9 @@ export interface WsServerOptions {
   finalizedSessionTtlMs?: number;
   finalizedSessionLimit?: number;
   clientReconnectDelayMs?: number;
+  requireHub?: boolean;
+  clientOnly?: boolean;
+  onHubUnavailable?: () => void;
 }
 
 interface RecordingRetryPayload {
@@ -229,27 +231,25 @@ function sendClientAuth(ws: WebSocket, token: string): void {
 export async function createWebSocketServer(
   options: WsServerOptions,
 ): Promise<WsServerResult> {
-  const portInUse = await isPortInUse(options.port);
-
-  if (portInUse) {
+  if (options.requireHub && options.clientOnly) {
+    throw new Error("Hub startup cannot require both hub and client mode");
+  }
+  if (options.clientOnly) return connectAsClient(options);
+  try {
+    return await startServer(options);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+    if (options.requireHub) {
+      throw new Error(
+        `Cannot start standalone hub on ${options.host}:${options.port}; the address is already in use`,
+        { cause: error },
+      );
+    }
     console.error(
       `[MyBrowser MCP] Port ${options.port} already in use — connecting as client to existing hub`,
     );
     return connectAsClient(options);
   }
-
-  return startServer(options);
-}
-
-function isPortInUse(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once("error", () => resolve(true));
-    server.once("listening", () => {
-      server.close(() => resolve(false));
-    });
-    server.listen(port);
-  });
 }
 
 // =========================================================================
@@ -1569,7 +1569,8 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
   const { host, port, token, context } = options;
   const clientReconnectDelayMs = options.clientReconnectDelayMs ?? 3_000;
   const bindHost = host === "0.0.0.0" ? "127.0.0.1" : host;
-  const url = `ws://${bindHost}:${port}`;
+  const urlHost = bindHost.includes(":") ? `[${bindHost}]` : bindHost;
+  const url = `ws://${urlHost}:${port}`;
   let ws: WebSocket | null = null;
   let closed = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -1578,6 +1579,14 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closePromise: Promise<void> | undefined;
   let shutdownStarted = false;
+
+  const notifyHubUnavailable = () => {
+    try {
+      options.onHubUnavailable?.();
+    } catch {
+      console.error("[MyBrowser MCP] HUB_RECOVERY_FAILED");
+    }
+  };
 
   const stateManager = new HubStateManager(() => ws);
   let reconnectCb: (() => Promise<void>) | null = null;
@@ -1710,6 +1719,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     });
 
     ws.on("error", (err) => {
+      notifyHubUnavailable();
       clearTimeout(timeout);
       reject(err);
     });
@@ -1774,6 +1784,7 @@ async function connectAsClient(options: WsServerOptions): Promise<WsServerResult
     });
 
     ws.on("error", () => {
+      notifyHubUnavailable();
       // close event will fire
     });
   }

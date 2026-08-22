@@ -13,6 +13,13 @@ on:
       - 'MyBrowser/extension/src/entrypoints/background/index.ts'
       - 'MyBrowser/server/package*.json'
       - 'MyBrowser/server/src/release-contract.test.ts'
+      - 'MyBrowser/server/src/auth*'
+      - 'MyBrowser/server/src/hub-autostart*'
+      - 'MyBrowser/server/src/hub-startup.test.ts'
+      - 'MyBrowser/server/src/index.ts'
+      - 'MyBrowser/server/src/server.ts'
+      - 'MyBrowser/server/src/test-fixtures/**'
+      - 'MyBrowser/server/src/ws-server.ts'
       - 'MyBrowser/server/src/version.ts'
   push:
     paths:
@@ -26,6 +33,13 @@ on:
       - 'MyBrowser/extension/src/entrypoints/background/index.ts'
       - 'MyBrowser/server/package*.json'
       - 'MyBrowser/server/src/release-contract.test.ts'
+      - 'MyBrowser/server/src/auth*'
+      - 'MyBrowser/server/src/hub-autostart*'
+      - 'MyBrowser/server/src/hub-startup.test.ts'
+      - 'MyBrowser/server/src/index.ts'
+      - 'MyBrowser/server/src/server.ts'
+      - 'MyBrowser/server/src/test-fixtures/**'
+      - 'MyBrowser/server/src/ws-server.ts'
       - 'MyBrowser/server/src/version.ts'
   workflow_dispatch:
 
@@ -66,7 +80,7 @@ jobs:
         working-directory: MyBrowser/server
         run: |
           npm ci
-          npm test -- src/release-contract.test.ts
+          npm test -- src/release-contract.test.ts src/auth.test.ts src/hub-startup.test.ts src/hub-autostart.test.ts
           npm run check
 
       - name: Test with Windows PowerShell 5.1

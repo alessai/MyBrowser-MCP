@@ -33,7 +33,7 @@ Giving this repository to an installation agent? Use [`llms.txt`](llms.txt) for 
 Add MyBrowser to Claude Code with one command:
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
 Then:
@@ -138,7 +138,7 @@ Example prompts you can give your MCP client:
 ### Claude Code one-liner
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
 ### Global npm install
@@ -152,10 +152,10 @@ npm install -g @alessai/mybrowser-mcp
 #### 2. Start the server once
 
 ```bash
-mybrowser-mcp --host 127.0.0.1 --port 9009
+mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
-On first run, MyBrowser creates `~/.mybrowser/config.json` and stores the shared auth token there.
+On first run, MyBrowser creates `~/.mybrowser/config.json` and stores the shared auth token there. `--ensure-hub` keeps the local hub in a separate process so closing or restarting one MCP client does not take every browser connection down. Later `--host`, `--port`, and `--token` overrides apply only to that run; edit the config to change saved settings, then rerun the Windows installer if it supplies the extension settings.
 
 #### 3. Install the Chrome extension on Windows
 
@@ -219,7 +219,7 @@ Example MCP config using the installed binary:
   "mcpServers": {
     "mybrowser": {
       "command": "mybrowser-mcp",
-      "args": ["--host", "127.0.0.1", "--port", "9009"]
+      "args": ["--ensure-hub", "--host", "127.0.0.1", "--port", "9009"]
     }
   }
 }
@@ -228,7 +228,7 @@ Example MCP config using the installed binary:
 Example Claude Code command using the installed binary instead of `npx`:
 
 ```bash
-claude mcp add mybrowser -- mybrowser-mcp --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
 ## How It Works
@@ -246,7 +246,10 @@ This is why you need both the npm package and the extension zip.
 2. The extension connects only to the server address you configure
 3. The server and extension share an auth token from `~/.mybrowser/config.json`
 4. Fresh installs bind to `127.0.0.1`; use `--host 0.0.0.0` only when you intentionally expose the authenticated server through a trusted network or tunnel
-4. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
+5. `--ensure-hub` is loopback-only; managed or remote deployments should run one supervised `--hub` process instead
+6. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
+
+For a managed remote hub, configure MCP clients with the same `--host` address as the hub. Different local addresses can own the same port independently and are intentionally not auto-discovered.
 
 ## Diagnostics and Support
 

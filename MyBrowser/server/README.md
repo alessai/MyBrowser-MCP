@@ -9,7 +9,7 @@ Important: installing this npm package is only half of the setup. You also need 
 ## Fastest Setup for Claude Code
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
 Then install the Chrome extension from:
@@ -36,7 +36,7 @@ npm install -g @alessai/mybrowser-mcp
 ## Start
 
 ```bash
-mybrowser-mcp --host 127.0.0.1 --port 9009
+mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
 On first run, MyBrowser writes its config to:
@@ -45,7 +45,9 @@ On first run, MyBrowser writes its config to:
 ~/.mybrowser/config.json
 ```
 
-That file contains the shared auth token the Chrome extension needs.
+That file contains the shared auth token the Chrome extension needs. Later `--host`, `--port`, and `--token` overrides apply only to that run; edit the config to change saved settings, then rerun the Windows installer if it supplies the extension settings.
+
+`--ensure-hub` is the local same-device mode. It runs the hub in a detached process and reconnects through it, so one MCP client exiting cannot take the shared browser connection down. For a managed or remote deployment, run one supervised `mybrowser-mcp --hub` process instead; `--hub` fails clearly if it cannot own the configured listener. Configure remote MCP clients with the same `--host` address as that hub; different local addresses are not auto-discovered.
 
 ## Chrome Extension Required
 
@@ -69,7 +71,7 @@ Then:
   "mcpServers": {
     "mybrowser": {
       "command": "mybrowser-mcp",
-      "args": ["--host", "127.0.0.1", "--port", "9009"]
+      "args": ["--ensure-hub", "--host", "127.0.0.1", "--port", "9009"]
     }
   }
 }
@@ -159,7 +161,7 @@ The benchmark compares the real disabled `TelemetryManager.runToolCall()` path a
 If you already installed the package globally, the equivalent Claude Code command is:
 
 ```bash
-claude mcp add mybrowser -- mybrowser-mcp --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
 ```
 
 ## Repository

@@ -7,10 +7,10 @@ MyBrowser has two parts: an MCP server launched by the user's MCP client and an 
 1. Add the MCP server to the user's client with this command and arguments:
 
    ```text
-   npx -y @alessai/mybrowser-mcp --host 127.0.0.1 --port 9009
+   npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
    ```
 
-2. Restart or reload the MCP client so the server runs once and creates the private local config:
+2. Restart or reload the MCP client so the server runs once and creates the private local config. `--ensure-hub` keeps the loopback hub alive independently from any one MCP client:
 
    ```text
    ~/.mybrowser/config.json
