@@ -23,8 +23,8 @@
           <p class="kicker">Installed successfully</p>
           <h1 id="hero-title">Give your AI a browser.</h1>
           <p class="hero-lede">
-            MyBrowser lets your MCP client inspect and operate Chrome while you stay in control.
-            Local setup needs no token and takes about a minute.
+            The extension should connect automatically to the MCP server you installed first.
+            Once the status is Connected, start with a real browser task.
           </p>
         </div>
         <div class="connection-panel" aria-live="polite">
@@ -37,53 +37,8 @@
         </div>
       </section>
 
-      <section class="guide-section setup-section" aria-labelledby="setup-title">
-        <div class="section-number" aria-hidden="true">1</div>
-        <div class="section-body">
-          <p class="section-kicker">Connect</p>
-          <h2 id="setup-title">Add MyBrowser to your MCP client</h2>
-          <p>
-            Use the ordinary local command. The extension connects to loopback automatically;
-            do not enter an auth token.
-          </p>
-
-          <div class="command-group">
-            <div class="command-label">Claude Code</div>
-            <div class="command-row">
-              <code>claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp</code>
-              <button
-                class="copy-button"
-                type="button"
-                data-copy="claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp"
-                aria-label="Copy Claude Code setup command"
-              >Copy</button>
-            </div>
-          </div>
-
-          <div class="command-group">
-            <div class="command-label">Any MCP client</div>
-            <div class="command-row">
-              <code>npx -y @alessai/mybrowser-mcp</code>
-              <button
-                class="copy-button"
-                type="button"
-                data-copy="npx -y @alessai/mybrowser-mcp"
-                aria-label="Copy MyBrowser MCP command"
-              >Copy</button>
-            </div>
-          </div>
-
-          <p class="boundary-note">
-            This zero-entry path is for ordinary same-device use. Standalone hubs and remote
-            connections still require token authentication.
-            Use it only on a trusted single-user device: other local software and browser
-            extensions share this local trust boundary.
-          </p>
-        </div>
-      </section>
-
       <section class="guide-section" aria-labelledby="first-run-title">
-        <div class="section-number" aria-hidden="true">2</div>
+        <div class="section-number" aria-hidden="true">1</div>
         <div class="section-body">
           <p class="section-kicker">First useful run</p>
           <h2 id="first-run-title">Ask for an action, not a test</h2>
@@ -105,7 +60,7 @@
       </section>
 
       <section class="guide-section annotation-guide" aria-labelledby="annotation-title">
-        <div class="section-number section-number--amber" aria-hidden="true">3</div>
+        <div class="section-number section-number--amber" aria-hidden="true">2</div>
         <div class="section-body annotation-copy">
           <p class="section-kicker section-kicker--amber">Show, mark, explain</p>
           <h2 id="annotation-title">Annotate the page for your AI</h2>
@@ -115,9 +70,12 @@
             <li>Add a short note and choose <strong>Save</strong>.</li>
             <li>Ask your AI to read the pending MyBrowser notes.</li>
           </ol>
-          <button class="small-button small-button--amber" id="open-shortcuts" type="button">
-            Change annotation shortcut
-          </button>
+          <div class="shortcut-controls">
+            <button class="small-button small-button--amber" id="open-shortcuts" type="button">
+              Open annotation shortcuts
+            </button>
+            <span class="shortcut-result" id="shortcut-result" role="status" hidden></span>
+          </div>
         </div>
 
         <div class="annotation-demo" aria-label="Annotation toolbar example">
@@ -142,6 +100,31 @@
           Annotation cannot run on <code>chrome://</code> pages, the Chrome Web Store, extension
           pages, or Chrome's built-in PDF viewer. Use it on regular websites.
         </div>
+      </section>
+
+      <section class="support-section" aria-label="Connection troubleshooting">
+        <details>
+          <summary>Not connected?</summary>
+          <div class="support-content">
+            <p>
+              Restart or reload your MCP client, then choose <strong>Check again</strong> above.
+              If needed, confirm that your existing MCP entry runs:
+            </p>
+            <div class="command-row">
+              <code>npx -y @alessai/mybrowser-mcp</code>
+              <button
+                class="copy-button"
+                type="button"
+                data-copy="npx -y @alessai/mybrowser-mcp"
+                aria-label="Copy MyBrowser MCP command"
+              >Copy</button>
+            </div>
+            <p class="boundary-note">
+              Ordinary same-device authentication is automatic. Hub and remote setups use the
+              extension popup settings. Use local mode only on a trusted single-user device.
+            </p>
+          </div>
+        </details>
       </section>
     </main>
 

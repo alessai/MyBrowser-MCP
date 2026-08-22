@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { openInstallTutorial } from './onboarding';
+import { openInstallTutorial, openShortcutSettings } from './onboarding';
 
 describe('openInstallTutorial', () => {
   it('opens the tutorial on first install', async () => {
@@ -24,5 +24,31 @@ describe('openInstallTutorial', () => {
     })).resolves.toBe(false);
 
     expect(createTab).not.toHaveBeenCalled();
+  });
+});
+
+describe('openShortcutSettings', () => {
+  it('opens Chrome shortcut settings when the tabs API is available', async () => {
+    const openTab = vi.fn(async () => undefined);
+    const copy = vi.fn(async () => undefined);
+
+    await expect(openShortcutSettings({ openTab, copy })).resolves.toBe('opened');
+
+    expect(openTab).toHaveBeenCalledWith('chrome://extensions/shortcuts');
+    expect(copy).not.toHaveBeenCalled();
+  });
+
+  it('copies the address when shortcut settings cannot be opened', async () => {
+    const copy = vi.fn(async () => undefined);
+
+    await expect(openShortcutSettings({ copy })).resolves.toBe('copied');
+
+    expect(copy).toHaveBeenCalledWith('chrome://extensions/shortcuts');
+  });
+
+  it('returns a manual fallback when clipboard access is unavailable', async () => {
+    await expect(openShortcutSettings({
+      copy: vi.fn(async () => { throw new Error('denied'); }),
+    })).resolves.toBe('manual');
   });
 });
