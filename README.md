@@ -19,6 +19,16 @@ The ordinary same-device setup now defaults to `127.0.0.1:9009` and connects the
 
 When the extension is loaded for the first time, it opens a short setup and usage guide. The guide checks connection state, provides the MCP command, walks through a first browser task, and explains page annotations with `Alt+Shift+A`.
 
+## Platform support
+
+MyBrowser supports Linux, Windows, and macOS. Version `1.2.0` is the first cross-platform release. We have tested it on all three operating systems.
+
+| Platform | Support | Verification |
+| --- | --- | --- |
+| Linux | Supported | Automated tests and live use |
+| Windows | Supported | Native Windows CI and live use |
+| macOS | Supported | Live use |
+
 ## Fastest Setup for Claude Code
 
 Giving this repository to an installation agent? Use [`llms.txt`](llms.txt) for the shortest safe handoff.
