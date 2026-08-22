@@ -63,6 +63,8 @@ import {
   resetHandlersAfterTransportDisconnect,
 } from '../../lib/events';
 import { getStorageAll } from '../../lib/storage';
+import { resolveConnectionTarget } from '../../lib/local-connection';
+import { openInstallTutorial } from '../../lib/onboarding';
 import { importInstallerBootstrap } from '../../lib/installer-bootstrap';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
 import { parseInboundWsFrame, reportToolFailure } from '../../lib/background-privacy';
@@ -562,16 +564,15 @@ export default defineBackground(() => {
 
   async function connectOffscreen(): Promise<void> {
     const { serverAddress, serverPort, authToken, browserName } = await getStorageAll();
-    if (!serverPort || !authToken) {
+    const target = resolveConnectionTarget({ serverAddress, serverPort, authToken });
+    if (!target) {
       setBadge('disconnected');
       return;
     }
     setBadge('connecting');
-    const host = serverAddress || 'localhost';
-    const url = `ws://${host}:${serverPort}`;
     await tellOffscreen({
       type: '_os_ws_connect',
-      payload: { url, token: authToken, browserName: browserName || undefined },
+      payload: { ...target, browserName: browserName || undefined },
     });
   }
 
@@ -1029,7 +1030,12 @@ export default defineBackground(() => {
     console.error('[MyBrowser] INIT_FAILED');
   });
 
-  chrome.runtime.onInstalled.addListener(async () => {
+  chrome.runtime.onInstalled.addListener(async (details) => {
+    void openInstallTutorial(details.reason, {
+      getUrl: (path) => chrome.runtime.getURL(path),
+      createTab: (url) => chrome.tabs.create({ url }),
+    }).catch((error) => recordExtensionIssue('lifecycle', 'Tutorial open failed', error));
+
     await ensureConfiguredAndAlive();
     await injectIntoAllTabs();
   });

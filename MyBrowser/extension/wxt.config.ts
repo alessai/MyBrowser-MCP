@@ -5,7 +5,7 @@ export default defineConfig({
   manifest: {
     name: 'MyBrowser',
     version: '1.1.7',
-    description: 'Always-on browser automation via MCP over Tailscale',
+    description: 'Local and remote browser automation through MCP',
     permissions: [
       'debugger',
       'scripting',

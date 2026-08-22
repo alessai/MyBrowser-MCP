@@ -9,6 +9,7 @@ declare module "wxt/browser" {
     | "/mybrowser.local.json"
     | "/offscreen.html"
     | "/popup.html"
+    | "/tutorial.html"
   type HtmlPublicPath = Extract<PublicPath, `${string}.html`>
   export interface WxtRuntime {
     getURL(path: PublicPath): string;

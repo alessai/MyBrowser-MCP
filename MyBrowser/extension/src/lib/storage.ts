@@ -8,7 +8,7 @@ export interface StorageSchema {
 }
 
 const DEFAULTS: StorageSchema = {
-  serverAddress: '',
+  serverAddress: '127.0.0.1',
   serverPort: 9009,
   authToken: '',
   browserName: '',

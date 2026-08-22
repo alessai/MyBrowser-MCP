@@ -9,14 +9,14 @@ Important: installing this npm package is only half of the setup. You also need 
 ## Fastest Setup for Claude Code
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp
 ```
 
 Then install the Chrome extension from:
 
 `https://github.com/alessai/MyBrowser-MCP/releases/latest`
 
-If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybrowser` once to trigger the server and generate it.
+Load the extension once. It defaults to the ordinary local server and opens a first-install guide; no token entry is needed.
 
 ## Highlights
 
@@ -36,7 +36,7 @@ npm install -g @alessai/mybrowser-mcp
 ## Start
 
 ```bash
-mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+mybrowser-mcp
 ```
 
 On first run, MyBrowser writes its config to:
@@ -45,9 +45,9 @@ On first run, MyBrowser writes its config to:
 ~/.mybrowser/config.json
 ```
 
-That file contains the shared auth token the Chrome extension needs. Later `--host`, `--port`, and `--token` overrides apply only to that run; edit the config to change saved settings, then rerun the Windows installer if it supplies the extension settings.
+That file contains the token used by authenticated hub and remote modes. The ordinary loopback extension connection does not ask for it. Later `--host`, `--port`, and `--token` overrides apply only to that run; edit the config to change saved settings.
 
-`--ensure-hub` is the local same-device mode. It runs the hub in a detached process and reconnects through it, so one MCP client exiting cannot take the shared browser connection down. For a managed or remote deployment, run one supervised `mybrowser-mcp --hub` process instead; `--hub` fails clearly if it cannot own the configured listener. Configure remote MCP clients with the same `--host` address as that hub; different local addresses are not auto-discovered.
+The no-flag command is the default same-device mode. It runs on loopback and stops with its MCP client. `--ensure-hub` is an opt-in authenticated detached hub for clients that must share one browser connection across process restarts. For a managed or remote deployment, run one supervised `mybrowser-mcp --hub` process instead; `--hub` fails clearly if it cannot own the configured listener.
 
 ## Chrome Extension Required
 
@@ -62,7 +62,7 @@ Then:
 3. Enable **Developer mode**
 4. Click **Load unpacked**
 5. Select the unzipped folder
-6. Enter the server address, port, auth token, and an optional stable browser name in the extension popup
+6. Follow the guide that opens automatically. Ordinary local use needs no popup settings or auth token
 
 ## MCP Config Example
 
@@ -71,7 +71,7 @@ Then:
   "mcpServers": {
     "mybrowser": {
       "command": "mybrowser-mcp",
-      "args": ["--ensure-hub", "--host", "127.0.0.1", "--port", "9009"]
+      "args": []
     }
   }
 }
@@ -161,7 +161,7 @@ The benchmark compares the real disabled `TelemetryManager.runToolCall()` path a
 If you already installed the package globally, the equivalent Claude Code command is:
 
 ```bash
-claude mcp add mybrowser -- mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- mybrowser-mcp
 ```
 
 ## Repository

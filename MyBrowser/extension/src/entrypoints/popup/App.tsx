@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { sendToBackground } from '../../lib/messaging';
 import { getStorageAll, setStorageAll, type StorageSchema } from '../../lib/storage';
 import type { WsStatusResponse } from '../../lib/protocol';
+import { isLoopbackAddress } from '../../lib/local-connection';
 
 type View = 'main' | 'settings';
 
@@ -112,6 +113,10 @@ export default function App() {
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
   };
 
+  const openTutorial = () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('/tutorial.html') });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -189,13 +194,16 @@ export default function App() {
           </label>
 
           <label>
-            Auth Token
+            <span className="label-row">
+              Auth Token
+              <span className="field-hint">Hub / remote only</span>
+            </span>
             <div className="token-input">
               <input
                 type={showToken ? 'text' : 'password'}
                 value={settings.authToken}
                 onChange={(e) => setSettings({ ...settings, authToken: e.target.value })}
-                placeholder="Enter token"
+                placeholder="Not needed for local setup"
               />
               <button
                 className="toggle-btn"
@@ -230,7 +238,7 @@ export default function App() {
     <div className="popup">
       <header>
         <h1>MyBrowser</h1>
-        <span className="version">v1.1.3</span>
+        <span className="version">v{chrome.runtime.getManifest().version}</span>
       </header>
 
       <div className="status-section">
@@ -266,9 +274,13 @@ export default function App() {
           </div>
 
           <div className="info-item">
-            <span className="info-label">Auth Token</span>
+            <span className="info-label">Authentication</span>
             <span className="info-value">
-              {settings.authToken ? 'Configured' : 'Missing'}
+              {settings.authToken
+                ? 'Token'
+                : isLoopbackAddress(settings.serverAddress)
+                  ? 'Automatic local'
+                  : 'Missing'}
             </span>
           </div>
         </div>
@@ -352,6 +364,9 @@ export default function App() {
             Settings
           </button>
         </div>
+        <button className="tutorial-link" type="button" onClick={openTutorial}>
+          Setup &amp; annotation guide
+        </button>
         {diagnosticsResult && (
           <div className={`diagnostics-result ${diagnosticsResult.includes('failed') ? 'error' : ''}`}>
             {diagnosticsResult}

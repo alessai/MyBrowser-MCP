@@ -5,7 +5,7 @@ import type { TelemetryErrorCategory } from "./telemetry/types.js";
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
 
 const noBrowserMessage =
-  "No browser connected. Connect a browser by installing the MyBrowser extension and entering the server address and auth token in the extension settings.";
+  "No browser connected. Install the MyBrowser extension and use its first-install guide. Ordinary local setup connects automatically; hub and remote setup use the extension settings.";
 
 function generateId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {

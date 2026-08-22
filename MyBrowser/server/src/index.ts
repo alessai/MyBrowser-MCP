@@ -8,6 +8,7 @@ import {
   assertLoopbackHubHost,
   createDetachedHubEnsurer,
   HUB_AUTOSTART_TOKEN_ENV,
+  isLoopbackHost,
 } from "./hub-autostart.js";
 import { createServerWithTools } from "./server.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -67,10 +68,19 @@ program
       token: opts.token ?? (opts.hub ? process.env[HUB_AUTOSTART_TOKEN_ENV] : undefined),
     });
     const telemetryConfig = resolveProcessTelemetryConfig(opts, opts.hub === true);
+    const localExtensionAuth = (
+      !opts.hub
+      && !opts.ensureHub
+      && opts.token === undefined
+      && isLoopbackHost(config.host)
+    );
 
     console.error(`[MyBrowser MCP] WebSocket server: ws://${config.host}:${config.port}`);
     const tokenSource = opts.token ? "provided by --token" : "see ~/.mybrowser/config.json";
     console.error(`[MyBrowser MCP] Auth token: [redacted] (${tokenSource})`);
+    if (localExtensionAuth) {
+      console.error("[MyBrowser MCP] Local extension auth: automatic");
+    }
     if (opts.session) {
       console.error(`[MyBrowser MCP] Session name: ${opts.session}`);
     }
@@ -90,6 +100,7 @@ program
       telemetryConfig,
       requireHub: opts.hub === true,
       clientOnly: opts.ensureHub === true,
+      allowLocalExtensionWithoutToken: localExtensionAuth,
       onHubUnavailable: ensureHub
         ? () => {
           void ensureHub().catch(() => console.error("[MyBrowser MCP] HUB_RECOVERY_FAILED"));

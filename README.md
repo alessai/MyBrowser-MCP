@@ -13,18 +13,11 @@ Important: MyBrowser has 2 parts.
 
 `npm` installs only the server. You still need the Chrome extension from GitHub Releases.
 
-## What's New in 1.1.7
+## Zero-entry local setup
 
-Version `1.1.7` adds automatic same-device setup to the Windows CMD installer.
+The ordinary same-device setup now defaults to `127.0.0.1:9009` and connects the Chrome extension without asking you to copy an auth token. This shortcut is deliberately limited to an ordinary loopback server and a local Chrome extension connection. Standalone hubs, `--ensure-hub`, remote addresses, and MCP client-to-hub connections remain token-authenticated.
 
-| Setup step | 1.1.6 | 1.1.7 |
-| --- | --- | --- |
-| Install or update with `install-mybrowser.cmd` | Yes | Yes |
-| Read `%USERPROFILE%\.mybrowser\config.json` | No | Yes |
-| Configure localhost, port, token, and browser name | Manual | Automatic |
-| Refresh a changed local token when the CMD is rerun | No | Yes |
-
-This automation comes from `install-mybrowser.cmd`. Installing the extension ZIP manually still works, but you must enter the connection settings in the extension popup yourself.
+When the extension is loaded for the first time, it opens a short setup and usage guide. The guide checks connection state, provides the MCP command, walks through a first browser task, and explains page annotations with `Alt+Shift+A`.
 
 ## Fastest Setup for Claude Code
 
@@ -33,16 +26,14 @@ Giving this repository to an installation agent? Use [`llms.txt`](llms.txt) for 
 Add MyBrowser to Claude Code with one command:
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp
 ```
 
 Then:
 
-1. On Windows, download `mybrowser-windows-installer.zip` from `https://github.com/alessai/MyBrowser-MCP/releases/latest` and double-click `install-mybrowser.cmd`
-2. Approve **Load unpacked** once when Chrome opens `chrome://extensions`; the CMD has already supplied the local token and port
-3. On other platforms, download the extension ZIP, load it unpacked, and enter the settings manually
-
-If `~/.mybrowser/config.json` has not been created yet, run `claude mcp get mybrowser` once to trigger the server and generate it.
+1. Download `mybrowser-extension-*-chrome.zip` from `https://github.com/alessai/MyBrowser-MCP/releases/latest`
+2. Unzip it, open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**
+3. Select the unzipped folder. The tutorial opens automatically; no CMD installer, token entry, or extension settings are needed for ordinary local use
 
 ## Why It Stands Out
 
@@ -138,7 +129,7 @@ Example prompts you can give your MCP client:
 ### Claude Code one-liner
 
 ```bash
-claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp
 ```
 
 ### Global npm install
@@ -149,15 +140,15 @@ claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp --ensure-hub --host 12
 npm install -g @alessai/mybrowser-mcp
 ```
 
-#### 2. Start the server once
+#### 2. Start the ordinary local server
 
 ```bash
-mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+mybrowser-mcp
 ```
 
-On first run, MyBrowser creates `~/.mybrowser/config.json` and stores the shared auth token there. `--ensure-hub` keeps the local hub in a separate process so closing or restarting one MCP client does not take every browser connection down. Later `--host`, `--port`, and `--token` overrides apply only to that run; edit the config to change saved settings, then rerun the Windows installer if it supplies the extension settings.
+On first run, MyBrowser creates `~/.mybrowser/config.json`. The ordinary loopback extension connection is automatic and does not ask for that token. The server stops with its MCP client; use the authenticated `--ensure-hub` or managed `--hub` modes only when you explicitly need a shared, independently running hub. Later `--host`, `--port`, and `--token` overrides apply only to that run.
 
-#### 3. Install the Chrome extension on Windows
+#### 3. Optional managed Windows installation
 
 Download `mybrowser-windows-installer.zip` from the latest release, extract it, and double-click:
 
@@ -181,7 +172,7 @@ If MyBrowser was previously loaded from another folder, remove that unpacked cop
 
 For later updates, run `install-mybrowser.cmd` again. Close Chrome when prompted; the installer replaces the extension only after Chrome has fully exited, then reopens Chrome with the new version. It never force-closes Chrome.
 
-#### 4. Manual installation on other platforms
+#### 4. Direct extension installation on any platform
 
 Download the Chrome extension zip from the latest release:
 
@@ -201,14 +192,9 @@ Load the extension in Chrome:
 4. Click **Load unpacked**
 5. Select the unzipped extension folder
 
-#### 5. Connect the extension
+#### 5. Follow the first-install guide
 
-The Windows installer configures the extension automatically when the MCP config was available. For manual installations, open the extension popup and enter:
-
-1. Server address
-2. Port
-3. Auth token from `~/.mybrowser/config.json`
-4. Optional browser name; use stable, unique names if you want to save a default browser
+The extension opens its guide once after **Load unpacked**. For ordinary local use it already targets `127.0.0.1:9009`; do not enter a token. Open the popup's **Setup & annotation guide** link whenever you want to revisit the instructions. Use the popup settings only for an authenticated hub or remote server.
 
 ## MCP Config Example
 
@@ -219,7 +205,7 @@ Example MCP config using the installed binary:
   "mcpServers": {
     "mybrowser": {
       "command": "mybrowser-mcp",
-      "args": ["--ensure-hub", "--host", "127.0.0.1", "--port", "9009"]
+      "args": []
     }
   }
 }
@@ -228,7 +214,7 @@ Example MCP config using the installed binary:
 Example Claude Code command using the installed binary instead of `npx`:
 
 ```bash
-claude mcp add mybrowser -- mybrowser-mcp --ensure-hub --host 127.0.0.1 --port 9009
+claude mcp add mybrowser -- mybrowser-mcp
 ```
 
 ## How It Works
@@ -242,11 +228,11 @@ This is why you need both the npm package and the extension zip.
 
 ## Security Model
 
-1. The server runs on your machine or your own network
-2. The extension connects only to the server address you configure
-3. The server and extension share an auth token from `~/.mybrowser/config.json`
-4. Fresh installs bind to `127.0.0.1`; use `--host 0.0.0.0` only when you intentionally expose the authenticated server through a trusted network or tunnel
-5. `--ensure-hub` is loopback-only; managed or remote deployments should run one supervised `--hub` process instead
+1. Fresh installs bind to `127.0.0.1`
+2. Ordinary local mode accepts a blank extension token only from a loopback peer with a `chrome-extension://` WebSocket origin
+3. Websites, MCP clients, wildcard listeners, explicit `--token`, `--ensure-hub`, standalone `--hub`, and remote connections still require the configured token
+4. Local programs can imitate protocol headers, so do not forward or expose the ordinary tokenless listener; use an authenticated hub for remote access
+5. Use `--host 0.0.0.0` only when you intentionally expose an authenticated server through a trusted network or tunnel
 6. Broad browser permissions are required because MyBrowser supports real browser automation, debugging, uploads, downloads, screenshots, and inspection
 
 For a managed remote hub, configure MCP clients with the same `--host` address as the hub. Different local addresses can own the same port independently and are intentionally not auto-discovered.

@@ -706,7 +706,7 @@ export class LocalStateManager implements IStateManager {
       return {
         ok: false,
         reason: "no_browsers",
-        message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}No browser connected. Connect a browser by installing the MyBrowser extension and entering the server address and auth token in the extension settings.`,
+        message: `${staleSelectedBrowserId ? `Selected browser "${staleSelectedBrowserId}" is no longer connected. ` : ""}No browser connected. Install the MyBrowser extension and use its first-install guide. Ordinary local setup connects automatically; hub and remote setup use the extension settings.`,
         defaultBrowserName,
         connectedBrowsers: browsers,
       };

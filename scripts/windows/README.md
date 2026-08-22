@@ -6,7 +6,7 @@ Keep `install-mybrowser.cmd` and `install-mybrowser.ps1` in the same folder, the
 
 The CMD installer now configures same-device Windows installations automatically. It reads the MCP token and port from `%USERPROFILE%\.mybrowser\config.json`, uses `127.0.0.1`, and imports those settings when Chrome loads the extension. Version `1.1.6` required entering these values manually in the extension popup.
 
-This behavior requires `install-mybrowser.cmd`. Installing the extension ZIP directly remains a manual setup path.
+This behavior requires `install-mybrowser.cmd`. Installing the extension ZIP directly uses MyBrowser's ordinary local defaults and needs no token entry; use the popup settings only for a hub or remote server.
 
 The installer:
 

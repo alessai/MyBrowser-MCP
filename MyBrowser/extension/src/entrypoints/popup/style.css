@@ -263,6 +263,19 @@ footer {
   font-weight: 500;
 }
 
+.label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field-hint {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 400;
+}
+
 .settings-form input {
   padding: 8px 10px;
   border: 1px solid var(--input-border);
@@ -341,6 +354,21 @@ footer {
 
 .btn-row .btn {
   flex: 1;
+}
+
+.tutorial-link {
+  width: 100%;
+  margin-top: 10px;
+  padding: 3px;
+  border: 0;
+  color: var(--color-blue);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.tutorial-link:hover {
+  text-decoration: underline;
 }
 
 .test-result {

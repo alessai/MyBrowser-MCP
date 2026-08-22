@@ -17,8 +17,12 @@ interface DetachedHubDependencies {
   sleep: (delayMs: number) => Promise<void>;
 }
 
+export function isLoopbackHost(host: string): boolean {
+  return ["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase());
+}
+
 export function assertLoopbackHubHost(host: string): void {
-  if (!["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase())) {
+  if (!isLoopbackHost(host)) {
     throw new Error("--ensure-hub requires a loopback host");
   }
 }

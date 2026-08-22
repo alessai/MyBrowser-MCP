@@ -2636,6 +2636,92 @@ describe("WebSocket v2 authentication", () => {
   });
 });
 
+describe("ordinary local extension authentication", () => {
+  const extensionOrigin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+  async function connectFromOrigin(
+    server: WsServerResult,
+    origin: string,
+  ): Promise<WebSocket> {
+    const ws = new WebSocket(`ws://127.0.0.1:${server.boundPort}`, {
+      headers: { Origin: origin },
+    });
+    sockets.push(ws);
+    await waitForOpen(ws);
+    return ws;
+  }
+
+  function sendBlankAuth(ws: WebSocket, role: "client" | "extension"): void {
+    ws.send(JSON.stringify({
+      type: "auth",
+      token: "",
+      role,
+      protocolVersion: PROTOCOL_VERSION,
+    }));
+  }
+
+  it("accepts a tokenless extension from loopback in ordinary mode", async () => {
+    const server = await startHub(undefined, undefined, undefined, {
+      allowLocalExtensionWithoutToken: true,
+    });
+    const extension = await connectFromOrigin(server, extensionOrigin);
+    const response = waitForMessage(extension);
+
+    sendBlankAuth(extension, "extension");
+
+    await expect(response).resolves.toMatchObject({
+      type: "auth",
+      status: "ok",
+      protocolVersion: PROTOCOL_VERSION,
+    });
+  });
+
+  it.each([
+    ["ordinary website", "https://example.test", "extension"],
+    ["MCP client", extensionOrigin, "client"],
+  ] as const)("rejects tokenless access from an %s", async (_name, origin, role) => {
+    const server = await startHub(undefined, undefined, undefined, {
+      allowLocalExtensionWithoutToken: true,
+    });
+    const socket = await connectFromOrigin(server, origin);
+    const closed = waitForClose(socket);
+
+    sendBlankAuth(socket, role);
+
+    await expect(closed).resolves.toMatchObject({ code: WS_CLOSE.unauthorized });
+  });
+
+  it("keeps explicit standalone hubs token-protected", async () => {
+    const server = await startHub(undefined, undefined, undefined, {
+      allowLocalExtensionWithoutToken: true,
+      requireHub: true,
+    });
+    const extension = await connectFromOrigin(server, extensionOrigin);
+    const closed = waitForClose(extension);
+
+    sendBlankAuth(extension, "extension");
+
+    await expect(closed).resolves.toMatchObject({ code: WS_CLOSE.unauthorized });
+  });
+
+  it("keeps wildcard listeners token-protected", async () => {
+    const server = await createWebSocketServer({
+      host: "0.0.0.0",
+      port: 0,
+      token: TOKEN,
+      context: new Context(),
+      allowLocalExtensionWithoutToken: true,
+    } as WsServerOptions);
+    servers.push(server);
+    const extension = await connectFromOrigin(server, extensionOrigin);
+    const closed = waitForClose(extension);
+
+    sendBlankAuth(extension, "extension");
+
+    await expect(closed).resolves.toMatchObject({ code: WS_CLOSE.unauthorized });
+  });
+});
+
 describe("WebSocket connection roles and session binding", () => {
   it("rejects extension hub RPC and closes the socket with 4403", async () => {
     const server = await startHub();

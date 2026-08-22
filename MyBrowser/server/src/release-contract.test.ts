@@ -46,11 +46,11 @@ describe("release package contract", () => {
     const instructions = readFileSync(new URL("../../../llms.txt", import.meta.url), "utf8");
     const projectMcp = readFileSync(new URL("../../.mcp.json", import.meta.url), "utf8");
 
-    expect(instructions).toContain("--host 127.0.0.1");
-    expect(instructions).toContain("--ensure-hub");
-    expect(instructions).toContain("install-mybrowser.cmd");
+    expect(instructions).toContain("npx -y @alessai/mybrowser-mcp");
+    expect(instructions).toContain("no CMD installer");
+    expect(instructions).toContain("no popup settings");
     expect(instructions).toContain("Load unpacked");
-    expect(instructions).toContain("Never display the token");
+    expect(instructions).toContain("never display that token");
     expect(instructions).toContain("do not force-kill Chrome");
     expect(instructions).toContain("browser_diagnostics");
     expect(projectMcp).toContain("${CLAUDE_PROJECT_DIR}/server/dist/index.js");

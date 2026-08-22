@@ -19,6 +19,7 @@ import {
 import { SessionConnectionRegistry } from "./session-connections.js";
 import { isValidV2SessionId } from "./session-id.js";
 import { dispatchHubRpc } from "./hub-rpc.js";
+import { isLoopbackHost } from "./hub-autostart.js";
 
 // Hard cap on incoming WS frames: notes can carry a base64 PNG, but nothing
 // else this server handles is remotely this large. 32 MB covers a ~20 MB
@@ -66,6 +67,15 @@ export interface WsServerOptions {
   requireHub?: boolean;
   clientOnly?: boolean;
   onHubUnavailable?: () => void;
+  allowLocalExtensionWithoutToken?: boolean;
+}
+
+const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
+
+function isLoopbackPeer(address: string | undefined): boolean {
+  return address === "::1"
+    || address?.startsWith("127.") === true
+    || address?.startsWith("::ffff:127.") === true;
 }
 
 interface RecordingRetryPayload {
@@ -590,7 +600,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     }
   }, LIVENESS_SWEEP_INTERVAL_MS);
 
-  wss.on("connection", (ws: WebSocket) => {
+  wss.on("connection", (ws: WebSocket, request) => {
     if (shuttingDown) {
       ws.close(1012, "SERVER_SHUTTING_DOWN");
       return;
@@ -639,7 +649,17 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           ws.close(WS_CLOSE.forbiddenRole, "Forbidden role");
           return;
         }
-        if (msg.token !== token) {
+        const localExtensionWithoutToken =
+          options.allowLocalExtensionWithoutToken === true
+          && options.requireHub !== true
+          && options.clientOnly !== true
+          && isLoopbackHost(host)
+          && msg.role === "extension"
+          && msg.token === ""
+          && isLoopbackPeer(request.socket.remoteAddress)
+          && typeof request.headers.origin === "string"
+          && CHROME_EXTENSION_ORIGIN.test(request.headers.origin);
+        if (msg.token !== token && !localExtensionWithoutToken) {
           ws.close(WS_CLOSE.unauthorized, "Unauthorized");
           return;
         }

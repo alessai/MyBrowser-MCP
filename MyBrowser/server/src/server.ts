@@ -97,6 +97,7 @@ export interface ServerOptions {
   requireHub?: boolean;
   clientOnly?: boolean;
   onHubUnavailable?: () => void;
+  allowLocalExtensionWithoutToken?: boolean;
 }
 
 export let stateManager: IStateManager;
@@ -226,6 +227,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     requireHub: options.requireHub,
     clientOnly: options.clientOnly,
     onHubUnavailable: options.onHubUnavailable,
+    allowLocalExtensionWithoutToken: options.allowLocalExtensionWithoutToken,
   });
   stateManager = wss.stateManager;
 

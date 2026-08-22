@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Set up MyBrowser</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand" aria-label="MyBrowser">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <span>MyBrowser</span>
+        <span class="version" id="version"></span>
+      </div>
+      <button class="text-button" id="close-guide" type="button">Close guide</button>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="kicker">Installed successfully</p>
+          <h1 id="hero-title">Give your AI a browser.</h1>
+          <p class="hero-lede">
+            MyBrowser lets your MCP client inspect and operate Chrome while you stay in control.
+            Local setup needs no token and takes about a minute.
+          </p>
+        </div>
+        <div class="connection-panel" aria-live="polite">
+          <div class="connection-heading">
+            <span class="connection-dot" id="connection-dot" aria-hidden="true"></span>
+            <strong id="connection-label">Checking connection</strong>
+          </div>
+          <p id="connection-detail">Looking for MyBrowser on 127.0.0.1:9009.</p>
+          <button class="small-button" id="check-connection" type="button">Check again</button>
+        </div>
+      </section>
+
+      <section class="guide-section setup-section" aria-labelledby="setup-title">
+        <div class="section-number" aria-hidden="true">1</div>
+        <div class="section-body">
+          <p class="section-kicker">Connect</p>
+          <h2 id="setup-title">Add MyBrowser to your MCP client</h2>
+          <p>
+            Use the ordinary local command. The extension connects to loopback automatically;
+            do not enter an auth token.
+          </p>
+
+          <div class="command-group">
+            <div class="command-label">Claude Code</div>
+            <div class="command-row">
+              <code>claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp</code>
+              <button
+                class="copy-button"
+                type="button"
+                data-copy="claude mcp add mybrowser -- npx -y @alessai/mybrowser-mcp"
+                aria-label="Copy Claude Code setup command"
+              >Copy</button>
+            </div>
+          </div>
+
+          <div class="command-group">
+            <div class="command-label">Any MCP client</div>
+            <div class="command-row">
+              <code>npx -y @alessai/mybrowser-mcp</code>
+              <button
+                class="copy-button"
+                type="button"
+                data-copy="npx -y @alessai/mybrowser-mcp"
+                aria-label="Copy MyBrowser MCP command"
+              >Copy</button>
+            </div>
+          </div>
+
+          <p class="boundary-note">
+            This zero-entry path is for ordinary same-device use. Standalone hubs and remote
+            connections still require token authentication.
+          </p>
+        </div>
+      </section>
+
+      <section class="guide-section" aria-labelledby="first-run-title">
+        <div class="section-number" aria-hidden="true">2</div>
+        <div class="section-body">
+          <p class="section-kicker">First useful run</p>
+          <h2 id="first-run-title">Ask for an action, not a test</h2>
+          <p>Once the status above says Connected, try this in your AI client:</p>
+          <blockquote>
+            List my open browser tabs, then open example.com in a temporary tab.
+          </blockquote>
+          <div class="tool-line" aria-label="Typical MyBrowser workflow">
+            <span>See tabs</span><b aria-hidden="true">&rarr;</b>
+            <span>Inspect page</span><b aria-hidden="true">&rarr;</b>
+            <span>Act</span><b aria-hidden="true">&rarr;</b>
+            <span>Clean up</span>
+          </div>
+          <p class="quiet-note">
+            Tabs created by MyBrowser are temporary by default. Keep one explicitly when you want
+            it to remain open.
+          </p>
+        </div>
+      </section>
+
+      <section class="guide-section annotation-guide" aria-labelledby="annotation-title">
+        <div class="section-number section-number--amber" aria-hidden="true">3</div>
+        <div class="section-body annotation-copy">
+          <p class="section-kicker section-kicker--amber">Show, mark, explain</p>
+          <h2 id="annotation-title">Annotate the page for your AI</h2>
+          <ol class="annotation-steps">
+            <li>Open a normal webpage and press <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd>.</li>
+            <li>Mark the page with counters, pen, arrows, boxes, or text.</li>
+            <li>Add a short note and choose <strong>Save</strong>.</li>
+            <li>Ask your AI to read the pending MyBrowser notes.</li>
+          </ol>
+          <button class="small-button small-button--amber" id="open-shortcuts" type="button">
+            Change annotation shortcut
+          </button>
+        </div>
+
+        <div class="annotation-demo" aria-label="Annotation toolbar example">
+          <div class="mock-browser-bar"><i></i><i></i><i></i><span>example.com</span></div>
+          <div class="mock-page">
+            <div class="mock-toolbar">
+              <span>1</span><span>Pen</span><span class="selected">Arrow</span><span>Box</span><span>Text</span>
+            </div>
+            <div class="mock-content-line mock-content-line--wide"></div>
+            <div class="mock-content-line"></div>
+            <div class="mock-target">Button</div>
+            <svg class="mock-arrow" viewBox="0 0 180 90" aria-hidden="true">
+              <path d="M10 12 C72 5 95 48 145 62" />
+              <path d="M132 49 L148 63 L126 68" />
+            </svg>
+            <div class="mock-note">This action is unclear</div>
+          </div>
+        </div>
+
+        <div class="restricted-note" role="note">
+          <strong>Chrome protects restricted pages.</strong>
+          Annotation cannot run on <code>chrome://</code> pages, the Chrome Web Store, extension
+          pages, or Chrome's built-in PDF viewer. Use it on regular websites.
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Need the full setup reference?</p>
+      <a href="https://github.com/alessai/MyBrowser-MCP#readme" target="_blank" rel="noreferrer">
+        Open MyBrowser documentation
+      </a>
+    </footer>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
