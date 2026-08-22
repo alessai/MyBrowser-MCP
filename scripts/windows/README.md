@@ -2,9 +2,9 @@
 
 Keep `install-mybrowser.cmd` and `install-mybrowser.ps1` in the same folder, then double-click `install-mybrowser.cmd`.
 
-## Version 1.1.7
+## Version 1.2.0
 
-The CMD installer now configures same-device Windows installations automatically. It reads the MCP token and port from `%USERPROFILE%\.mybrowser\config.json`, uses `127.0.0.1`, and imports those settings when Chrome loads the extension. Version `1.1.6` required entering these values manually in the extension popup.
+The CMD installer configures authenticated same-device Windows installations automatically. It reads the MCP token and port from `%USERPROFILE%\.mybrowser\config.json`, uses `127.0.0.1`, and imports those settings when Chrome loads the extension. Version `1.2.0` also adds the first-install guide and ordinary tokenless loopback setup when no authenticated hub config is present.
 
 This behavior requires `install-mybrowser.cmd`. Installing the extension ZIP directly uses MyBrowser's ordinary local defaults and needs no token entry; use the popup settings only for a hub or remote server.
 
@@ -25,7 +25,7 @@ When double-clicked, the CMD window waits at the end so instructions and errors 
 
 No administrator rights are required.
 
-If the MCP config does not exist yet, start MyBrowser MCP once and rerun the installer, or configure the extension manually. When the local token, port, or machine name changes, rerun the CMD and the installer refreshes the configuration. The bootstrap always connects to `127.0.0.1`; it never publishes the token or sends it to GitHub.
+If the MCP config does not exist, the extension uses its ordinary tokenless loopback setup. For an authenticated hub, start MyBrowser MCP once and rerun the installer. When the local token, port, or machine name changes, rerun the CMD and the installer refreshes the configuration. The bootstrap always connects to `127.0.0.1`; it never publishes the token or sends it to GitHub.
 
 The installed `mybrowser.local.json` contains the same local token as `%USERPROFILE%\.mybrowser\config.json`. It remains inside the current user's Local AppData directory; do not share the installed extension folder.
 

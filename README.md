@@ -162,7 +162,7 @@ The installer downloads and verifies the latest extension, then stores it at:
 %LOCALAPPDATA%\Alessai\MyBrowser\Extension
 ```
 
-When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. If the config does not exist yet, start MyBrowser MCP once and rerun the installer, or enter the settings manually. If the token or port later changes, rerun `install-mybrowser.cmd`; it detects and refreshes the changed configuration.
+When `%USERPROFILE%\.mybrowser\config.json` exists, the installer reads its token and port and prepares the extension for `127.0.0.1` automatically. The token is not printed or copied to the clipboard. Without that config, the extension uses the ordinary tokenless loopback setup; use manual settings only for an authenticated hub or remote server. If the token or port later changes, rerun `install-mybrowser.cmd`; it detects and refreshes the changed configuration.
 
 The local bootstrap contains the same token as the MCP config and stays under the current user's Local AppData. Do not share the installed extension folder.
 
@@ -181,7 +181,7 @@ Download the Chrome extension zip from the latest release:
 Look for a file named like:
 
 ```text
-mybrowser-extension-1.1.7-chrome.zip
+mybrowser-extension-<version>-chrome.zip
 ```
 
 Load the extension in Chrome:
@@ -286,6 +286,6 @@ npm run build
 
 ### npm releases
 
-Maintainers publish the server package by creating a matching stable GitHub release tag, such as `v1.1.7`. The paired server and extension versions must already match; the release-contract test enforces that rule. The `publish-npm.yml` workflow verifies the tag and source, packs and tests the exact npm tarball, publishes it through npm Trusted Publishing, and verifies the public registry integrity. A manual dispatch is only a recovery path for an existing release tag whose `MyBrowser/` source still matches the selected workflow ref.
+Maintainers publish the server package by creating a stable GitHub release tag matching the paired server and extension version. The release-contract test enforces that match. The `publish-npm.yml` workflow verifies the tag and source, packs and tests the exact npm tarball, publishes it through npm Trusted Publishing, and verifies the public registry integrity. A manual dispatch is only a recovery path for an existing release tag whose `MyBrowser/` source still matches the selected workflow ref.
 
 The one-time npm owner setup binds `@alessai/mybrowser-mcp` to GitHub Actions with organization or user `alessai`, repository `MyBrowser-MCP`, workflow filename `publish-npm.yml`, no environment, and allowed action `npm publish`. The filename is part of the publishing identity. After that binding works, set npm publishing access to **Require two-factor authentication and disallow tokens**. GitHub then supplies a short-lived OIDC identity for this workflow; the repository stores no npm publish token and later releases require no npm browser login or OTP.
