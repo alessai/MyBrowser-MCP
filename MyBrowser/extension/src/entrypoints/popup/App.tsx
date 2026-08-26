@@ -37,6 +37,7 @@ export default function App() {
     serverPort: 9009,
     authToken: '',
     browserName: '',
+    localUrlHost: '',
   });
   const [showToken, setShowToken] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -195,6 +196,22 @@ export default function App() {
 
           <label>
             <span className="label-row">
+              Local URL Host
+              <span className="field-hint">Remote browser only</span>
+            </span>
+            <input
+              type="text"
+              value={settings.localUrlHost}
+              onChange={(e) => setSettings({ ...settings, localUrlHost: e.target.value })}
+              placeholder="e.g. devbox.tailnet.ts.net"
+            />
+            <span className="field-hint">
+              Replaces localhost in opened URLs. Leave blank to use this browser's machine.
+            </span>
+          </label>
+
+          <label>
+            <span className="label-row">
               Auth Token
               <span className="field-hint">Hub / remote only</span>
             </span>
@@ -267,9 +284,9 @@ export default function App() {
           </div>
 
           <div className="info-item">
-            <span className="info-label">Port</span>
+            <span className="info-label">Local URLs</span>
             <span className="info-value">
-              {settings.serverPort || '—'}
+              {settings.localUrlHost || 'This browser'}
             </span>
           </div>
 

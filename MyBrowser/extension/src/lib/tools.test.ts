@@ -69,6 +69,58 @@ describe('temporary tab tool handlers', () => {
     });
     expect(temporaryTabs.cleanupSession).toHaveBeenCalledWith('session-a');
   });
+
+  it('maps loopback URLs before opening a remote tab', async () => {
+    const { ctx, temporaryTabs } = context();
+    const tab = { id: 42, status: 'complete', url: 'http://devbox.tailnet.ts.net:5173/' };
+    vi.stubGlobal('chrome', {
+      storage: { local: { get: vi.fn(async () => ({ localUrlHost: 'devbox.tailnet.ts.net' })) } },
+      tabs: {
+        get: vi.fn((_tabId, callback?: (value: typeof tab) => void) => {
+          callback?.(tab);
+          return Promise.resolve(tab);
+        }),
+        onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+        sendMessage: vi.fn(async () => ({ ok: true })),
+      },
+    });
+
+    await handleTool('new_tab', { url: 'http://127.0.0.1:5173/' }, ctx);
+
+    expect(temporaryTabs.open).toHaveBeenCalledWith(
+      'session-a',
+      'http://devbox.tailnet.ts.net:5173/',
+      true,
+    );
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('navigation URL mapping', () => {
+  it('maps loopback URLs before navigating a remote tab', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(42);
+    const get = vi.fn((_tabId, callback?: (value: chrome.tabs.Tab) => void) => {
+      const tab = { id: 42, status: 'complete', url: 'https://example.com/' } as chrome.tabs.Tab;
+      callback?.(tab);
+      return Promise.resolve(tab);
+    });
+    const update = vi.fn(async () => undefined);
+    vi.stubGlobal('chrome', {
+      storage: { local: { get: vi.fn(async () => ({ localUrlHost: 'devbox.tailnet.ts.net' })) } },
+      tabs: {
+        get,
+        update,
+        onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+        sendMessage: vi.fn(async () => ({ ok: true })),
+      },
+    });
+
+    await handleTool('browser_navigate', { url: 'http://localhost:4173/path' }, ctx);
+
+    expect(update).toHaveBeenCalledWith(42, { url: 'http://devbox.tailnet.ts.net:4173/path' });
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('network idle readiness', () => {

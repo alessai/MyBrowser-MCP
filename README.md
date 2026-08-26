@@ -206,6 +206,12 @@ Load the extension in Chrome:
 
 The extension opens its guide once after **Load unpacked**. For ordinary local use it already targets `127.0.0.1:9009`; do not enter a token. Open the popup's **Setup & annotation guide** link whenever you want to revisit the instructions. Use the popup settings only for an authenticated hub or remote server.
 
+#### Remote browsers and localhost URLs
+
+When Chrome runs on a different machine from the MCP server, `localhost` normally points to the Chrome machine. Remote profiles default **Local URL Host** to their non-loopback **Server Address**; override it with the development machine's Tailscale or network hostname, such as `devbox.tailnet.ts.net`, when those hosts differ. Clear and save the field to keep localhost on the browser machine. MyBrowser rewrites only `localhost`, `127.0.0.1`, and `::1` navigation hosts while preserving the URL's scheme, port, path, query, and fragment.
+
+The target development server must listen on an interface reachable from the remote browser. Binding it only to `127.0.0.1` prevents remote access even after the URL is rewritten; bind it to the Tailscale interface or another intentionally exposed trusted-network interface.
+
 ## MCP Config Example
 
 Example MCP config using the installed binary:

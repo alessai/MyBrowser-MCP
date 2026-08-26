@@ -41,6 +41,8 @@ import {
 import { getRecordingManager } from './recording-runtime';
 import { replayRecording, type ReplayOptions } from './replayer';
 import { getExtensionDiagnostics } from './diagnostics';
+import { getLocalUrlHost } from './storage';
+import { resolveNavigationUrl } from './local-connection';
 
 const STABLE_DOM_TIMEOUT_MS = 2000;
 const STABLE_DOM_MIN_MS = 500;
@@ -85,6 +87,10 @@ try {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function resolveConfiguredNavigationUrl(url: string): Promise<string> {
+  return resolveNavigationUrl(url, await getLocalUrlHost());
 }
 
 export async function waitForReadyNetworkIdle(
@@ -473,7 +479,7 @@ const handlers: Record<string, ToolHandler> = {
   // === Navigation ===
 
   async browser_navigate(args, ctx) {
-    const url = args.url as string;
+    const url = await resolveConfiguredNavigationUrl(args.url as string);
     const tabId = ctx.getTabId();
     const tab = await chrome.tabs.get(tabId);
     if (tab.url === url) {
@@ -904,7 +910,10 @@ const handlers: Record<string, ToolHandler> = {
   },
 
   async new_tab(args, ctx) {
-    const url = (args.url as string) || 'about:blank';
+    const requestedUrl = (args.url as string) || 'about:blank';
+    const url = requestedUrl === 'about:blank'
+      ? requestedUrl
+      : await resolveConfiguredNavigationUrl(requestedUrl);
     const temporary = args.temporary !== false;
     const tabId = await ctx.services.temporaryTabs.open(ctx.sessionId, url, temporary);
     await ctx.setTabId(tabId);
