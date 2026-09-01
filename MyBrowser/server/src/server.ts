@@ -98,6 +98,7 @@ export interface ServerOptions {
   clientOnly?: boolean;
   onHubUnavailable?: () => void;
   allowLocalExtensionWithoutToken?: boolean;
+  localUrlHost?: string;
 }
 
 export let stateManager: IStateManager;
@@ -210,7 +211,7 @@ function schemaDigest(tools: readonly Tool[]): string {
 
 async function createServerWithTelemetry(options: ServerOptions, telemetry: TelemetryManager) {
   const { host, port, token } = options;
-  const context = new Context(telemetry);
+  const context = new Context(telemetry, options.localUrlHost);
 
   const incarnation = new SessionIncarnation(options.sessionId);
   let sessionId = incarnation.sessionId;
@@ -328,6 +329,14 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     // Diagnostics and support
     browserDiagnostics, browserSupportBundle,
   ];
+  const urlPolicy = context.localUrlHost
+    ? `Canonical host for services on this MCP device: ${context.localUrlHost}. Do not use localhost, 127.0.0.1, or ::1; they are rewritten to this host.`
+    : undefined;
+  const advertisedToolSchemas = tools.map(({ schema }) => (
+    urlPolicy && ["browser_navigate", "new_tab", "browser_action", "browser_download"].includes(schema.name)
+      ? { ...schema, description: `${schema.description} ${urlPolicy}` }
+      : schema
+  ));
   assertTelemetryPolicyCoverage(tools.map((tool) => {
     const properties = tool.schema.inputSchema.properties;
     return {
@@ -369,7 +378,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
         // Telemetry event construction must not affect the list-tools response.
       }
     }
-    return { tools: tools.map((t) => t.schema) };
+    return { tools: advertisedToolSchemas };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

@@ -502,3 +502,76 @@ describe("Context telemetry correlation", () => {
     }
   });
 });
+
+describe("Context local URL policy", () => {
+  it("replaces every outbound loopback navigation host before browser dispatch", async () => {
+    const socket = new FakeSocket();
+    const context = new Context(undefined, "100.95.83.128");
+    context.sessionId = "session-a";
+    const browserId = context.addBrowser(socket as unknown as WebSocket);
+
+    const send = async (type: string, payload: unknown) => {
+      socket.sent.splice(0);
+      const pending = context.sendSocketMessageToBrowser(browserId, type, payload);
+      await nextTurn();
+      const request = JSON.parse(socket.sent[0]!);
+      socket.dispatch("message", {
+        type: "messageResponse",
+        payload: { requestId: request.id, result: true },
+      });
+      await pending;
+      return request.payload;
+    };
+
+    await expect(send("browser_navigate", {
+      url: "http://127.0.0.1:5173/dashboard?q=1#top",
+    })).resolves.toEqual({
+      url: "http://100.95.83.128:5173/dashboard?q=1#top",
+    });
+    await expect(send("new_tab", {
+      url: "http://localhost:3000/",
+      temporary: true,
+    })).resolves.toEqual({
+      url: "http://100.95.83.128:3000/",
+      temporary: true,
+    });
+    await expect(send("browser_download", {
+      url: "http://[::1]:8080/file.zip",
+      filename: "file.zip",
+    })).resolves.toEqual({
+      url: "http://100.95.83.128:8080/file.zip",
+      filename: "file.zip",
+    });
+    await expect(send("browser_action", {
+      steps: [
+        { action: "navigate", url: "http://127.0.0.1:4173/" },
+        { action: "click", element: "Continue" },
+      ],
+    })).resolves.toEqual({
+      steps: [
+        { action: "navigate", url: "http://100.95.83.128:4173/" },
+        { action: "click", element: "Continue" },
+      ],
+    });
+  });
+
+  it("leaves non-loopback URLs unchanged", async () => {
+    const socket = new FakeSocket();
+    const context = new Context(undefined, "100.95.83.128");
+    context.sessionId = "session-a";
+    const browserId = context.addBrowser(socket as unknown as WebSocket);
+
+    const pending = context.sendSocketMessageToBrowser(browserId, "browser_navigate", {
+      url: "https://example.com/path",
+    });
+    await nextTurn();
+    const request = JSON.parse(socket.sent[0]!);
+    socket.dispatch("message", {
+      type: "messageResponse",
+      payload: { requestId: request.id, result: true },
+    });
+    await pending;
+
+    expect(request.payload).toEqual({ url: "https://example.com/path" });
+  });
+});

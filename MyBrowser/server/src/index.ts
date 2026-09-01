@@ -41,6 +41,7 @@ interface CliOptions extends TelemetryCliOptions {
   session?: string;
   hub?: boolean;
   ensureHub?: boolean;
+  localUrlHost?: string;
 }
 
 program
@@ -52,6 +53,7 @@ program
   .option("--session <name>", "Human-readable session name for multi-agent coordination")
   .option("--hub", "Run as standalone hub server (no MCP stdio transport)")
   .option("--ensure-hub", "Use a detached local hub that survives the MCP client process")
+  .option("--local-url-host <host>", "Replace browser loopback URLs with this hostname or IP address")
   .option("--trace-internal", "Record private local AI-tool telemetry")
   .option("--trace-dir <path>", "Private local telemetry directory")
   .option("--trace-retention-days <days>", "Telemetry retention in days", Number)
@@ -66,6 +68,7 @@ program
       host: opts.host,
       port: opts.port,
       token: opts.token ?? (opts.hub ? process.env[HUB_AUTOSTART_TOKEN_ENV] : undefined),
+      localUrlHost: opts.localUrlHost,
     });
     const telemetryConfig = resolveProcessTelemetryConfig(opts, opts.hub === true);
     const localExtensionAuth = allowsAutomaticLocalExtensionAuth(config.host, opts);
@@ -93,6 +96,7 @@ program
       token: config.token,
       sessionName: opts.session,
       telemetryConfig,
+      localUrlHost: config.localUrlHost,
       requireHub: opts.hub === true,
       clientOnly: opts.ensureHub === true,
       allowLocalExtensionWithoutToken: localExtensionAuth,

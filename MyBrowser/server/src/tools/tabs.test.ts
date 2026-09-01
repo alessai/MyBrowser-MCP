@@ -15,6 +15,7 @@ function fixture() {
   const context = {
     sendSocketMessage: vi.fn(async () => ({ tabId: 42 })),
     sendSocketMessageToBrowser: vi.fn(async () => ({ kept: true })),
+    resolveNavigationUrl: vi.fn((url: string) => url.replace("127.0.0.1", "100.95.83.128")),
   } as unknown as Context;
   return {
     stateManager,
@@ -36,6 +37,17 @@ describe("tab lifecycle tools", () => {
     const { context, tools } = fixture();
     await tools.newTab.handle(context, params);
     expect(context.sendSocketMessage).toHaveBeenCalledWith("new_tab", expected);
+  });
+
+  it("reports the canonical URL instead of the caller's loopback URL", async () => {
+    const { context, tools } = fixture();
+
+    const result = await tools.newTab.handle(context, {
+      url: "http://127.0.0.1:5173/",
+    });
+
+    expect(JSON.stringify(result)).toContain("http://100.95.83.128:5173/");
+    expect(JSON.stringify(result)).not.toContain("127.0.0.1");
   });
 
   it("keeps a tab on the explicit or resolved browser", async () => {

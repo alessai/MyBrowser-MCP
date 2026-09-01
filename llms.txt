@@ -22,6 +22,10 @@ MyBrowser has two parts: an MCP server launched by the user's MCP client and an 
 
 4. Verify the result with MyBrowser's `browser_diagnostics` or `list_browsers` tool. A connected browser must appear before claiming installation succeeded.
 
+## Remote browser URL routing
+
+When Chrome runs on another device, set `localUrlHost` in `~/.mybrowser/config.json` to the MCP device's browser-reachable Tailscale or network hostname/IP. This makes every local MyBrowser MCP process advertise and enforce the real address instead of sending `localhost`, `127.0.0.1`, or `::1` to the remote browser. The target web server must listen on that reachable interface.
+
 ## Existing Windows installation
 
 The Windows installer remains optional for an existing installer-managed copy. If used, rerun `install-mybrowser.cmd`, let the user close Chrome when prompted, and do not force-kill Chrome. Reopen Chrome and verify the connected extension version with `browser_diagnostics`.

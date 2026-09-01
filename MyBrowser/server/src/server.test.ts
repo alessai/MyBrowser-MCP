@@ -262,6 +262,74 @@ describe("production server diagnostics privacy", () => {
   });
 });
 
+describe("production server local URL policy", () => {
+  it("advertises the canonical device host on every URL-opening tool", async () => {
+    const port = await freePort();
+    const server = await createServerWithTools({
+      host: "127.0.0.1",
+      port,
+      token,
+      sessionId: "local-url-policy-session",
+      localUrlHost: "100.95.83.128",
+    });
+    mcpServers.push(server);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "local-url-policy-test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    try {
+      const { tools } = await client.listTools();
+      for (const name of ["browser_navigate", "new_tab", "browser_action", "browser_download"]) {
+        const tool = tools.find((candidate) => candidate.name === name);
+        expect(tool?.description, name).toContain("100.95.83.128");
+        expect(tool?.description, name).toContain("Do not use localhost");
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not leak one server's canonical host into another server", async () => {
+    const configured = await createServerWithTools({
+      host: "127.0.0.1",
+      port: await freePort(),
+      token,
+      sessionId: "configured-url-policy-session",
+      localUrlHost: "100.95.83.128",
+    });
+    mcpServers.push(configured);
+    const [configuredClientTransport, configuredServerTransport] = InMemoryTransport.createLinkedPair();
+    await configured.connect(configuredServerTransport);
+    const configuredClient = new Client({ name: "configured-policy-test", version: "1.0.0" });
+    await configuredClient.connect(configuredClientTransport);
+    await configuredClient.listTools();
+    await configuredClient.close();
+
+    const plain = await createServerWithTools({
+      host: "127.0.0.1",
+      port: await freePort(),
+      token,
+      sessionId: "plain-url-policy-session",
+    });
+    mcpServers.push(plain);
+    const [plainClientTransport, plainServerTransport] = InMemoryTransport.createLinkedPair();
+    await plain.connect(plainServerTransport);
+    const plainClient = new Client({ name: "plain-policy-test", version: "1.0.0" });
+    await plainClient.connect(plainClientTransport);
+
+    try {
+      const { tools } = await plainClient.listTools();
+      for (const name of ["browser_navigate", "new_tab", "browser_action", "browser_download"]) {
+        expect(tools.find((candidate) => candidate.name === name)?.description, name)
+          .not.toContain("100.95.83.128");
+      }
+    } finally {
+      await plainClient.close();
+    }
+  });
+});
+
 describe("production server root telemetry", () => {
   it("records bounded list and tool lifecycles without changing MCP results", async () => {
     const canary = "RAW_SERVER_ROOT_CANARY_91d4";

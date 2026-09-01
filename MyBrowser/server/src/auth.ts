@@ -10,11 +10,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { validateLocalUrlHost } from "./local-url.js";
 
 export interface Config {
   token: string;
   host: string;
   port: number;
+  localUrlHost?: string;
 }
 
 export const CONFIG_DIR = join(homedir(), ".mybrowser");
@@ -61,6 +63,7 @@ export function validateConfigOverrides(config: Partial<Config>): void {
   ) {
     throw new Error("MyBrowser port must be an integer from 1 to 65535");
   }
+  if (config.localUrlHost !== undefined) validateLocalUrlHost(config.localUrlHost);
 }
 
 function readCreatedConfig(): Config {
@@ -76,10 +79,12 @@ function readCreatedConfig(): Config {
 }
 
 function applyOverrides(config: Config, overrides?: Partial<Config>): Config {
+  const localUrlHost = overrides?.localUrlHost ?? config.localUrlHost;
   return {
     token: overrides?.token ?? config.token,
     host: overrides?.host ?? config.host,
     port: overrides?.port ?? config.port,
+    ...(localUrlHost === undefined ? {} : { localUrlHost }),
   };
 }
 

@@ -156,7 +156,7 @@ npm install -g @alessai/mybrowser-mcp
 mybrowser-mcp
 ```
 
-On first run, MyBrowser creates `~/.mybrowser/config.json`. The ordinary loopback extension connection is automatic and does not ask for that token. The server stops with its MCP client; use the authenticated `--ensure-hub` or managed `--hub` modes only when you explicitly need a shared, independently running hub. Later `--host`, `--port`, and `--token` overrides apply only to that run.
+On first run, MyBrowser creates `~/.mybrowser/config.json`. The ordinary loopback extension connection is automatic and does not ask for that token. The server stops with its MCP client; use the authenticated `--ensure-hub` or managed `--hub` modes only when you explicitly need a shared, independently running hub. Later `--host`, `--port`, `--token`, and `--local-url-host` overrides apply only to that run.
 
 #### 3. Optional managed Windows installation
 
@@ -208,7 +208,11 @@ The extension opens its guide once after **Load unpacked**. For ordinary local u
 
 #### Remote browsers and localhost URLs
 
-When Chrome runs on a different machine from the MCP server, `localhost` normally points to the Chrome machine. Remote profiles default **Local URL Host** to their non-loopback **Server Address**; override it with the development machine's Tailscale or network hostname, such as `devbox.tailnet.ts.net`, when those hosts differ. Clear and save the field to keep localhost on the browser machine. MyBrowser rewrites only `localhost`, `127.0.0.1`, and `::1` navigation hosts while preserving the URL's scheme, port, path, query, and fragment.
+When Chrome runs on a different machine from the MCP server, `localhost` normally points to the Chrome machine. Add a `localUrlHost` field such as `"localUrlHost": "devbox.tailnet.ts.net"` to the existing object in `~/.mybrowser/config.json`. Keep the existing host, port, and token fields unchanged.
+
+Every MyBrowser MCP process on the device then advertises that canonical host to clients and replaces `localhost`, `127.0.0.1`, and `::1` before sending navigation, new-tab, batched-navigation, or download requests to Chrome. URL scheme, port, path, query, and fragment are preserved. Use `--local-url-host <host>` for a process-only override.
+
+The extension's **Local URL Host** remains a browser-specific fallback for servers without the policy. Leave it blank when the server policy is configured.
 
 The target development server must listen on an interface reachable from the remote browser. Binding it only to `127.0.0.1` prevents remote access even after the URL is rewritten; bind it to the Tailscale interface or another intentionally exposed trusted-network interface.
 

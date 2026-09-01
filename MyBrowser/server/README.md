@@ -45,7 +45,11 @@ On first run, MyBrowser writes its config to:
 ~/.mybrowser/config.json
 ```
 
-That file contains the token used by authenticated hub and remote modes. The ordinary loopback extension connection does not ask for it. Later `--host`, `--port`, and `--token` overrides apply only to that run; edit the config to change saved settings.
+That file contains the token used by authenticated hub and remote modes. The ordinary loopback extension connection does not ask for it. Later `--host`, `--port`, `--token`, and `--local-url-host` overrides apply only to that run; edit the config to change saved settings.
+
+For browsers on another machine, add this device's browser-reachable Tailscale or network address to the existing config object, for example `"localUrlHost": "devbox.tailnet.ts.net"`. Keep the existing host, port, and token fields unchanged.
+
+MyBrowser advertises that address in URL-opening tool descriptions and replaces `localhost`, `127.0.0.1`, and `::1` before dispatch. The development server must also listen on an interface reachable at that address.
 
 The no-flag command is the default same-device mode. It runs on loopback and stops with its MCP client. `--ensure-hub` is an opt-in authenticated detached hub for clients that must share one browser connection across process restarts. For a managed or remote deployment, run one supervised `mybrowser-mcp --hub` process instead; `--hub` fails clearly if it cannot own the configured listener.
 

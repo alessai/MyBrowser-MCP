@@ -68,6 +68,31 @@ describe("server configuration", () => {
     expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8"))).toEqual(created);
   });
 
+  it("persists and applies the canonical local URL host", async () => {
+    const { CONFIG_FILE, loadOrCreateConfig } = await import("./auth.js");
+
+    const created = loadOrCreateConfig({ localUrlHost: "100.95.83.128" });
+
+    expect(created).toMatchObject({ localUrlHost: "100.95.83.128" });
+    expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8"))).toMatchObject({
+      localUrlHost: "100.95.83.128",
+    });
+  });
+
+  it.each([
+    "127.0.0.1",
+    "localhost",
+    "0.0.0.0",
+    "[::]",
+    "http://100.95.83.128",
+    "100.95.83.128:9009",
+  ])("rejects invalid canonical local URL host %s", async (localUrlHost) => {
+    const { loadOrCreateConfig } = await import("./auth.js");
+
+    expect(() => loadOrCreateConfig({ localUrlHost }))
+      .toThrow("local URL host");
+  });
+
   it("ignores undefined CLI options on first run", async () => {
     const { loadOrCreateConfig } = await import("./auth.js");
 

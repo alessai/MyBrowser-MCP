@@ -68,8 +68,9 @@ export function createTabTools({
       const { url, temporary } = NewTabArgs.parse(params ?? {});
       const result = await context.sendSocketMessage("new_tab", { url, temporary });
       const tabId = (result as any)?.tabId;
-      const text = url
-        ? `Opened new tab ${tabId ?? ""} with ${url}`
+      const resolvedUrl = url === undefined ? undefined : context.resolveNavigationUrl(url);
+      const text = resolvedUrl
+        ? `Opened new tab ${tabId ?? ""} with ${resolvedUrl}`
         : `Opened new blank tab ${tabId ?? ""}`;
       return { content: [{ type: "text", text: text.trim() }] };
     },

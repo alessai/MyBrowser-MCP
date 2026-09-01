@@ -1,4 +1,9 @@
 import type { WebSocket } from "ws";
+import {
+  resolveBrowserPayloadUrls,
+  resolveLocalUrl,
+  validateLocalUrlHost,
+} from "./local-url.js";
 import type { TelemetryManager } from "./telemetry/manager.js";
 import type { TelemetryErrorCategory } from "./telemetry/types.js";
 
@@ -50,7 +55,15 @@ export interface BrowserInfo {
 // ---------------------------------------------------------------------------
 
 export class Context {
-  constructor(readonly telemetry?: TelemetryManager) {}
+  readonly localUrlHost?: string;
+
+  constructor(readonly telemetry?: TelemetryManager, localUrlHost?: string) {
+    this.localUrlHost = localUrlHost === undefined ? undefined : validateLocalUrlHost(localUrlHost);
+  }
+
+  resolveNavigationUrl(url: string): string {
+    return resolveLocalUrl(url, this.localUrlHost);
+  }
 
   public sessionId: string = "";
 
@@ -274,7 +287,7 @@ export class Context {
     const message: Record<string, unknown> = {
       id,
       type,
-      payload,
+      payload: resolveBrowserPayloadUrls(type, payload, this.localUrlHost),
       sessionId: this.sessionId,
       timeoutMs,
     };
