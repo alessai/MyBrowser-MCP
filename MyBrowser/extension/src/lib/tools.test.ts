@@ -211,3 +211,64 @@ describe('evaluation outcome boundaries', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('cookie clear scoping', () => {
+  function stubDebugger(cookies: Array<{ name: string; domain: string; path: string }>) {
+    const sendCommand = vi.fn(async (_tabId: unknown, method: string) => {
+      if (method === 'Network.getCookies') return { cookies };
+      return undefined;
+    });
+    vi.stubGlobal('chrome', {
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+        sendCommand,
+      },
+    });
+    return { sendCommand };
+  }
+
+  it('deletes only matching-domain cookies when a domain is given', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(55);
+    const { sendCommand } = stubDebugger([
+      { name: 'sid', domain: '.example.com', path: '/' },
+      { name: 'cf_clearance', domain: '.saif.om', path: '/' },
+    ]);
+
+    await expect(
+      handleTool('browser_storage', { action: 'clear', type: 'cookies', domain: 'example.com' }, ctx),
+    ).resolves.toEqual({ success: true, deleted: 1 });
+
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 55 },
+      'Network.deleteCookies',
+      { name: 'sid', domain: '.example.com', path: '/' },
+    );
+    expect(sendCommand).not.toHaveBeenCalledWith(expect.anything(), 'Network.clearBrowserCookies', expect.anything());
+  });
+
+  it('refuses a global cookie wipe without explicit confirmation', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(55);
+    const { sendCommand } = stubDebugger([]);
+
+    await expect(
+      handleTool('browser_storage', { action: 'clear', type: 'cookies' }, ctx),
+    ).rejects.toThrow('confirmWipeAllCookies');
+
+    expect(sendCommand).not.toHaveBeenCalledWith(expect.anything(), 'Network.clearBrowserCookies', expect.anything());
+  });
+
+  it('wipes all cookies only with explicit confirmation', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(55);
+    const { sendCommand } = stubDebugger([]);
+
+    await expect(
+      handleTool('browser_storage', { action: 'clear', type: 'cookies', confirmWipeAllCookies: true }, ctx),
+    ).resolves.toEqual({ success: true });
+
+    expect(sendCommand).toHaveBeenCalledWith({ tabId: 55 }, 'Network.clearBrowserCookies', undefined);
+  });
+});

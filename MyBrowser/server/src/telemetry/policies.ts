@@ -249,6 +249,7 @@ const policies = {
     key: pseudonym("storage_key"),
     value: textLength(),
     domain: pseudonym("domain"),
+    confirmWipeAllCookies: boolean(),
     tabId: TAB_ID,
   }),
   browser_download: immutablePolicy({

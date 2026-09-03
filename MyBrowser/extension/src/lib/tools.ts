@@ -1120,6 +1120,24 @@ const handlers: Record<string, ToolHandler> = {
         return { success: true, deleted: matching.length };
       }
       if (action === 'clear') {
+        if (domain) {
+          const all = (await sendCommand<{ cookies: Array<{ name: string; domain: string; path: string }> }>(
+            tabId,
+            'Network.getCookies',
+          ))?.cookies || [];
+          const matching = all.filter((c) => c.domain === domain || c.domain === `.${domain}`);
+          for (const cookie of matching) {
+            await sendCommand(tabId, 'Network.deleteCookies', {
+              name: cookie.name, domain: cookie.domain, path: cookie.path,
+            });
+          }
+          return { success: true, deleted: matching.length };
+        }
+        if (args.confirmWipeAllCookies !== true) {
+          throw new Error(
+            'Refusing to clear ALL browser cookies without confirmWipeAllCookies: true — this logs the user out of every website. Pass domain to clear one site\'s cookies.',
+          );
+        }
         await sendCommand(tabId, 'Network.clearBrowserCookies');
         return { success: true };
       }
