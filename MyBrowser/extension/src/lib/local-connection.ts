@@ -49,8 +49,27 @@ export function resolveNavigationUrl(rawUrl: string, localUrlHost: string): stri
   return url.toString();
 }
 
+// Explicit ws:// or wss:// hub URL override (e.g. imported from mybrowser.local.json)
+const WS_URL_RE = /^wss?:\/\//i;
+
 export function resolveConnectionTarget(settings: ConnectionSettings): ConnectionTarget | null {
-  const host = settings.serverAddress.trim() || '127.0.0.1';
+  const rawAddress = settings.serverAddress.trim();
+
+  // Explicit scheme: passthrough the full URL as given (no behavior change for ws://).
+  if (WS_URL_RE.test(rawAddress)) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawAddress);
+    } catch {
+      return null;
+    }
+    if (!parsed.hostname || (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:')
+      || parsed.username || parsed.password) return null;
+    if (!settings.authToken && !isLoopbackAddress(parsed.hostname)) return null;
+    return { url: `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ''}`, token: settings.authToken };
+  }
+
+  const host = rawAddress || '127.0.0.1';
   if (!Number.isInteger(settings.serverPort) || settings.serverPort < 1 || settings.serverPort > 65_535) {
     return null;
   }

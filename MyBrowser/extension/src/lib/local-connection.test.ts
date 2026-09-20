@@ -79,3 +79,58 @@ describe('resolveNavigationUrl', () => {
     },
   );
 });
+
+describe('resolveConnectionTarget explicit scheme override', () => {
+  it('passes an explicit wss:// URL through unchanged', () => {
+    expect(resolveConnectionTarget({
+      serverAddress: 'wss://hub.tailnet.ts.net',
+      serverPort: 9009,
+      authToken: 'secret',
+    })).toEqual({ url: 'wss://hub.tailnet.ts.net', token: 'secret' });
+  });
+
+  it('keeps the explicit port from a wss:// URL', () => {
+    expect(resolveConnectionTarget({
+      serverAddress: 'wss://hub.tailnet.ts.net:8443',
+      serverPort: 9009,
+      authToken: 'secret',
+    })).toEqual({ url: 'wss://hub.tailnet.ts.net:8443', token: 'secret' });
+  });
+
+  it('passes an explicit ws:// URL through unchanged', () => {
+    expect(resolveConnectionTarget({
+      serverAddress: 'ws://hub.tailnet.ts.net:9009',
+      serverPort: 1234,
+      authToken: 'secret',
+    })).toEqual({ url: 'ws://hub.tailnet.ts.net:9009', token: 'secret' });
+  });
+
+  it('rejects a tokenless remote wss:// override', () => {
+    expect(resolveConnectionTarget({
+      serverAddress: 'wss://hub.tailnet.ts.net',
+      serverPort: 9009,
+      authToken: '',
+    })).toBeNull();
+  });
+
+  it('allows a tokenless loopback wss:// override', () => {
+    expect(resolveConnectionTarget({
+      serverAddress: 'wss://127.0.0.1',
+      serverPort: 9009,
+      authToken: '',
+    })).toEqual({ url: 'wss://127.0.0.1', token: '' });
+  });
+
+  it('rejects malformed scheme overrides', () => {
+    expect(resolveConnectionTarget({
+      serverAddress: 'wss://',
+      serverPort: 9009,
+      authToken: 'secret',
+    })).toBeNull();
+    expect(resolveConnectionTarget({
+      serverAddress: 'wss://user:pass@hub.tailnet.ts.net',
+      serverPort: 9009,
+      authToken: 'secret',
+    })).toBeNull();
+  });
+});

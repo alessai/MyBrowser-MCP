@@ -20,6 +20,23 @@ import { SessionConnectionRegistry } from "./session-connections.js";
 import { isValidV2SessionId } from "./session-id.js";
 import { dispatchHubRpc } from "./hub-rpc.js";
 import { isLoopbackHost } from "./hub-autostart.js";
+import { CONFIG_FILE } from "./auth.js";
+import {
+  MAX_CHUNK_DECODED_BYTES,
+  TransferRegistry,
+  isTransferAckMessage,
+  isTransferBeginMessage,
+  isTransferChunkMessage,
+  type TransferRegistryOptions,
+} from "./transfers/registry.js";
+import {
+  TransferError,
+  defaultTransfersRoot,
+  loadTransfersConfig,
+  megabytesToBytes,
+  readTransfersConfig,
+  sweepTransfersRoot,
+} from "./transfers/retention.js";
 
 // Hard cap on incoming WS frames: notes can carry a base64 PNG, but nothing
 // else this server handles is remotely this large. 32 MB covers a ~20 MB
@@ -68,6 +85,10 @@ export interface WsServerOptions {
   clientOnly?: boolean;
   onHubUnavailable?: () => void;
   allowLocalExtensionWithoutToken?: boolean;
+  /** Override the transfers root directory (defaults to ~/.mybrowser/transfers). Test hook. */
+  transfersDir?: string;
+  /** Inject a pre-built TransferRegistry (tests); otherwise the hub builds one over the transfers root. */
+  transferRegistry?: TransferRegistry;
 }
 
 const CHROME_EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
@@ -82,6 +103,9 @@ interface RecordingRetryPayload {
   readonly name: string;
   readonly canonical: string;
 }
+
+// Upload-relay entries live only for the duration of one file upload.
+const UPLOAD_RELAY_TTL_MS = 10 * 60_000;
 
 export const MAX_UNRESOLVED_RECORDING_RETRIES_PER_SESSION = 1;
 export const MAX_PENDING_RECORDING_PERSISTS_PER_SESSION = 4;
@@ -268,6 +292,27 @@ export async function createWebSocketServer(
 
 async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const { host, port, token, context } = options;
+  // ----- File-transfer registry (download direction) + upload relay state -----
+  // Fail-closed config parse: an invalid transfers section aborts startup in
+  // auth.ts (loadTransfersConfig throws before we ever get here).
+  const transfersConfig = readTransfersConfig(loadTransfersConfig(CONFIG_FILE));
+  const transfersRoot = options.transfersDir ?? defaultTransfersRoot();
+  const transferRegistry: TransferRegistry = options.transferRegistry ?? new TransferRegistry({
+    root: transfersRoot,
+    config: transfersConfig,
+  } satisfies TransferRegistryOptions);
+  const transfersMaxFileBytes = megabytesToBytes(transfersConfig.maxFileMb);
+  interface UploadRelayEntry {
+    transferId: string;
+    requestId: string;
+    sessionId: string;
+    totalChunks: number;
+    totalBytes: number;
+    clientWs: WebSocket;
+    extensionWs: WebSocket;
+    startedAt: number;
+  }
+  const uploadRelayEntries = new Map<string, UploadRelayEntry>();
   const stateManager = new LocalStateManager();
   const recordingRetryRegistry = options.recordingRetryRegistry ?? new RecordingRetryRegistry();
   const recordingPersistQueues = new Map<string, RecordingPersistQueue>();
@@ -381,6 +426,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       }
     };
     await step(() => drainRecordingPersists(sessionId));
+    // Age-based + aggregate budget eviction for landed transfers. Never
+    // follows symlinks (fail-closed inside sweepTransfersRoot).
+    await step(() => sweepTransfersRoot(transfersRoot, transfersConfig));
     const ownsGeneration = (): boolean => !generationAware || (
       sessionGenerations.get(sessionId) === generation
       && (allowConnectedGeneration || !connectionSessions.hasLiveSession(sessionId))
@@ -503,6 +551,157 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     throw new Error("WebSocket server did not bind a TCP port");
   }
   const boundPort = address.port;
+
+  // Startup retention sweep for landed transfers (age + aggregate budget).
+  // Non-fatal: session finalizers re-run the sweep.
+  try {
+    sweepTransfersRoot(transfersRoot, transfersConfig);
+  } catch {
+    /* re-run by the next session finalizer */
+  }
+
+  // ----- Transfer relay helpers -----
+  const transferAckError = (
+    ws: WebSocket,
+    msg: Record<string, unknown>,
+    code: string,
+    message: string,
+  ): void => {
+    safeSend(ws, {
+      type: "transfer_ack",
+      transferId: typeof msg.transferId === "string" ? msg.transferId : "",
+      seq: typeof msg.seq === "number" && Number.isSafeInteger(msg.seq) && msg.seq >= 0 ? msg.seq : 0,
+      ok: false,
+      code,
+      message,
+    });
+  };
+
+  const dropStaleUploadRelayEntries = (): void => {
+    const cutoff = Date.now() - UPLOAD_RELAY_TTL_MS;
+    for (const [transferId, entry] of uploadRelayEntries) {
+      if (entry.startedAt < cutoff) uploadRelayEntries.delete(transferId);
+    }
+  };
+
+  // Upload direction: MCP client → extension. The client socket must be an
+  // authenticated, session-registered MCP client; the target extension is
+  // resolved for that session exactly like a proxied tool request.
+  const handleUploadRelayFromClient = async (
+    ws: WebSocket,
+    msg: Record<string, unknown>,
+  ): Promise<void> => {
+    dropStaleUploadRelayEntries();
+    const clientSessionId = connectionSessions.getSession(ws);
+    if (!clientSessionId) {
+      transferAckError(ws, msg, "TRANSFER_SESSION_MISMATCH", "session not registered");
+      return;
+    }
+    if (msg.type === "transfer_begin") {
+      if (!isTransferBeginMessage(msg)) {
+        transferAckError(ws, msg, "TRANSFER_REJECTED", "malformed transfer_begin");
+        return;
+      }
+      if (msg.totalBytes > transfersMaxFileBytes) {
+        transferAckError(ws, msg, "TRANSFER_TOO_LARGE", `file exceeds maxFileMb (${transfersConfig.maxFileMb} MiB)`);
+        return;
+      }
+      const existing = uploadRelayEntries.get(msg.transferId);
+      if (existing && existing.clientWs !== ws) {
+        transferAckError(ws, msg, "TRANSFER_REJECTED", "transferId already in use by another client");
+        return;
+      }
+      const resolution = await stateManager.resolveBrowserTarget(clientSessionId);
+      if (!resolution.ok) {
+        transferAckError(ws, msg, "TRANSFER_REJECTED", resolution.message);
+        return;
+      }
+      const browser = context.getBrowser(resolution.browserId);
+      if (!browser || browser.ws.readyState !== WebSocket.OPEN) {
+        transferAckError(ws, msg, "TRANSFER_REJECTED", `Browser "${resolution.browserId}" is disconnected`);
+        return;
+      }
+      uploadRelayEntries.set(msg.transferId, {
+        transferId: msg.transferId,
+        requestId: msg.requestId,
+        sessionId: clientSessionId,
+        totalChunks: msg.totalChunks,
+        totalBytes: msg.totalBytes,
+        clientWs: ws,
+        extensionWs: browser.ws,
+        startedAt: Date.now(),
+      });
+      try {
+        // Bind the relayed message to the originating session, exactly like
+        // proxied ToolRequestV2 forwards; the extension validates it.
+        browser.ws.send(JSON.stringify({ ...msg, sessionId: clientSessionId }));
+      } catch {
+        uploadRelayEntries.delete(msg.transferId);
+        transferAckError(ws, msg, "TRANSFER_REJECTED", "failed to relay transfer_begin");
+      }
+      return;
+    }
+    // transfer_chunk (upload direction)
+    if (!isTransferChunkMessage(msg)) {
+      transferAckError(ws, msg, "TRANSFER_REJECTED", "malformed transfer_chunk");
+      return;
+    }
+    const entry = uploadRelayEntries.get(msg.transferId);
+    if (!entry || entry.clientWs !== ws) {
+      transferAckError(ws, msg, "TRANSFER_REJECTED", "no matching upload transfer for this client");
+      return;
+    }
+    if (msg.requestId !== entry.requestId || msg.totalBytes !== entry.totalBytes) {
+      uploadRelayEntries.delete(msg.transferId);
+      transferAckError(ws, msg, "TRANSFER_REJECTED", "chunk metadata does not match transfer_begin");
+      return;
+    }
+    if (Buffer.byteLength(msg.bytesBase64, "base64") > MAX_CHUNK_DECODED_BYTES) {
+      uploadRelayEntries.delete(msg.transferId);
+      transferAckError(ws, msg, "TRANSFER_TOO_LARGE", "chunk exceeds the 3 MiB decoded limit");
+      return;
+    }
+    try {
+      entry.extensionWs.send(JSON.stringify({ ...msg, sessionId: entry.sessionId }));
+    } catch {
+      uploadRelayEntries.delete(msg.transferId);
+      transferAckError(ws, msg, "TRANSFER_REJECTED", "failed to relay transfer_chunk");
+    }
+  };
+
+  // Upload direction acks: extension → the originating client socket only.
+  const relayUploadAckToClient = (ws: WebSocket, msg: Record<string, unknown>): void => {
+    if (!isTransferAckMessage(msg)) return;
+    const entry = uploadRelayEntries.get(msg.transferId);
+    if (!entry || entry.extensionWs !== ws) return;
+    safeSend(entry.clientWs, msg);
+    if (msg.ok === false || msg.seq >= entry.totalChunks - 1) {
+      uploadRelayEntries.delete(msg.transferId);
+    }
+  };
+
+  // Download direction: extension → registry. Chunks are validated against
+  // the originating (session-bound) tool request exactly like tool responses:
+  // requestId + the exact extension socket the request was forwarded to.
+  const handleDownloadChunkFromExtension = (ws: WebSocket, msg: Record<string, unknown>): void => {
+    if (!isTransferChunkMessage(msg)) {
+      transferAckError(ws, msg, "TRANSFER_REJECTED", "malformed transfer_chunk");
+      return;
+    }
+    try {
+      transferRegistry.ingestChunk(msg, ws);
+      safeSend(ws, {
+        type: "transfer_ack",
+        transferId: msg.transferId,
+        seq: msg.seq,
+        ok: true,
+      });
+    } catch (error) {
+      const code = error instanceof TransferError ? error.code : "TRANSFER_REJECTED";
+      const message = error instanceof Error ? error.message : "transfer rejected";
+      transferAckError(ws, msg, code, message);
+    }
+  };
 
   // ----- Hub-side liveness sweep -----
   // Periodically ping all connections via WS protocol-level ping.
@@ -733,6 +932,22 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       // ---- Ping ----
       if (msg.type === "ping") {
         ws.send(JSON.stringify({ type: "pong" }));
+        return;
+      }
+
+      // ---- File transfers (upload direction: MCP client → browser) ----
+      if (connectionRole === "client" && (msg.type === "transfer_begin" || msg.type === "transfer_chunk")) {
+        await handleUploadRelayFromClient(ws, msg);
+        return;
+      }
+
+      // ---- File transfers (browser → hub) ----
+      if (connectionRole === "extension" && msg.type === "transfer_ack") {
+        relayUploadAckToClient(ws, msg);
+        return;
+      }
+      if (connectionRole === "extension" && msg.type === "transfer_chunk") {
+        handleDownloadChunkFromExtension(ws, msg);
         return;
       }
 
@@ -1361,6 +1576,45 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           timeoutMs: normalizedTimeoutMs,
           ...(isTraceContextV1(msg.trace) ? { trace: msg.trace } : {}),
         };
+        // Transfer-bound request (browser_fetch_file): register the download
+        // expectation before forwarding, so inbound chunks are validated
+        // against this request's session and completion resolves it.
+        const transferId = typeof forwardedPayload.transferId === "string"
+          && forwardedPayload.transferId.length > 0
+          ? forwardedPayload.transferId
+          : undefined;
+        if (transferId !== undefined) {
+          try {
+            transferRegistry.expect(
+              transferId,
+              {
+                requestId: extensionRequestId,
+                sessionId: clientSessionId,
+                browserId: resolvedBrowserId,
+                sourceUrl: typeof forwardedPayload.url === "string"
+                  ? forwardedPayload.url
+                  : undefined,
+                socket: browserWs,
+              },
+              (settlement) => {
+                cleanup();
+                safeSendToClient(JSON.stringify({
+                  type: MESSAGE_RESPONSE_TYPE,
+                  payload: settlement.ok
+                    ? { requestId: msg.id, result: settlement.result }
+                    : { requestId: msg.id, error: `${settlement.code}: ${settlement.message}` },
+                }));
+              },
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "transfer rejected";
+            safeSend(ws, JSON.stringify({
+              type: MESSAGE_RESPONSE_TYPE,
+              payload: { requestId: msg.id, error: message },
+            }));
+            return;
+          }
+        }
         browserWs.send(JSON.stringify(forwarded));
 
         // Full cleanup — removes all listeners and clears timeout
@@ -1395,6 +1649,25 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             resp.type === MESSAGE_RESPONSE_TYPE
             && resp.payload?.requestId === extensionRequestId
           ) {
+            if (transferId !== undefined) {
+              if (typeof resp.payload.error === "string" && resp.payload.error.length > 0) {
+                // The extension failed the fetch: abort reassembly (deletes
+                // any .part file) and forward the extension's error.
+                transferRegistry.abort(
+                  transferId,
+                  "TRANSFER_ABORTED_BY_EXTENSION",
+                  resp.payload.error,
+                );
+              } else if (transferRegistry.isActive(transferId)) {
+                // Hold: chunks are still arriving; the registry completion
+                // settles this request with the landed-path payload.
+                return;
+              }
+              // Transfer already settled — completion (or its error) was sent
+              // by the registry callback; drop the late extension response.
+              cleanup();
+              return;
+            }
             cleanup();
             safeSendToClient(JSON.stringify({
               ...resp,
@@ -1526,6 +1799,8 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
     shutdownPromise = (async () => {
       const errors: unknown[] = [];
       clearInterval(livenessSweep);
+      transferRegistry.dispose();
+      uploadRelayEntries.clear();
       for (const timer of pendingSessionCleanup.values()) {
         clearTimeout(timer);
       }

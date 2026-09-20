@@ -71,6 +71,7 @@ import { performance } from "./tools/performance.js";
 // ULTRA: File & Clipboard tools
 import { upload } from "./tools/upload.js";
 import { download } from "./tools/download.js";
+import { fetchFile } from "./tools/fetch-file.js";
 import { clipboard } from "./tools/clipboard.js";
 
 // Annotated notes (user-initiated visual feedback inbox)
@@ -319,7 +320,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     // Network & Performance
     network, performance,
     // File & Clipboard
-    upload, download, clipboard,
+    upload, download, clipboard, fetchFile,
     // Annotated notes inbox
     notesList, notesGet, notesArchive, notesUnarchive, notesDelete,
     // Event-driven autonomous reactions
@@ -333,7 +334,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     ? `Canonical host for services on this MCP device: ${context.localUrlHost}. Do not use localhost, 127.0.0.1, or ::1; they are rewritten to this host.`
     : undefined;
   const advertisedToolSchemas = tools.map(({ schema }) => (
-    urlPolicy && ["browser_navigate", "new_tab", "browser_action", "browser_download"].includes(schema.name)
+    urlPolicy && ["browser_navigate", "new_tab", "browser_action", "browser_download", "browser_fetch_file"].includes(schema.name)
       ? { ...schema, description: `${schema.description} ${urlPolicy}` }
       : schema
   ));

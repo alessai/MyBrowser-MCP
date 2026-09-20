@@ -1,6 +1,6 @@
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const INVALID_TARGET_HOSTS = new Set([...LOOPBACK_HOSTS, "0.0.0.0", "::"]);
-const URL_PAYLOAD_TYPES = new Set(["browser_navigate", "new_tab", "browser_new_tab", "browser_download"]);
+const URL_PAYLOAD_TYPES = new Set(["browser_navigate", "new_tab", "browser_new_tab", "browser_download", "browser_fetch_file"]);
 
 function normalizedHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "");

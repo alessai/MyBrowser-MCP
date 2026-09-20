@@ -194,6 +194,26 @@ function buildDownloadFilename(
   return `${safeDirectory}/${filename ?? deriveDownloadFilename(sourceUrl)}`;
 }
 
+const DOWNLOAD_POLL_INTERVAL_MS = 250;
+
+async function waitForDownloadCompletion(
+  downloadId: number,
+  signal?: AbortSignal,
+): Promise<{ state: string; filename: string }> {
+  for (;;) {
+    signal?.throwIfAborted();
+    const items = await chrome.downloads.search({ id: downloadId });
+    const item = items[0];
+    if (item?.state === 'complete') {
+      return { state: item.state, filename: item.filename };
+    }
+    if (item?.state === 'interrupted') {
+      throw new Error(`DOWNLOAD_INTERRUPTED: ${item.error ?? 'unknown reason'}`);
+    }
+    await delay(DOWNLOAD_POLL_INTERVAL_MS);
+  }
+}
+
 function isViewportPresetName(value: unknown): value is ViewportPresetName {
   return value === 'iphone' || value === 'ipad' || value === 'desktop';
 }
@@ -1371,12 +1391,23 @@ const handlers: Record<string, ToolHandler> = {
       );
     }
     ctx.signal?.throwIfAborted();
-    await runActionOnce(async () => {
-      await sendCommand(tabId, 'DOM.setFileInputFiles', {
-        nodeId,
-        files,
-      });
-    }, 'UPLOAD_OUTCOME_UNKNOWN', ctx.signal);
+    try {
+      await runActionOnce(async () => {
+        await sendCommand(tabId, 'DOM.setFileInputFiles', {
+          nodeId,
+          files,
+        });
+      }, 'UPLOAD_OUTCOME_UNKNOWN', ctx.signal);
+    } catch (error) {
+      // runActionOnce wraps the failure in UPLOAD_OUTCOME_UNKNOWN and keeps the
+      // CDP error as {cause}; surface the cause so failures are diagnosable.
+      const cause = (error as { cause?: unknown }).cause;
+      const detail = cause instanceof Error
+        ? cause.message
+        : cause !== undefined ? String(cause)
+          : error instanceof Error ? error.message : String(error);
+      throw new Error(`UPLOAD_FAILED: ${detail}`);
+    }
     return { uploaded: true, files, selector };
   },
 
@@ -1387,6 +1418,24 @@ const handlers: Record<string, ToolHandler> = {
     const filename = args.filename as string | undefined;
     const directory = args.directory as string | undefined;
 
+    const startDownload = async (downloadUrl: string, resolvedFilename: string | undefined) => {
+      ctx.signal?.throwIfAborted();
+      const downloadId = await chrome.downloads.download({
+        url: downloadUrl,
+        filename: resolvedFilename,
+        conflictAction: 'uniquify',
+        saveAs: false,
+      });
+      const item = await waitForDownloadCompletion(downloadId, ctx.signal);
+      return {
+        downloadId,
+        url: downloadUrl,
+        filename: item.filename,
+        state: item.state,
+        directory: sanitizeDownloadDirectory(directory),
+      };
+    };
+
     if (!url) {
       // Download current page
       const tabId = ctx.getTabId();
@@ -1394,33 +1443,11 @@ const handlers: Record<string, ToolHandler> = {
       const pageUrl = tab.url || '';
       if (!pageUrl.startsWith('http')) throw new Error('Cannot download non-HTTP page');
       const resolvedFilename = buildDownloadFilename(pageUrl, directory, filename);
-
-      ctx.signal?.throwIfAborted();
-      const downloadId = await chrome.downloads.download({
-        url: pageUrl,
-        filename: resolvedFilename,
-      });
-      return {
-        downloadId,
-        url: pageUrl,
-        filename: resolvedFilename,
-        directory: sanitizeDownloadDirectory(directory),
-      };
+      return startDownload(pageUrl, resolvedFilename);
     }
 
     const resolvedFilename = buildDownloadFilename(url, directory, filename);
-
-    ctx.signal?.throwIfAborted();
-    const downloadId = await chrome.downloads.download({
-      url,
-      filename: resolvedFilename,
-    });
-    return {
-      downloadId,
-      url,
-      filename: resolvedFilename,
-      directory: sanitizeDownloadDirectory(directory),
-    };
+    return startDownload(url, resolvedFilename);
   },
 
   // === ULTRA: Clipboard read/write/paste ===

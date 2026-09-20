@@ -11,12 +11,14 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { validateLocalUrlHost } from "./local-url.js";
+import { readTransfersConfig, type TransfersConfig } from "./transfers/retention.js";
 
 export interface Config {
   token: string;
   host: string;
   port: number;
   localUrlHost?: string;
+  transfers?: TransfersConfig;
 }
 
 export const CONFIG_DIR = join(homedir(), ".mybrowser");
@@ -64,6 +66,9 @@ export function validateConfigOverrides(config: Partial<Config>): void {
     throw new Error("MyBrowser port must be an integer from 1 to 65535");
   }
   if (config.localUrlHost !== undefined) validateLocalUrlHost(config.localUrlHost);
+  // Transfers config fails closed like localUrlHost: an invalid section
+  // aborts startup instead of degrading to defaults.
+  if (config.transfers !== undefined) readTransfersConfig(config.transfers);
 }
 
 function readCreatedConfig(): Config {
@@ -80,11 +85,13 @@ function readCreatedConfig(): Config {
 
 function applyOverrides(config: Config, overrides?: Partial<Config>): Config {
   const localUrlHost = overrides?.localUrlHost ?? config.localUrlHost;
+  const transfers = overrides?.transfers ?? config.transfers;
   return {
     token: overrides?.token ?? config.token,
     host: overrides?.host ?? config.host,
     port: overrides?.port ?? config.port,
     ...(localUrlHost === undefined ? {} : { localUrlHost }),
+    ...(transfers === undefined ? {} : { transfers }),
   };
 }
 

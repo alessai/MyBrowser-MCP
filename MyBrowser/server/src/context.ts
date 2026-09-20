@@ -4,6 +4,24 @@ import {
   resolveLocalUrl,
   validateLocalUrlHost,
 } from "./local-url.js";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { basename } from "node:path";
+import { CONFIG_FILE } from "./auth.js";
+import {
+  TransferError,
+  defaultTransfersRoot,
+  loadTransfersConfig,
+  megabytesToBytes,
+  readTransfersConfig,
+  type TransfersConfig,
+} from "./transfers/retention.js";
+import {
+  MAX_CHUNK_DECODED_BYTES,
+  TransferRegistry,
+  newTransferId,
+  type TransferChunkMessage,
+} from "./transfers/registry.js";
 import type { TelemetryManager } from "./telemetry/manager.js";
 import type { TelemetryErrorCategory } from "./telemetry/types.js";
 
@@ -168,6 +186,88 @@ export class Context {
     this._activeBrowserId = id;
   }
 
+  // ---- File transfer coordination ----
+  // Lazily-built download registry (direct and client modes). In hub mode the
+  // ws-server owns the registry instead; this one is inert there.
+  private transferState: { registry: TransferRegistry; config: TransfersConfig } | undefined;
+  private readonly transferIngestSockets = new WeakSet<object>();
+  // Pending transfer completions for transfer-bound tool requests whose
+  // extension response arrives before reassembly finishes (hold semantics).
+  private transferCompletions = new Map<string, {
+    resolve: (outcome: { ok: true; result: Record<string, unknown> } | { ok: false; message: string }) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private transfersConfig: TransfersConfig | undefined;
+
+  private getTransfersConfig(): TransfersConfig {
+    if (this.transfersConfig === undefined) {
+      // Throws (fail closed) when the config file carries an invalid
+      // transfers section — startUploadTransfer then refuses to run.
+      this.transfersConfig = readTransfersConfig(loadTransfersConfig(CONFIG_FILE));
+    }
+    return this.transfersConfig;
+  }
+
+  private ensureTransferState(): { registry: TransferRegistry; config: TransfersConfig } {
+    if (this.transferState === undefined) {
+      const config = this.getTransfersConfig();
+      this.transferState = {
+        registry: new TransferRegistry({ root: defaultTransfersRoot(), config }),
+        config,
+      };
+    }
+    return this.transferState;
+  }
+
+  /**
+   * Attach a persistent transfer_chunk listener to a browser/hub socket so
+   * download chunks are ingested even outside any single request's response
+   * handler (direct and client modes; in hub mode the hub ingests instead).
+   */
+  private ensureTransferIngest(ws: WebSocket): void {
+    if (this.transferIngestSockets.has(ws)) return;
+    this.transferIngestSockets.add(ws);
+    const { registry } = this.ensureTransferState();
+    ws.addEventListener("message", (event: { data: unknown }) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      if (
+        parsed === null || typeof parsed !== "object" || Array.isArray(parsed)
+        || (parsed as Record<string, unknown>).type !== "transfer_chunk"
+      ) {
+        return;
+      }
+      try {
+        registry.ingestChunk(parsed as TransferChunkMessage, ws);
+      } catch {
+        // Direct/client mode has no hub to ack through; the registry has
+        // already aborted the transfer and failed the held request.
+      }
+    });
+  }
+
+  /** Complete a held transfer-bound request with the reassembled payload. */
+  completeTransferRequest(requestId: string, result: Record<string, unknown>): void {
+    const held = this.transferCompletions.get(requestId);
+    if (!held) return;
+    this.transferCompletions.delete(requestId);
+    clearTimeout(held.timer);
+    held.resolve({ ok: true, result });
+  }
+
+  /** Fail a held transfer-bound request (abort/timeout/storage failure). */
+  failTransferRequest(requestId: string, message: string): void {
+    const held = this.transferCompletions.get(requestId);
+    if (!held) return;
+    this.transferCompletions.delete(requestId);
+    clearTimeout(held.timer);
+    held.resolve({ ok: false, message });
+  }
+
   // ---- Message routing ----
 
   /**
@@ -269,6 +369,20 @@ export class Context {
     );
   }
 
+  private holdTransferCompletion(
+    requestId: string,
+    timeoutMs: number,
+  ): Promise<{ ok: true; result: Record<string, unknown> } | { ok: false; message: string }> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.transferCompletions.delete(requestId);
+        resolve({ ok: false, message: "TRANSFER_TIMEOUT: file transfer did not complete in time" });
+      }, timeoutMs);
+      timer.unref?.();
+      this.transferCompletions.set(requestId, { resolve, timer });
+    });
+  }
+
   private async sendSocketMessageCore(
     ws: WebSocket,
     targetBrowserId: string | undefined,
@@ -299,6 +413,46 @@ export class Context {
       browserId: telemetryBrowserId,
     });
     if (transport) message.trace = transport.trace;
+
+    // Transfer-bound request (payload carries a transferId, e.g.
+    // browser_fetch_file): register the download expectation so inbound
+    // chunks are session/request-bound, ingest them on this socket, and hold
+    // the caller's promise until the transfer lands.
+    const payloadTransferId =
+      payload !== null && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).transferId
+        : undefined;
+    const isTransferBound = typeof payloadTransferId === "string"
+      && payloadTransferId.length > 0;
+    const heldTransfer = isTransferBound
+      ? this.holdTransferCompletion(id, timeoutMs)
+      : undefined;
+    if (isTransferBound && heldTransfer) {
+      this.ensureTransferIngest(ws);
+      const { registry } = this.ensureTransferState();
+      try {
+        registry.expect(
+          payloadTransferId as string,
+          {
+            requestId: id,
+            sessionId: this.sessionId,
+            socket: ws,
+          },
+          (settlement) => {
+            if (settlement.ok) {
+              this.completeTransferRequest(id, { ...settlement.result });
+            } else {
+              this.failTransferRequest(id, `${settlement.code}: ${settlement.message}`);
+            }
+          },
+        );
+      } catch (error) {
+        this.failTransferRequest(
+          id,
+          error instanceof Error ? error.message : "transfer rejected",
+        );
+      }
+    }
 
     let serializedMessage: string;
     try {
@@ -360,6 +514,16 @@ export class Context {
             responseBytes,
             Object.prototype.hasOwnProperty.call(responsePayload, "result"),
           );
+          if (heldTransfer) {
+            // The extension acknowledged the fetch before reassembly
+            // finished: hold the caller until the transfer settles, then
+            // resolve with the reassembled payload.
+            heldTransfer.then((outcome) => {
+              if (outcome.ok) resolve(outcome.result);
+              else reject(new Error(outcome.message));
+            });
+            return;
+          }
           resolve(result);
         }
       };
@@ -400,6 +564,212 @@ export class Context {
         transport?.fail("not_connected");
         reject(new Error("WebSocket is not open"));
       }
+    });
+  }
+
+  // ---- Upload transfers (hub/client → extension) ----
+
+  /**
+   * Upload local files to the connected browser extension for a pending
+   * tool request (browser_upload with localFiles). Enforces the configured
+   * per-file maxFileMb cap, computes sha256, then sends transfer_begin +
+   * transfer_chunk frames over the tool socket (client mode: the hub socket,
+   * which relays to the extension) honoring a ≤4-chunk ack window. The
+   * extension acks each frame with transfer_ack; any ok:false aborts.
+   */
+  async startUploadTransfer(
+    requestId: string,
+    files: ReadonlyArray<{ path: string; filename?: string; mimeType?: string }>,
+    target: { tabId?: number; selector: string },
+    options: { timeoutMs?: number } = {},
+  ): Promise<{ files: Array<{ name: string; size: number; sha256: string }> }> {
+    if (typeof requestId !== "string" || requestId.length === 0) {
+      throw new Error("startUploadTransfer: requestId is required");
+    }
+    if (!Array.isArray(files) || files.length === 0) {
+      throw new Error("startUploadTransfer: at least one file is required");
+    }
+    if (typeof target?.selector !== "string" || target.selector.length === 0) {
+      throw new Error("startUploadTransfer: target.selector is required");
+    }
+    const config = this.getTransfersConfig();
+    const maxFileBytes = megabytesToBytes(config.maxFileMb);
+    const timeoutMs = options.timeoutMs ?? 300_000;
+
+    const { ws } = await this.getTarget();
+    const prepared = files.map((file) => {
+      const localPath = typeof file?.path === "string" ? file.path : "";
+      if (!localPath) {
+        throw new Error("startUploadTransfer: each file requires a path on the MCP server machine");
+      }
+      let stats;
+      try {
+        stats = statSync(localPath);
+      } catch {
+        throw new Error(`startUploadTransfer: file must exist on the MCP server machine: ${localPath}`);
+      }
+      if (!stats.isFile()) {
+        throw new Error(`startUploadTransfer: not a regular file on the MCP server machine: ${localPath}`);
+      }
+      const bytes = readFileSync(localPath);
+      if (bytes.length > maxFileBytes) {
+        throw new Error(
+          `startUploadTransfer: ${basename(localPath)} is ${bytes.length} bytes, exceeding the configured maxFileMb cap of ${config.maxFileMb} MiB`,
+        );
+      }
+      return {
+        name: typeof file.filename === "string" && file.filename.length > 0
+          ? file.filename
+          : basename(localPath),
+        mimeType: typeof file.mimeType === "string" && file.mimeType.length > 0
+          ? file.mimeType
+          : "application/octet-stream",
+        bytes,
+        size: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+
+    const deadline = Date.now() + timeoutMs;
+    const uploaded: Array<{ name: string; size: number; sha256: string }> = [];
+    for (let fileIndex = 0; fileIndex < prepared.length; fileIndex++) {
+      const file = prepared[fileIndex]!;
+      const chunks: string[] = [];
+      for (let offset = 0; offset < file.bytes.length; offset += MAX_CHUNK_DECODED_BYTES) {
+        chunks.push(file.bytes.subarray(offset, offset + MAX_CHUNK_DECODED_BYTES).toString("base64"));
+      }
+      const transferId = newTransferId();
+      await this.runUploadHandshake(ws, {
+        type: "transfer_begin",
+        v: 2,
+        transferId,
+        requestId,
+        direction: "upload",
+        fileIndex,
+        fileCount: prepared.length,
+        filename: file.name,
+        mimeType: file.mimeType,
+        totalBytes: file.size,
+        totalChunks: chunks.length,
+        sha256: file.sha256,
+        ...(target.tabId === undefined ? {} : { targetTabId: target.tabId }),
+        selector: target.selector,
+      }, chunks, deadline);
+      uploaded.push({ name: file.name, size: file.size, sha256: file.sha256 });
+    }
+    return { files: uploaded };
+  }
+
+  /**
+   * Send transfer_begin, await its transfer_ack, then stream chunks with at
+   * most 4 in flight. The first ok:false ack (or a send error / deadline)
+   * aborts with a TransferError-carrying message.
+   */
+  private runUploadHandshake(
+    ws: WebSocket,
+    begin: Record<string, unknown>,
+    chunks: string[],
+    deadline: number,
+  ): Promise<void> {
+    const transferId = begin.transferId as string;
+    const requestId = begin.requestId as string;
+    const transferMeta = {
+      totalChunks: begin.totalChunks as number,
+      totalBytes: begin.totalBytes as number,
+      sha256: begin.sha256 as string,
+      filename: begin.filename as string,
+      mimeType: begin.mimeType as string,
+    };
+    return new Promise<void>((resolveHandshake, rejectHandshake) => {
+      const pending = new Set<number>();
+      for (let seq = 0; seq < chunks.length; seq++) pending.add(seq);
+      let settled = false;
+      let nextSeq = 0;
+      let inFlight = 0;
+      let sawBeginAck = false;
+
+      const cleanup = () => {
+        ws.removeEventListener("message", onMessage);
+        clearTimeout(deadlineTimer);
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectHandshake(error);
+      };
+      const deadlineTimer = setTimeout(() => {
+        fail(new TransferError("TRANSFER_TIMEOUT", `upload ${transferId} did not complete in time`));
+      }, Math.max(0, deadline - Date.now()));
+      deadlineTimer.unref?.();
+
+      const sendFrame = (frame: Record<string, unknown>) => {
+        try {
+          ws.send(JSON.stringify(frame));
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      const sendChunk = (seq: number) => {
+        inFlight += 1;
+        sendFrame({
+          type: "transfer_chunk",
+          v: 2,
+          transferId,
+          requestId,
+          seq,
+          ...transferMeta,
+          bytesBase64: chunks[seq] as string,
+        });
+      };
+      const fillWindow = () => {
+        if (settled) return;
+        while (inFlight < 4 && nextSeq < chunks.length) {
+          sendChunk(nextSeq);
+          nextSeq += 1;
+        }
+      };
+
+      const onMessage = (event: { data: unknown }) => {
+        let parsed: any;
+        try {
+          parsed = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
+        if (parsed?.type !== "transfer_ack" || parsed.transferId !== transferId) return;
+        if (parsed.ok !== true) {
+          fail(new TransferError(
+            "TRANSFER_REJECTED",
+            typeof parsed.message === "string" && parsed.message.length > 0
+              ? parsed.message
+              : `upload ${transferId} rejected by the browser`,
+          ));
+          return;
+        }
+        if (!sawBeginAck) {
+          sawBeginAck = true;
+          fillWindow();
+          if (!settled && pending.size === 0 && nextSeq >= chunks.length) {
+            // Zero-chunk (empty) file: the begin ack completes it.
+            settled = true;
+            cleanup();
+            resolveHandshake();
+          }
+          return;
+        }
+        pending.delete(parsed.seq);
+        inFlight = Math.max(0, inFlight - 1);
+        if (pending.size === 0 && nextSeq >= chunks.length) {
+          settled = true;
+          cleanup();
+          resolveHandshake();
+          return;
+        }
+        fillWindow();
+      };
+      ws.addEventListener("message", onMessage);
+      sendFrame(begin);
     });
   }
 

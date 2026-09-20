@@ -272,3 +272,92 @@ describe('cookie clear scoping', () => {
     expect(sendCommand).toHaveBeenCalledWith({ tabId: 55 }, 'Network.clearBrowserCookies', undefined);
   });
 });
+
+describe('browser_download completion', () => {
+  function stubDownloads(searchImpl: () => Array<Record<string, unknown>>) {
+    const download = vi.fn(async () => 77);
+    const search = vi.fn(async () => searchImpl());
+    vi.stubGlobal('chrome', { downloads: { download, search } });
+    return { download, search };
+  }
+
+  it('waits for completion and returns the final absolute filename', async () => {
+    const { ctx } = context();
+    let polls = 0;
+    const { download, search } = stubDownloads(() => {
+      polls += 1;
+      if (polls < 3) return [{ id: 77, state: 'in_progress', filename: '', error: undefined }];
+      return [{ id: 77, state: 'complete', filename: '/home/u/Downloads/report (1).pdf', error: undefined }];
+    });
+
+    const result = await handleTool('browser_download', { url: 'https://example.com/report.pdf' }, ctx);
+
+    expect(result).toEqual({
+      downloadId: 77,
+      url: 'https://example.com/report.pdf',
+      filename: '/home/u/Downloads/report (1).pdf',
+      state: 'complete',
+      directory: undefined,
+    });
+    expect(search).toHaveBeenCalledTimes(3);
+    expect(download).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('throws with the interrupted reason', async () => {
+    const { ctx } = context();
+    stubDownloads(() => [{ id: 77, state: 'interrupted', filename: '', error: 'NETWORK_FAILED' }]);
+
+    await expect(
+      handleTool('browser_download', { url: 'https://example.com/report.pdf' }, ctx),
+    ).rejects.toThrow('DOWNLOAD_INTERRUPTED: NETWORK_FAILED');
+    vi.unstubAllGlobals();
+  });
+
+  it('pins conflictAction and saveAs explicitly', async () => {
+    const { ctx } = context();
+    const { download } = stubDownloads(
+      () => [{ id: 77, state: 'complete', filename: '/home/u/Downloads/report.pdf', error: undefined }],
+    );
+
+    await handleTool('browser_download', { url: 'https://example.com/report.pdf', filename: 'report.pdf' }, ctx);
+
+    expect(download).toHaveBeenCalledWith({
+      url: 'https://example.com/report.pdf',
+      filename: 'report.pdf',
+      conflictAction: 'uniquify',
+      saveAs: false,
+    });
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('browser_upload error unmasking', () => {
+  it('surfaces the CDP cause instead of UPLOAD_OUTCOME_UNKNOWN alone', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(55);
+    const sendCommand = vi.fn(async (_tabId: unknown, method: string) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 5 } };
+      if (method === 'DOM.querySelector') return { nodeId: 9 };
+      if (method === 'DOM.setFileInputFiles') throw new Error('Another debugger is already attached to the tab');
+      return undefined;
+    });
+    vi.stubGlobal('chrome', {
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+        sendCommand,
+      },
+    });
+
+    await expect(
+      handleTool('browser_upload', { selector: '#file', files: ['/tmp/photo.jpg'] }, ctx),
+    ).rejects.toThrow('UPLOAD_FAILED: Another debugger is already attached to the tab');
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 55 },
+      'DOM.setFileInputFiles',
+      { nodeId: 9, files: ['/tmp/photo.jpg'] },
+    );
+    vi.unstubAllGlobals();
+  });
+});

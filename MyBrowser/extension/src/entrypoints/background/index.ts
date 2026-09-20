@@ -68,6 +68,7 @@ import { openInstallTutorial } from '../../lib/onboarding';
 import { importInstallerBootstrap } from '../../lib/installer-bootstrap';
 import { getExtensionDiagnostics, recordExtensionIssue } from '../../lib/diagnostics';
 import { parseInboundWsFrame, reportToolFailure } from '../../lib/background-privacy';
+import { CHUNK_DECODED_BYTES, MAX_PULL_SLICE_BYTES, TRANSFER_DEADLINE_MS } from '../../lib/transfer-shared';
 import {
   attachExtensionTelemetry,
   createExtensionTelemetrySummaryBuilder,
@@ -77,6 +78,7 @@ import {
 import {
   intersectAdvertisedFinalizedSessions,
   isToolRequestV2,
+  type ToolRequestV2,
   type ToolResponseV2,
   type WsStatusResponse,
 } from '../../lib/protocol';
@@ -239,6 +241,217 @@ export default defineBackground(() => {
   }
 
   // =====================================================================
+  // File transfers: browser_fetch_file (extension → hub) and
+  // browser_upload localFiles (hub → extension → page input).
+  // =====================================================================
+
+  const TRANSFER_SCRIPT_PATH = '/content-scripts/transfer.js';
+
+  interface FetchDonePayload {
+    transferId?: string;
+    ok?: boolean;
+    bytesSent?: number;
+    error?: string;
+  }
+  const pendingFetchTransfers = new Map<string, (done: FetchDonePayload) => void>();
+
+  function handleTransferFetchDone(payload: unknown): void {
+    const done = (payload ?? {}) as FetchDonePayload;
+    if (typeof done.transferId !== 'string') return;
+    const cb = pendingFetchTransfers.get(done.transferId);
+    if (!cb) return;
+    pendingFetchTransfers.delete(done.transferId);
+    cb(done);
+  }
+
+  async function runFetchFileTransfer(request: ToolRequestV2): Promise<Record<string, unknown>> {
+    const payload = request.payload as { url?: unknown; filename?: unknown; transferId?: unknown };
+    const url = typeof payload.url === 'string' ? payload.url : '';
+    if (!url) throw new Error('browser_fetch_file: missing url');
+    const transferId = typeof payload.transferId === 'string' && payload.transferId
+      ? payload.transferId
+      : crypto.randomUUID();
+    const filename = typeof payload.filename === 'string' ? payload.filename : undefined;
+
+    const done = await new Promise<FetchDonePayload>((resolve) => {
+      const timer = setTimeout(() => {
+        if (pendingFetchTransfers.delete(transferId)) resolve({ ok: false, error: 'TRANSFER_TIMEOUT' });
+      }, TRANSFER_DEADLINE_MS);
+      pendingFetchTransfers.set(transferId, (d) => {
+        clearTimeout(timer);
+        resolve(d);
+      });
+      const dispatched = sendToOffscreen({
+        type: 'transfer_fetch_start',
+        transferId,
+        requestId: request.id,
+        url,
+        ...(filename === undefined ? {} : { filename }),
+      });
+      if (!dispatched) {
+        clearTimeout(timer);
+        pendingFetchTransfers.delete(transferId);
+        resolve({ ok: false, error: 'TRANSFER_NO_OFFSCREEN' });
+      }
+    });
+    if (!done.ok) throw new Error(done.error || 'TRANSFER_FAILED');
+    return { transferred: true, transferId, bytesSent: done.bytesSent ?? 0 };
+  }
+
+  interface UploadReadyPayload {
+    transferId?: string;
+    requestId?: string;
+    targetTabId?: number;
+    selector?: string;
+    fileIndex?: number;
+    fileCount?: number;
+    filename?: string;
+    mimeType?: string;
+    totalBytes?: number;
+    totalChunks?: number;
+  }
+
+  interface LocalUploadState {
+    fileCount: number;
+    timer: ReturnType<typeof setTimeout>;
+    results: Map<number, { name: string; size: number }>;
+    transfers: Set<string>;
+    chain: Promise<void>;
+    finished: boolean;
+  }
+  const localUploads = new Map<string, LocalUploadState>();
+
+  function isLocalFilesUploadPayload(payload: Record<string, unknown>): boolean {
+    const files = payload.localFiles;
+    return Array.isArray(files) && files.length > 0
+      && files.every((f) => typeof f === 'string' && f.length > 0);
+  }
+
+  function finishLocalUpload(requestId: string, payload: Record<string, unknown>): void {
+    const state = localUploads.get(requestId);
+    if (!state || state.finished) return;
+    state.finished = true;
+    clearTimeout(state.timer);
+    localUploads.delete(requestId);
+    for (const transferId of state.transfers) {
+      void tellOffscreen({ type: 'transfer_upload_done', payload: { transferId } });
+    }
+    state.chain.catch(() => {});
+    (state as unknown as { resolve: (p: Record<string, unknown>) => void }).resolve(payload);
+  }
+
+  function failLocalUpload(requestId: string, error: string): void {
+    finishLocalUpload(requestId, { requestId, error });
+  }
+
+  function runLocalFilesUpload(request: ToolRequestV2): Promise<Record<string, unknown>> {
+    if (typeof request.payload.selector !== 'string' || !request.payload.selector) {
+      return Promise.reject(new Error('browser_upload: localFiles requires a selector'));
+    }
+    const fileCount = (request.payload.localFiles as unknown[]).length;
+    return new Promise<Record<string, unknown>>((resolve) => {
+      const state: LocalUploadState & { resolve: (p: Record<string, unknown>) => void } = {
+        fileCount,
+        timer: setTimeout(() => {
+          failLocalUpload(request.id, 'TRANSFER_UPLOAD_TIMEOUT');
+        }, Math.max(1_000, request.timeoutMs)),
+        results: new Map(),
+        transfers: new Set(),
+        chain: Promise.resolve(),
+        finished: false,
+        resolve,
+      };
+      localUploads.set(request.id, state);
+    });
+  }
+
+  async function commitUploadFile(meta: UploadReadyPayload & {
+    transferId: string; targetTabId: number; selector: string;
+    fileIndex: number; fileCount: number; totalBytes: number; totalChunks: number;
+    filename: string; mimeType: string;
+  }): Promise<{ name: string; size: number }> {
+    const tabId = meta.targetTabId;
+    const reset = { selector: meta.selector, fileIndex: meta.fileIndex, fileCount: meta.fileCount };
+    try {
+      await sendToTab(tabId, 'transfer_reset', reset);
+    } catch {
+      // Content script not present (tab loaded before registration) — inject and retry once.
+      await chrome.scripting.executeScript({ target: { tabId }, files: [TRANSFER_SCRIPT_PATH] });
+      await sendToTab(tabId, 'transfer_reset', reset);
+    }
+    for (let seq = 0; seq < meta.totalChunks; seq++) {
+      const chunkLen = Math.min(CHUNK_DECODED_BYTES, meta.totalBytes - seq * CHUNK_DECODED_BYTES);
+      for (let offset = 0; offset < chunkLen; offset += MAX_PULL_SLICE_BYTES) {
+        const length = Math.min(MAX_PULL_SLICE_BYTES, chunkLen - offset);
+        const reply = await requestFromOffscreen({
+          type: 'transfer_chunk_pull',
+          payload: { transferId: meta.transferId, seq, offset, length },
+        }) as { ok?: boolean; bytesBase64?: string; error?: string } | undefined;
+        if (!reply?.ok || typeof reply.bytesBase64 !== 'string') {
+          throw new Error(reply?.error || 'TRANSFER_PULL_FAILED');
+        }
+        await sendToTab(tabId, 'transfer_put', { seq, bytesBase64: reply.bytesBase64 });
+      }
+    }
+    const commit = await sendToTab(tabId, 'transfer_commit', {
+      filename: meta.filename,
+      mimeType: meta.mimeType,
+      size: meta.totalBytes,
+    }) as { ok?: boolean; name?: string; size?: number } | undefined;
+    if (!commit?.ok) throw new Error('TRANSFER_COMMIT_FAILED');
+    return { name: commit.name ?? meta.filename, size: commit.size ?? meta.totalBytes };
+  }
+
+  async function handleTransferUploadReady(payload: unknown): Promise<void> {
+    const meta = (payload ?? {}) as UploadReadyPayload;
+    if (typeof meta.requestId !== 'string' || typeof meta.transferId !== 'string') return;
+    const state = localUploads.get(meta.requestId);
+    if (!state || state.finished) {
+      // Upload for an unknown/finished request — release offscreen memory.
+      void tellOffscreen({ type: 'transfer_upload_done', payload: { transferId: meta.transferId } });
+      return;
+    }
+    state.transfers.add(meta.transferId);
+    if (
+      typeof meta.fileIndex !== 'number' || typeof meta.fileCount !== 'number'
+      || typeof meta.totalBytes !== 'number' || typeof meta.totalChunks !== 'number'
+      || typeof meta.targetTabId !== 'number'
+      || typeof meta.selector !== 'string' || !meta.selector
+      || typeof meta.filename !== 'string' || typeof meta.mimeType !== 'string'
+    ) {
+      failLocalUpload(meta.requestId, 'TRANSFER_UPLOAD_BAD_META');
+      return;
+    }
+    const requestId = meta.requestId;
+    state.chain = state.chain
+      .then(() => commitUploadFile(meta as UploadReadyPayload & {
+        transferId: string; targetTabId: number; selector: string;
+        fileIndex: number; fileCount: number; totalBytes: number; totalChunks: number;
+        filename: string; mimeType: string;
+      }))
+      .then((res) => {
+        if (state.finished) return;
+        state.results.set(meta.fileIndex as number, res);
+        if (state.results.size >= state.fileCount) {
+          const files = [...state.results.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([, v]) => v);
+          finishLocalUpload(requestId, { requestId, result: { uploaded: true, files } });
+        }
+      })
+      .catch((e: unknown) => {
+        if (!state.finished) failLocalUpload(requestId, e instanceof Error ? e.message : String(e));
+      });
+  }
+
+  function handleTransferUploadFailed(payload: unknown): void {
+    const p = (payload ?? {}) as { requestId?: string; error?: string };
+    if (typeof p.requestId !== 'string') return;
+    const state = localUploads.get(p.requestId);
+    if (state && !state.finished) failLocalUpload(p.requestId, p.error || 'TRANSFER_FAILED');
+  }
+
+  // =====================================================================
   // Handle tool requests from offscreen (WS → offscreen → here)
   // =====================================================================
 
@@ -337,6 +550,18 @@ export default defineBackground(() => {
     });
     let response: ToolResponseV2;
     try {
+      // Hub-resolved file transfers bypass the normal tool dispatcher entirely.
+      if (request.type === 'browser_fetch_file') {
+        response = {
+          type: 'messageResponse',
+          payload: { requestId: request.id, result: await runFetchFileTransfer(request) },
+        };
+      } else if (request.type === 'browser_upload' && isLocalFilesUploadPayload(request.payload)) {
+        response = {
+          type: 'messageResponse',
+          payload: (await runLocalFilesUpload(request)) as ToolResponseV2['payload'],
+        };
+      } else {
       const metadata = TOOL_METADATA[request.type as ToolName];
       if (!metadata) throw new Error(`Unknown tool: ${request.type}`);
 
@@ -414,6 +639,7 @@ export default defineBackground(() => {
           ? attachExtensionTelemetry({ requestId: request.id, result }, telemetryBuilder)
           : { requestId: request.id, result },
       };
+      }
     } catch (e) {
       const failure = reportToolFailure(e, {
         requestId: request.id,
@@ -499,6 +725,21 @@ export default defineBackground(() => {
         return;
       }
 
+      if (msg.type === 'transfer_fetch_done') {
+        handleTransferFetchDone(msg.payload);
+        return;
+      }
+
+      if (msg.type === 'transfer_upload_ready') {
+        void handleTransferUploadReady(msg.payload);
+        return;
+      }
+
+      if (msg.type === 'transfer_upload_failed') {
+        handleTransferUploadFailed(msg.payload);
+        return;
+      }
+
       if (msg.type === '_os_ws_receive') {
         handleToolRequest(msg.payload as string).catch(() => {
           recordExtensionIssue('ws_message', 'TOOL_REQUEST_DISPATCH_FAILED');
@@ -556,6 +797,18 @@ export default defineBackground(() => {
       recordExtensionIssue('ws_message', 'TOOL_REQUEST_DISPATCH_FAILED');
       console.error('[MyBrowser] TOOL_REQUEST_DISPATCH_FAILED');
     }
+  });
+
+  addMessageHandler('transfer_fetch_done', async (payload, sender) => {
+    if (trustedOffscreen(sender)) handleTransferFetchDone(payload);
+  });
+
+  addMessageHandler('transfer_upload_ready', async (payload, sender) => {
+    if (trustedOffscreen(sender)) await handleTransferUploadReady(payload);
+  });
+
+  addMessageHandler('transfer_upload_failed', async (payload, sender) => {
+    if (trustedOffscreen(sender)) handleTransferUploadFailed(payload);
   });
 
   // =====================================================================
