@@ -422,8 +422,14 @@ export class Context {
       payload !== null && typeof payload === "object" && !Array.isArray(payload)
         ? (payload as Record<string, unknown>).transferId
         : undefined;
+    // Client mode: the hub owns chunk ingestion and settles the request
+    // with the landed-path payload via the normal messageResponse — a local
+    // expectation here would never see chunks (they arrive at the hub) and
+    // would hold the promise until timeout. Only direct mode registers
+    // locally, where the extension socket is in this process.
     const isTransferBound = typeof payloadTransferId === "string"
-      && payloadTransferId.length > 0;
+      && payloadTransferId.length > 0
+      && !this._isClientMode;
     const heldTransfer = isTransferBound
       ? this.holdTransferCompletion(id, timeoutMs)
       : undefined;
