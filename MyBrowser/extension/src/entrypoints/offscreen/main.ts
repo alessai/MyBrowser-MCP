@@ -280,6 +280,9 @@ function handleTransferFrame(data: string): boolean {
         file: null,
       });
     }
+    // Begin ack uses seq -1 so it can never collide with a final-chunk ack
+    // (the hub relay treats seq >= totalChunks - 1 as transfer-complete).
+    sendTransferAck({ transferId: parsed.transferId, seq: -1, ok: true });
     return true;
   }
   if (isTransferChunk(parsed)) {

@@ -31,6 +31,7 @@ type StartUploadTransfer = (
   requestId: string,
   files: UploadTransferFile[],
   target: { tabId?: number; selector: string },
+  options?: { timeoutMs?: number },
 ) => Promise<{ files: Array<{ name: string; size: number; sha256: string }>; landedPath?: never }>;
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -98,21 +99,55 @@ export const upload: Tool = {
       if (!startUploadTransfer) {
         throw new Error("browser_upload localFiles requires server transfer support (startUploadTransfer is unavailable in this build).");
       }
-      const requestId = randomUUID();
+      const transferRequestId = randomUUID();
       const transferFiles = localFiles.map((path) => ({
         path,
         filename: basename(path),
         mimeType: inferMimeType(path),
       }));
-      const result = await withTimeout(
-        startUploadTransfer.call(context, requestId, transferFiles, { tabId, selector }),
+
+      // Start the browser_upload tool request first so the extension's
+      // localFiles driver engages and waits for the transfers; it resolves
+      // when the content script commits every file into the input.
+      const socketPromise = context
+        .sendSocketMessage(
+          "browser_upload",
+          {
+            ...(tabId !== undefined ? { tabId } : {}),
+            selector,
+            localFiles: transferFiles.map((file) => file.filename),
+            transferRequestId,
+          },
+          { timeoutMs: UPLOAD_TRANSFER_TIMEOUT_MS },
+        )
+        .catch((error: unknown) => {
+          throw error instanceof Error ? error : new Error(String(error));
+        });
+
+      await withTimeout(
+        startUploadTransfer.call(
+          context,
+          transferRequestId,
+          transferFiles,
+          { tabId, selector },
+          { timeoutMs: UPLOAD_TRANSFER_TIMEOUT_MS },
+        ),
         UPLOAD_TRANSFER_TIMEOUT_MS,
         `UPLOAD_TRANSFER_TIMEOUT: file transfer to the browser did not complete within ${UPLOAD_TRANSFER_TIMEOUT_MS} ms`,
       );
-      const names = result.files.map((file) => file.name).join(", ");
+
+      const response = await withTimeout(
+        socketPromise,
+        UPLOAD_TRANSFER_TIMEOUT_MS,
+        `UPLOAD_RESPONSE_TIMEOUT: bytes reached the browser but the upload was not confirmed within ${UPLOAD_TRANSFER_TIMEOUT_MS} ms`,
+      ) as { uploaded?: boolean; files?: Array<{ name: string; size: number }>; error?: string };
+      if (typeof response?.error === "string" && response.error.length > 0) {
+        throw new Error(response.error);
+      }
+      const uploadedFiles = response?.files ?? [];
       return {
         content: [
-          { type: "text" as const, text: `Uploaded ${result.files.length} file(s) to ${selector}: ${names}` },
+          { type: "text" as const, text: `Uploaded ${uploadedFiles.length} file(s) to ${selector} on the browser: ${uploadedFiles.map((file) => file.name).join(", ")}` },
         ],
       };
     }

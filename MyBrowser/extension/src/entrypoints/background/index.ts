@@ -320,6 +320,7 @@ export default defineBackground(() => {
     transfers: Set<string>;
     chain: Promise<void>;
     finished: boolean;
+    transferRequestId?: string;
   }
   const localUploads = new Map<string, LocalUploadState>();
 
@@ -327,6 +328,20 @@ export default defineBackground(() => {
     const files = payload.localFiles;
     return Array.isArray(files) && files.length > 0
       && files.every((f) => typeof f === 'string' && f.length > 0);
+  }
+
+  /** Resolve the pending localFiles upload for a transfer-side requestId.
+   * Direct key first (same-process requests), then the transferRequestId
+   * the server minted and echoed in both the tool payload and transfer_begin
+   * (proxied tool requests carry a hub-rewritten id, so they can only match
+   * via transferRequestId). */
+  function findLocalUpload(transferRequestId: string): { key: string; state: LocalUploadState } | undefined {
+    const direct = localUploads.get(transferRequestId);
+    if (direct) return { key: transferRequestId, state: direct };
+    for (const [key, state] of localUploads) {
+      if (state.transferRequestId === transferRequestId) return { key, state };
+    }
+    return undefined;
   }
 
   function finishLocalUpload(requestId: string, payload: Record<string, unknown>): void {
@@ -345,11 +360,14 @@ export default defineBackground(() => {
   function failLocalUpload(requestId: string, error: string): void {
     finishLocalUpload(requestId, { requestId, error });
   }
-
   function runLocalFilesUpload(request: ToolRequestV2): Promise<Record<string, unknown>> {
     if (typeof request.payload.selector !== 'string' || !request.payload.selector) {
       return Promise.reject(new Error('browser_upload: localFiles requires a selector'));
     }
+    const transferRequestId = typeof request.payload.transferRequestId === 'string'
+      && request.payload.transferRequestId.length > 0
+      ? request.payload.transferRequestId
+      : undefined;
     const fileCount = (request.payload.localFiles as unknown[]).length;
     return new Promise<Record<string, unknown>>((resolve) => {
       const state: LocalUploadState & { resolve: (p: Record<string, unknown>) => void } = {
@@ -361,6 +379,7 @@ export default defineBackground(() => {
         transfers: new Set(),
         chain: Promise.resolve(),
         finished: false,
+        transferRequestId,
         resolve,
       };
       localUploads.set(request.id, state);
@@ -407,12 +426,13 @@ export default defineBackground(() => {
   async function handleTransferUploadReady(payload: unknown): Promise<void> {
     const meta = (payload ?? {}) as UploadReadyPayload;
     if (typeof meta.requestId !== 'string' || typeof meta.transferId !== 'string') return;
-    const state = localUploads.get(meta.requestId);
-    if (!state || state.finished) {
+    const match = findLocalUpload(meta.requestId);
+    if (!match || match.state.finished) {
       // Upload for an unknown/finished request — release offscreen memory.
       void tellOffscreen({ type: 'transfer_upload_done', payload: { transferId: meta.transferId } });
       return;
     }
+    const state = match.state;
     state.transfers.add(meta.transferId);
     if (
       typeof meta.fileIndex !== 'number' || typeof meta.fileCount !== 'number'
@@ -421,10 +441,10 @@ export default defineBackground(() => {
       || typeof meta.selector !== 'string' || !meta.selector
       || typeof meta.filename !== 'string' || typeof meta.mimeType !== 'string'
     ) {
-      failLocalUpload(meta.requestId, 'TRANSFER_UPLOAD_BAD_META');
+      failLocalUpload(match.key, 'TRANSFER_UPLOAD_BAD_META');
       return;
     }
-    const requestId = meta.requestId;
+    const requestId = match.key;
     state.chain = state.chain
       .then(() => commitUploadFile(meta as UploadReadyPayload & {
         transferId: string; targetTabId: number; selector: string;
@@ -449,8 +469,8 @@ export default defineBackground(() => {
   function handleTransferUploadFailed(payload: unknown): void {
     const p = (payload ?? {}) as { requestId?: string; error?: string };
     if (typeof p.requestId !== 'string') return;
-    const state = localUploads.get(p.requestId);
-    if (state && !state.finished) failLocalUpload(p.requestId, p.error || 'TRANSFER_FAILED');
+    const match = findLocalUpload(p.requestId);
+    if (match && !match.state.finished) failLocalUpload(match.key, p.error || 'TRANSFER_FAILED');
   }
 
   // =====================================================================

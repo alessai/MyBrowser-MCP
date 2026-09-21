@@ -13,7 +13,10 @@ function createContextWithTransfers() {
       files: [{ name: "Holiday Photo.JPG", size: 12_345, sha256: "deadbeef" }],
     }),
   );
-  const sendSocketMessage = vi.fn(async () => undefined);
+  const sendSocketMessage = vi.fn(async () => ({
+    uploaded: true,
+    files: [{ name: "Holiday Photo.JPG", size: 12_345 }],
+  }));
   return {
     startUploadTransfer,
     sendSocketMessage,
@@ -79,11 +82,16 @@ describe("browser_upload", () => {
   });
 
   it("reports the committed file names from the transfer result", async () => {
-    const { context } = createContextWithTransfers();
+    const { context, sendSocketMessage, startUploadTransfer } = createContextWithTransfers();
     const result = await upload.handle(context, { selector: "#file", localFiles: ["/srv/photo.jpg"] });
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
     expect(text).toContain("Uploaded 1 file(s) to #file");
     expect(text).toContain("Holiday Photo.JPG");
+    // The tool request must carry the same correlation id the transfers use.
+    const socketCall = sendSocketMessage.mock.calls[0] as unknown as unknown[];
+    const transferCall = startUploadTransfer.mock.calls[0] as unknown as unknown[];
+    const socketPayload = socketCall[1] as { transferRequestId?: string };
+    expect(socketPayload.transferRequestId).toBe(transferCall[0]);
   });
 
   it("tells the truth about where paths resolve and the size cap", () => {

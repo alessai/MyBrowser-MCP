@@ -670,12 +670,16 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   };
 
   // Upload direction acks: extension → the originating client socket only.
+  // Begin acks (seq -1) are relayed but never complete the transfer; only a
+  // failed ack or the final chunk ack (seq >= totalChunks - 1, seq >= 0)
+  // retires the relay entry.
   const relayUploadAckToClient = (ws: WebSocket, msg: Record<string, unknown>): void => {
     if (!isTransferAckMessage(msg)) return;
     const entry = uploadRelayEntries.get(msg.transferId);
     if (!entry || entry.extensionWs !== ws) return;
     safeSend(entry.clientWs, msg);
-    if (msg.ok === false || msg.seq >= entry.totalChunks - 1) {
+    const seq = typeof msg.seq === "number" ? msg.seq : -1;
+    if (msg.ok === false || (seq >= 0 && seq >= entry.totalChunks - 1)) {
       uploadRelayEntries.delete(msg.transferId);
     }
   };
