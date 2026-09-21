@@ -335,6 +335,28 @@ describe('offscreen upload reassembly', () => {
       .toBe(false);
   });
 
+  it('accepts hub-relayed begin and chunks carrying the injected sessionId', async () => {
+    const whole = fill(new Uint8Array(9), 7);
+    deliver({
+      type: 'transfer_begin', v: 2, transferId: 'u9', requestId: 'req-u9', direction: 'upload',
+      fileIndex: 0, fileCount: 1, filename: 'note.txt', mimeType: 'text/plain',
+      totalBytes: whole.length, totalChunks: 1, sha256: sha256(whole),
+      targetTabId: 3, selector: 'input[type=file]', sessionId: 'sess-abc',
+    });
+    await vi.waitFor(() => expect(
+      sentFrames().some((f) => f.type === 'transfer_ack' && f.seq === -1 && f.ok === true),
+    ).toBe(true));
+    deliver({
+      type: 'transfer_chunk', v: 2, transferId: 'u9', requestId: 'req-u9', seq: 0,
+      totalChunks: 1, totalBytes: whole.length, sha256: sha256(whole),
+      filename: 'note.txt', mimeType: 'text/plain',
+      bytesBase64: encodeBase64(whole), sessionId: 'sess-abc',
+    });
+    await vi.waitFor(() => expect(
+      portPost.some((m) => m.type === 'transfer_upload_ready' && (m.payload as { transferId?: string })?.transferId === 'u9'),
+    ).toBe(true));
+  });
+
   it('rejects out-of-order chunks and notifies transfer_upload_failed', async () => {
     begin('u2', 10, 2, sha256(new Uint8Array(10)));
     deliver({

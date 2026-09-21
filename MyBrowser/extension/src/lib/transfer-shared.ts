@@ -110,9 +110,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+function hasExactKeys(value: Record<string, unknown>, allowed: readonly string[], optional: readonly string[] = []): boolean {
   const keys = Object.keys(value);
-  return keys.length === allowed.length && keys.every((key) => allowed.includes(key));
+  return keys.length <= allowed.length + optional.length
+    && keys.every((key) => allowed.includes(key) || (optional.includes(key) && typeof value[key] === 'string'));
 }
 
 function isInt(value: unknown): value is number {
@@ -135,6 +136,8 @@ export interface TransferChunkMessage {
   filename: string;
   mimeType: string;
   bytesBase64: string;
+  /** Session binding injected by the hub when it relays chunks to a browser. */
+  sessionId?: string;
 }
 
 export function isTransferChunk(value: unknown): value is TransferChunkMessage {
@@ -142,7 +145,7 @@ export function isTransferChunk(value: unknown): value is TransferChunkMessage {
   if (!hasExactKeys(value, [
     'type', 'v', 'transferId', 'requestId', 'seq', 'totalChunks', 'totalBytes',
     'sha256', 'filename', 'mimeType', 'bytesBase64',
-  ])) return false;
+  ], ['sessionId'])) return false;
   return (
     value.type === 'transfer_chunk'
     && value.v === 2
@@ -197,6 +200,8 @@ export interface TransferBeginMessage {
   sha256: string;
   targetTabId: number;
   selector: string;
+  /** Session binding injected by the hub when it relays begin to a browser. */
+  sessionId?: string;
 }
 
 export function isTransferBegin(value: unknown): value is TransferBeginMessage {
@@ -204,7 +209,7 @@ export function isTransferBegin(value: unknown): value is TransferBeginMessage {
   if (!hasExactKeys(value, [
     'type', 'v', 'transferId', 'requestId', 'direction', 'fileIndex', 'fileCount',
     'filename', 'mimeType', 'totalBytes', 'totalChunks', 'sha256', 'targetTabId', 'selector',
-  ])) return false;
+  ], ['sessionId'])) return false;
   return (
     value.type === 'transfer_begin'
     && value.v === 2
