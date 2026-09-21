@@ -351,7 +351,21 @@ describe("upload direction (client → extension relay)", () => {
       bytesBase64: Buffer.from("hello").toString("base64"),
     });
 
-    // Extension acks → relayed to the originating client socket only.
+    // Extension acks the begin (seq -1) → relayed to the client, entry survives.
+    fx.extension.send(JSON.stringify({
+      type: "transfer_ack",
+      transferId: "tf-up-1",
+      seq: -1,
+      ok: true,
+    }));
+    await expect(fx.clientInbox.next()).resolves.toMatchObject({
+      type: "transfer_ack",
+      transferId: "tf-up-1",
+      seq: -1,
+      ok: true,
+    });
+
+    // Extension acks the chunk → relayed to the originating client socket only.
     fx.extension.send(JSON.stringify({
       type: "transfer_ack",
       transferId: "tf-up-1",

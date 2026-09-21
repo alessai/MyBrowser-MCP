@@ -149,7 +149,9 @@ export function isTransferAckMessage(msg: unknown): msg is TransferAckMessage {
   }
   if (msg.type !== "transfer_ack") return false;
   if (!isBoundedString(msg.transferId, 64) || !TRANSFER_ID_RE.test(msg.transferId)) return false;
-  if (!isSafeNonNegativeInt(msg.seq)) return false;
+  // seq -1 is the begin ack: extensions acknowledge transfer_begin before any
+  // chunk exists. Chunk acks are always >= 0.
+  if (!isSafeNonNegativeInt(msg.seq) && msg.seq !== -1) return false;
   if (typeof msg.ok !== "boolean") return false;
   if (msg.code !== undefined && !isBoundedString(msg.code, 64)) return false;
   if (msg.message !== undefined && !isBoundedString(msg.message, MAX_META_STRING)) return false;
