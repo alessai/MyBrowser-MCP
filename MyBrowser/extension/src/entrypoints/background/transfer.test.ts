@@ -185,7 +185,7 @@ describe('background file-transfer routing', () => {
       expect(portPost.some((m) => m.type === 'transfer_fetch_start')).toBe(true);
     });
     const start = portPost.find((m) => m.type === 'transfer_fetch_start') as Record<string, unknown>;
-    expect(start).toMatchObject({ transferId: 't1', requestId: 'reqA', url: 'https://example.com/f.bin', filename: 'f.bin' });
+    expect(start).toMatchObject({ payload: { transferId: 't1', requestId: 'reqA', url: 'https://example.com/f.bin', filename: 'f.bin' } });
 
     fromOffscreen({ type: 'transfer_fetch_done', payload: { transferId: 't1', ok: true, bytesSent: 42 } });
 

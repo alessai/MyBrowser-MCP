@@ -309,9 +309,11 @@ function failUpload(transferId: string, entry: UploadEntry, seq: number, code: s
   sendTransferAck({ transferId, seq, ok: false, code, message });
   void postToBackground({
     type: 'transfer_upload_failed',
-    transferId,
-    requestId: entry.requestId,
-    error: `${code}: ${message}`,
+    payload: {
+      transferId,
+      requestId: entry.requestId,
+      error: `${code}: ${message}`,
+    },
   });
 }
 
@@ -362,16 +364,18 @@ async function handleUploadChunk(chunk: TransferChunkMessage): Promise<void> {
   sendTransferAck({ transferId: chunk.transferId, seq: chunk.seq, ok: true });
   void postToBackground({
     type: 'transfer_upload_ready',
-    transferId: chunk.transferId,
-    requestId: entry.requestId,
-    targetTabId: entry.targetTabId,
-    selector: entry.selector,
-    fileIndex: entry.fileIndex,
-    fileCount: entry.fileCount,
-    filename: entry.filename,
-    mimeType: entry.mimeType,
-    totalBytes: entry.totalBytes,
-    totalChunks: entry.totalChunks,
+    payload: {
+      transferId: chunk.transferId,
+      requestId: entry.requestId,
+      targetTabId: entry.targetTabId,
+      selector: entry.selector,
+      fileIndex: entry.fileIndex,
+      fileCount: entry.fileCount,
+      filename: entry.filename,
+      mimeType: entry.mimeType,
+      totalBytes: entry.totalBytes,
+      totalChunks: entry.totalChunks,
+    },
   });
 }
 
@@ -407,7 +411,7 @@ async function runTransferFetch(request: Record<string, unknown>): Promise<void>
   const requestId = typeof request.requestId === 'string' ? request.requestId : '';
   const url = typeof request.url === 'string' ? request.url : '';
   const done = (ok: boolean, extra: Record<string, unknown>): void => {
-    void postToBackground({ type: 'transfer_fetch_done', transferId, ok, ...extra });
+    void postToBackground({ type: 'transfer_fetch_done', payload: { transferId, ok, ...extra } });
   };
   if (!url) {
     done(false, { error: 'transfer_fetch_start: missing url' });

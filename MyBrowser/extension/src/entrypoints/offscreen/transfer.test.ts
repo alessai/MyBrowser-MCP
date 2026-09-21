@@ -160,10 +160,10 @@ describe('offscreen transfer_fetch_start', () => {
     for (let seq = 0; seq < 4; seq++) deliver({ type: 'transfer_ack', transferId: 'f1', seq, ok: true });
 
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_fetch_done' && m.transferId === 'f1'),
+      portPost.some((m) => m.type === 'transfer_fetch_done' && (m.payload as { transferId?: string })?.transferId === 'f1'),
     ).toBe(true));
     expect(portPost.find((m) => m.type === 'transfer_fetch_done')).toMatchObject({
-      type: 'transfer_fetch_done', transferId: 'f1', ok: true, bytesSent: file.length,
+      type: 'transfer_fetch_done', payload: { transferId: 'f1', ok: true, bytesSent: file.length },
     });
   });
 
@@ -197,7 +197,7 @@ describe('offscreen transfer_fetch_start', () => {
     await vi.waitFor(() => expect(sentFrames().filter((f) => f.type === 'transfer_chunk').length).toBe(10));
     for (let seq = 8; seq < 10; seq++) deliver({ type: 'transfer_ack', transferId: 'f2', seq, ok: true });
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_fetch_done' && m.ok === true),
+      portPost.some((m) => m.type === 'transfer_fetch_done' && (m.payload as { ok?: boolean })?.ok === true),
     ).toBe(true));
   });
 
@@ -218,12 +218,12 @@ describe('offscreen transfer_fetch_start', () => {
     deliver({ type: 'transfer_ack', transferId: 'f3', seq: 0, ok: false, code: 'TRANSFER_TOO_LARGE', message: 'nope' });
 
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_fetch_done' && m.transferId === 'f3'),
+      portPost.some((m) => m.type === 'transfer_fetch_done' && (m.payload as { transferId?: string })?.transferId === 'f3'),
     ).toBe(true));
     expect(portPost.find((m) => m.type === 'transfer_fetch_done')).toMatchObject({
-      transferId: 'f3', ok: false,
+      payload: { transferId: 'f3', ok: false },
     });
-    expect(String((portPost.find((m) => m.type === 'transfer_fetch_done') as { error?: string }).error))
+    expect(String((portPost.find((m) => m.type === 'transfer_fetch_done') as { payload?: { error?: string } }).payload?.error))
       .toContain('TRANSFER_TOO_LARGE');
     // no further chunks after abort
     expect(sentFrames().filter((f) => f.type === 'transfer_chunk').length).toBe(2);
@@ -236,10 +236,10 @@ describe('offscreen transfer_fetch_start', () => {
       payload: { transferId: 'f4', requestId: 'req-4', url: 'https://example.com/forbidden' },
     });
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_fetch_done' && m.transferId === 'f4'),
+      portPost.some((m) => m.type === 'transfer_fetch_done' && (m.payload as { transferId?: string })?.transferId === 'f4'),
     ).toBe(true));
     expect(portPost.find((m) => m.type === 'transfer_fetch_done')).toMatchObject({
-      transferId: 'f4', ok: false, error: 'HTTP 403',
+      payload: { transferId: 'f4', ok: false, error: 'HTTP 403' },
     });
   });
 
@@ -252,10 +252,10 @@ describe('offscreen transfer_fetch_start', () => {
       payload: { transferId: 'f5', requestId: 'req-5', url: 'https://example.com/dead' },
     });
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_fetch_done' && m.transferId === 'f5'),
+      portPost.some((m) => m.type === 'transfer_fetch_done' && (m.payload as { transferId?: string })?.transferId === 'f5'),
     ).toBe(true));
     expect(portPost.find((m) => m.type === 'transfer_fetch_done')).toMatchObject({
-      transferId: 'f5', ok: false, error: 'network down',
+      payload: { transferId: 'f5', ok: false, error: 'network down' },
     });
   });
 });
@@ -301,12 +301,14 @@ describe('offscreen upload reassembly', () => {
     });
 
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_upload_ready' && m.transferId === 'u1'),
+      portPost.some((m) => m.type === 'transfer_upload_ready' && (m.payload as { transferId?: string })?.transferId === 'u1'),
     ).toBe(true));
     expect(portPost.find((m) => m.type === 'transfer_upload_ready')).toMatchObject({
-      transferId: 'u1', requestId: 'req-u1', targetTabId: 7, selector: 'input[type=file]',
-      fileIndex: 0, fileCount: 1, filename: 'photo.jpg', mimeType: 'image/jpeg',
-      totalBytes: whole.length, totalChunks: 2,
+      payload: {
+        transferId: 'u1', requestId: 'req-u1', targetTabId: 7, selector: 'input[type=file]',
+        fileIndex: 0, fileCount: 1, filename: 'photo.jpg', mimeType: 'image/jpeg',
+        totalBytes: whole.length, totalChunks: 2,
+      },
     });
     expect(sentFrames().some((f) => f.type === 'transfer_ack' && f.seq === 1 && f.ok === true)).toBe(true);
 
@@ -347,7 +349,7 @@ describe('offscreen upload reassembly', () => {
       transferId: 'u2', seq: 1, ok: false, code: 'TRANSFER_OUT_OF_ORDER',
     });
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_upload_failed' && m.transferId === 'u2'),
+      portPost.some((m) => m.type === 'transfer_upload_failed' && (m.payload as { transferId?: string })?.transferId === 'u2'),
     ).toBe(true));
   });
 
@@ -369,7 +371,7 @@ describe('offscreen upload reassembly', () => {
       filename: 'photo.jpg', mimeType: 'image/jpeg', bytesBase64: encodeBase64(part1),
     });
     await vi.waitFor(() => expect(
-      portPost.some((m) => m.type === 'transfer_upload_failed' && m.transferId === 'u3'),
+      portPost.some((m) => m.type === 'transfer_upload_failed' && (m.payload as { transferId?: string })?.transferId === 'u3'),
     ).toBe(true));
     const ack = sentFrames().find((f) => f.type === 'transfer_ack' && f.seq === 1 && f.ok === false);
     expect(ack).toMatchObject({ transferId: 'u3', code: 'TRANSFER_SHA256_MISMATCH' });

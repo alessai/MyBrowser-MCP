@@ -21,7 +21,7 @@ describe("release package contract", () => {
       "utf8",
     );
 
-    expect(VERSION).toBe("1.3.0");
+    expect(VERSION).toBe("1.3.1");
     expect(serverPackage.version).toBe(VERSION);
     expect(extensionPackage.version).toBe(VERSION);
     expect(extensionConfig).toContain(`version: '${VERSION}'`);

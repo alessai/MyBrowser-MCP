@@ -283,10 +283,12 @@ export default defineBackground(() => {
       });
       const dispatched = sendToOffscreen({
         type: 'transfer_fetch_start',
-        transferId,
-        requestId: request.id,
-        url,
-        ...(filename === undefined ? {} : { filename }),
+        payload: {
+          transferId,
+          requestId: request.id,
+          url,
+          ...(filename === undefined ? {} : { filename }),
+        },
       });
       if (!dispatched) {
         clearTimeout(timer);

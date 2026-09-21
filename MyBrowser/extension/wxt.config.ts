@@ -4,7 +4,7 @@ export default defineConfig({
   srcDir: 'src',
   manifest: {
     name: 'MyBrowser',
-    version: '1.3.0',
+    version: '1.3.1',
     description: 'Local and remote browser automation through MCP',
     permissions: [
       'debugger',
@@ -30,4 +30,12 @@ export default defineConfig({
     },
   },
   modules: ['@wxt-dev/module-react'],
+  vite: () => ({
+    build: {
+      // Extension pages load chunks from local disk; modulepreload links on
+      // chunks shared with content scripts trigger Chrome's cross-world
+      // resource mismatch warning on tutorial/popup pages.
+      modulePreload: false,
+    },
+  }),
 });
