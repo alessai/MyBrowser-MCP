@@ -125,6 +125,8 @@ const policies = {
   browser_check: immutablePolicy({
     question: textLength(),
     options: count(20),
+    checks: count(8),
+    preset: enumeration("state"),
     visual: boolean(),
     tabId: TAB_ID,
   }),

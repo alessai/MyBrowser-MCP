@@ -149,6 +149,57 @@ describe("resolveTargetWithJev", () => {
     expect(ask).toHaveBeenCalledTimes(1);
   });
 
+  describe("guessed targets that may pay, delete, send, or publish", () => {
+    function asking(confidence: number, risk: number | Error) {
+      return vi.fn(async (_config: JevConfig, request: JevRequest): Promise<JevResponse> => {
+        if (request.questions.risk) {
+          if (risk instanceof Error) throw risk;
+          return { model: "jev-1.13.0", ms: 300, answers: { risk: { type: "noul", noul: risk } } };
+        }
+        return { model: "jev-1.13.0", ms: 300, answers: { target: { type: "choice", choice: "e1", confidence, probabilities: { e1: confidence } } } };
+      });
+    }
+
+    it("declines a risky guess below 0.9 and gives no selector to click", async () => {
+      const { context } = contextWith();
+      const ask = asking(0.82, 0.91);
+      const result = await resolveTargetWithJev(context, config, { element: "the star button" }, undefined, ask, { sideEffect: true });
+      expect(result.kind).toBe("unresolved");
+      const hint = result.kind === "unresolved" ? result.hint! : "";
+      expect(hint).toContain('Jev picked button "Star alessai/MyBrowser-MCP" in header (confidence 0.82) but did not act');
+      expect(hint).not.toContain("nth-of-type");
+      const riskRequest = ask.mock.calls[1]![1];
+      expect(riskRequest.state).toEqual({
+        page: { title: page.title, url: page.url },
+        element: 'button "Star alessai/MyBrowser-MCP" in header',
+      });
+    });
+
+    it("acts on a benign guess between the normal and risky thresholds", async () => {
+      const { context } = contextWith();
+      const result = await resolveTargetWithJev(context, config, { element: "star" }, undefined, asking(0.82, 0.1), { sideEffect: true });
+      expect(result).toMatchObject({ kind: "resolved", confidence: 0.82 });
+    });
+
+    it("treats an unknown risk as risky", async () => {
+      const { context } = contextWith();
+      const result = await resolveTargetWithJev(context, config, { element: "star" }, undefined, asking(0.82, new Error("JEV_HTTP_500")), { sideEffect: true });
+      expect(result.kind).toBe("unresolved");
+    });
+
+    it("skips the risk check for confident picks and for actions without side effects", async () => {
+      const { context } = contextWith();
+      const confident = asking(0.95, 0.99);
+      expect(await resolveTargetWithJev(context, config, { element: "star" }, undefined, confident, { sideEffect: true }))
+        .toMatchObject({ kind: "resolved" });
+      const hover = asking(0.82, 0.99);
+      expect(await resolveTargetWithJev(context, config, { element: "star" }, undefined, hover, { sideEffect: false }))
+        .toMatchObject({ kind: "resolved" });
+      expect(confident).toHaveBeenCalledTimes(1);
+      expect(hover).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("caps very large pages at the Choice option limit", async () => {
     const elements = Array.from({ length: 400 }, (_, i) => ({ role: "link", name: `Item ${i}`, region: "", href: "", selector: `#i${i}` }));
     elements[350] = { role: "button", name: "Checkout now", region: "", href: "", selector: "#checkout" };

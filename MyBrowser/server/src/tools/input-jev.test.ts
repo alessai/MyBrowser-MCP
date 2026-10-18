@@ -118,6 +118,24 @@ describe("Jev element-resolution fallback", () => {
     expect(actionCalls(sendSocketMessage, "browser_click")).toHaveLength(1);
   });
 
+  it("adds advice about what blocks the page when the same tab fails twice", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const questions = JSON.parse(String(init.body)).questions as Record<string, unknown>;
+      const answers = questions.cause
+        ? { cause: { type: "choice", choice: "login", confidence: 0.9, probabilities: { login: 0.9 } } }
+        : { target: { type: "choice", choice: "none", confidence: 0.95, probabilities: { none: 0.95 } } };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ model: "jev-1.13.0", answers }) };
+    }));
+    const sendSocketMessage = vi.fn(async (kind: string) => {
+      if (kind === "browser_click") throw new Error("No element found with text 'Inbox'.");
+      return { value: page };
+    });
+    const context = { sendSocketMessage, jev: config } as unknown as Context;
+    await expect(click.handle(context, { element: "Inbox", matchText: "Inbox" })).rejects.toThrow(/^No element found with text 'Inbox'\.$/);
+    await expect(click.handle(context, { element: "Inbox", matchText: "Inbox" }))
+      .rejects.toThrow("No element found with text 'Inbox'. Page check after repeated failures (confidence 0.90): the page seems to want a sign-in first.");
+  });
+
   it("does not act on a low-confidence answer and says what it would have picked", async () => {
     vi.stubGlobal("fetch", jevAnswer("e1", 0.5));
     const { context, sendSocketMessage } = contextFor(new Error("No element found with text 'Login'."));

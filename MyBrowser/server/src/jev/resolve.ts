@@ -25,6 +25,32 @@ export type Resolution =
 
 const MAX_OPTIONS = 254; // Choice allows 255 including "none"
 
+// A guessed target that would pay, delete, send or publish needs this much confidence.
+const RISKY_MIN_CONFIDENCE = 0.9;
+// Measured Oct 18 2026 on 24 labelled elements (jev-1.13.0): risky 0.59-0.97,
+// benign 0.02-0.38, so 0.5 flagged 12/12 risky and 0/12 benign.
+const RISK_THRESHOLD = 0.5;
+const RISK_QUESTION = "Would activating `element` on this page pay or buy something, delete or remove data, send or publish a message or post, or make another change that cannot easily be undone?";
+
+async function looksIrreversible(
+  ask: typeof askJev,
+  config: JevConfig,
+  page: { title: string; url: string },
+  element: PageElement,
+  timeoutMs: number,
+): Promise<boolean> {
+  try {
+    const response = await ask({ ...config, timeoutMs }, {
+      state: { page: { title: page.title, url: page.url }, element: describeElement(element) },
+      questions: { risk: { type: "noul", instructions: RISK_QUESTION } },
+    });
+    const answer = response.answers.risk;
+    return answer?.type !== "noul" || answer.noul >= RISK_THRESHOLD;
+  } catch {
+    return true; // unknown risk counts as risky: the fallback is optional, a wrong payment is not
+  }
+}
+
 // The literal hints already failed to match, so they are framed as a failed
 // search: stated as requirements they pushed Jev to "none" (measured: "the
 // login link" + text "sign in" -> none @0.88; framed as a failed search -> the
@@ -56,6 +82,7 @@ export async function resolveTargetWithJev(
   hints: TargetHints,
   tabId: number | undefined,
   ask = askJev,
+  options: { sideEffect?: boolean } = {},
 ): Promise<Resolution> {
   // One budget for the whole fallback (page read + Jev + verify), so a failing
   // action costs at most timeoutMs extra. Running out throws: callers fall back
@@ -87,9 +114,23 @@ export async function resolveTargetWithJev(
   const pick = (key: string) => (key === "none" ? undefined : candidates[Number(key.slice(1))]);
   const chosen = pick(answer.choice);
   if (chosen && answer.confidence >= config.minConfidence) {
-    const check = await verifyElement(context, tabId, page.url, chosen, remaining());
+    const budget = remaining();
+    const riskyFloor = Math.max(config.minConfidence, RISKY_MIN_CONFIDENCE);
+    const [check, risky] = await Promise.all([
+      verifyElement(context, tabId, page.url, chosen, budget),
+      options.sideEffect && answer.confidence < riskyFloor
+        ? looksIrreversible(ask, config, page, chosen, budget)
+        : Promise.resolve(false),
+    ]);
     if (!check.ok) {
       return { kind: "unresolved", hint: `Jev chose ${describeElement(chosen)} but did not act: ${check.reason} since the page was read.` };
+    }
+    if (risky) {
+      // No selector here on purpose: acting on a risky guess should take a deliberate, direct target.
+      return {
+        kind: "unresolved",
+        hint: `Jev picked ${describeElement(chosen)} (confidence ${answer.confidence.toFixed(2)}) but did not act: it may pay, delete, send, or publish something, and a guessed target for that needs confidence ${riskyFloor}. If it is the one you mean, target it directly by ref from a snapshot.`,
+      };
     }
     return { kind: "resolved", selector: chosen.selector, description: describeElement(chosen), confidence: answer.confidence };
   }

@@ -218,18 +218,27 @@ The target development server must listen on an interface reachable from the rem
 
 #### Optional TypeSafe Jev decision layer
 
-MyBrowser can use [TypeSafe Jev](https://docs.typesafe.ai), a fast decision model, so agents spend fewer turns finding elements and inspecting pages. It is off unless you add a `jev` section with your TypeSafe API key to `~/.mybrowser/config.json`:
+MyBrowser can use [TypeSafe Jev](https://docs.typesafe.ai), a fast decision model, so agents spend fewer turns finding elements and inspecting pages. It is off until you save a [TypeSafe API key](https://console.typesafe.ai/keys) on the machine that runs the MCP server:
+
+```bash
+npx -y @alessai/mybrowser-mcp jev set-key   # prompts for the key, checks it, saves it
+npx -y @alessai/mybrowser-mcp jev status    # shows whether it is on (key masked)
+npx -y @alessai/mybrowser-mcp jev remove    # deletes the key and turns it off
+```
+
+The key is stored in the `jev` section of `~/.mybrowser/config.json` (mode 0600). You can also edit that section by hand:
 
 ```json
 "jev": { "apiKey": "apikey_...", "vision": false, "minConfidence": 0.7, "timeoutMs": 3000 }
 ```
 
-Only `apiKey` is required. With it configured:
+Restart your MCP client (and the hub, if you run one) after changing it. With a key configured:
 
-1. When `browser_click`, `browser_type`, `browser_hover`, or `browser_select_option` cannot find the requested element, Jev picks the matching visible element from the agent's description and the action runs once against it. It only acts at or above `minConfidence`, and only after re-checking that the element is still the one Jev chose; otherwise the original error is returned with Jev's best guess and its selector. Failures that happen after an action started are never retried.
-2. `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second. A multiple-choice question can also be answered with "none of the options", and answers below `minConfidence` are marked `UNCERTAIN`. With `"vision": true`, it can also send a viewport screenshot (`visual: true`).
+1. When `browser_click`, `browser_type`, `browser_hover`, or `browser_select_option` cannot find the requested element, Jev picks the matching visible element from the agent's description and the action runs once against it. It only acts at or above `minConfidence`, and only after re-checking that the element is still the one Jev chose; otherwise the original error is returned with Jev's best guess. If the guessed element looks like it would pay, delete, send, or publish something, a click, selection, or typed submit needs confidence 0.9 instead. Failures that happen after an action started are never retried.
+2. When a targeted action fails again on the same tab within two minutes, the error gets one line saying what seems to block the page: a popup, a sign-in wall, a CAPTCHA, loading, an error message, or nothing (so the target is probably not on the page). It never acts on that advice itself.
+3. `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second. `checks` asks up to 8 questions in one call, and `preset: "state"` adds checks for a popup, sign-in wall, CAPTCHA, error message, or loading state. A multiple-choice question can also be answered with "none of the options", and answers below `minConfidence` are marked `UNCERTAIN`. With `"vision": true`, it can also send a viewport screenshot (`visual: true`).
 
-If TypeSafe is slow or unreachable, the original error is returned; the fallback adds at most `timeoutMs` to a failing action and nothing to one that succeeds. **Privacy:** the fallback sends the page title, the page URL and link targets with query values and long path tokens removed, and the names of visible elements. Field values are never used as names, except the labels of buttons. `browser_check` also sends up to 12,000 characters of the page's text. Screenshots are sent only when `vision` is enabled and `visual` is requested. In a measurement run on 50 element descriptions across 8 public sites, Jev chose the right element every time and declined every absent one, in about 330 ms per decision.
+If TypeSafe is slow or unreachable, the original error is returned. The fallback adds at most `timeoutMs` to a failing action, and a repeated failure can add another `timeoutMs` for the page check; nothing is added to an action that succeeds. **Privacy:** the fallback sends the page title, the page URL and link targets with query values and long path tokens removed, and the names of visible elements. Field values are never used as names, except the labels of buttons. `browser_check` and the repeated-failure check also send up to 12,000 characters of the page's text. Screenshots are sent only when `vision` is enabled and `visual` is requested. In a measurement run on 50 element descriptions across 8 public sites, Jev chose the right element every time and declined every absent one, in about 330 ms per decision. The risk check flagged 12 of 12 paying, deleting, or posting buttons and none of 12 ordinary ones.
 
 ## MCP Config Example
 

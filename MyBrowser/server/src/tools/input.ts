@@ -2,6 +2,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Context } from "../context.js";
 import { isTargetResolutionError, resolveTargetWithJev, type Resolution } from "../jev/resolve.js";
+import { diagnoseRepeatedFailure, noteTargetedSuccess } from "../jev/stuck.js";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
@@ -30,9 +31,28 @@ const RETARGETED_KEYS = ["ref", "mark", "role", "name", "matchText", "label"] as
  * element (a pre-action failure, so nothing was clicked or typed) and the Jev
  * layer is configured, Jev picks the element from the visible page using the
  * agent's description and the tool is sent once more against that element.
- * Any Jev failure falls back to the original error.
+ * Any Jev failure falls back to the original error. A repeated failure on the
+ * same tab also gets one line of advice about what is blocking the page.
  */
 async function dispatchTargeted(
+  context: Context,
+  toolName: string,
+  validated: z.infer<typeof ElementTarget> & Record<string, unknown>,
+): Promise<string> {
+  try {
+    const note = await dispatchWithFallback(context, toolName, validated);
+    noteTargetedSuccess(context, validated.tabId);
+    return note;
+  } catch (error) {
+    if (context.jev) {
+      const advice = await diagnoseRepeatedFailure(context, context.jev, validated.tabId);
+      if (advice && error instanceof Error) error.message = `${error.message} ${advice}`;
+    }
+    throw error;
+  }
+}
+
+async function dispatchWithFallback(
   context: Context,
   toolName: string,
   validated: z.infer<typeof ElementTarget> & Record<string, unknown>,
@@ -47,7 +67,10 @@ async function dispatchTargeted(
     if (!config || !isTargetResolutionError(error)) throw error;
     let resolution: Resolution;
     try {
-      resolution = await resolveTargetWithJev(context, config, validated, tabId);
+      // Typing without submitting and hovering cannot pay, delete, or send anything.
+      const sideEffect = toolName === "browser_click" || toolName === "browser_select_option"
+        || (toolName === "browser_type" && validated.submit === true);
+      resolution = await resolveTargetWithJev(context, config, validated, tabId, undefined, { sideEffect });
     } catch {
       throw error;
     }

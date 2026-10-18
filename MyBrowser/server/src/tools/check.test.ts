@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "../context.js";
 import type { JevConfig } from "../jev/config.js";
-import { check } from "./check.js";
+import { check, STATE_PRESET } from "./check.js";
 
 const config: JevConfig = { apiKey: "apikey_test", vision: false, minConfidence: 0.7, timeoutMs: 3000 };
 const page = {
@@ -21,7 +21,11 @@ function contextWith(jev: JevConfig | undefined) {
 }
 
 function respond(answer: unknown, model = "jev-1.13.0") {
-  return vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ model, answers: { answer } }) }));
+  return respondAll({ q1: answer }, model);
+}
+
+function respondAll(answers: Record<string, unknown>, model = "jev-1.13.0") {
+  return vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ model, answers }) }));
 }
 
 const sentBody = (fetchMock: ReturnType<typeof vi.fn>) =>
@@ -37,7 +41,7 @@ describe("browser_check", () => {
     const result = await check.handle(context, { question: "Is the user signed in?" });
     expect((result.content[0] as { text: string }).text).toMatch(/^YES — probability of yes: 0\.96\n\(jev-1\.13\.0, \d+ms\)$/);
     const body = sentBody(fetchMock);
-    expect(body.questions.answer).toEqual({ type: "noul", instructions: "Is the user signed in?" });
+    expect(body.questions).toEqual({ q1: { type: "noul", instructions: "Is the user signed in?" } });
     expect(body.state).toMatchObject({
       visible_text: "Welcome back, Saif. Plan: Pro",
       interactive_elements: ['button "Sign out" in header'],
@@ -52,7 +56,7 @@ describe("browser_check", () => {
     const result = await check.handle(context, { question: "Which plan is active?", options: ["Free", "Pro", "Team"] });
     expect((result.content[0] as { text: string }).text)
       .toContain('Answer: "Pro" (confidence 0.88). Probabilities — Free: 0.10, Pro: 0.88, Team: 0.02, none of these: 0.00');
-    expect(sentBody(fetchMock).questions.answer.criteria).toEqual({
+    expect(sentBody(fetchMock).questions.q1.criteria).toEqual({
       o1: "Free", o2: "Pro", o3: "Team", none: "None of the listed answers applies",
     });
   });
@@ -96,6 +100,44 @@ describe("browser_check", () => {
 
   it("explains how to enable it when no key is configured", async () => {
     const { context } = contextWith(undefined);
-    await expect(check.handle(context, { question: "Is it loaded?" })).rejects.toThrow(/jev section/);
+    await expect(check.handle(context, { question: "Is it loaded?" })).rejects.toThrow(/mybrowser-mcp jev set-key/);
+  });
+
+  it("answers several questions and the state preset in one request", async () => {
+    const fetchMock = respondAll({
+      q1: { type: "noul", noul: 0.97 },
+      q2: { type: "choice", choice: "o1", confidence: 0.9, probabilities: { o1: 0.9, o2: 0.1, none: 0 } },
+      q3: { type: "noul", noul: 0.91 },
+      q4: { type: "noul", noul: 0.02 },
+      q5: { type: "noul", noul: 0.01 },
+      q6: { type: "noul", noul: 0.03 },
+      q7: { type: "noul", noul: 0.5 },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { context, sendSocketMessage } = contextWith(config);
+    const result = await check.handle(context, {
+      checks: [{ question: "Is the user signed in?" }, { question: "Which plan?", options: ["Pro", "Free"] }],
+      preset: "state",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sendSocketMessage).toHaveBeenCalledTimes(1);
+    expect(Object.keys(sentBody(fetchMock).questions)).toEqual(["q1", "q2", "q3", "q4", "q5", "q6", "q7"]);
+    expect(sentBody(fetchMock).questions.q3.instructions).toBe(STATE_PRESET[0]!.question);
+    expect((result.content[0] as { text: string }).text).toMatch(new RegExp([
+      "^1\\. Is the user signed in\\? — YES — probability of yes: 0\\.97",
+      '2\\. Which plan\\? — Answer: "Pro" \\(confidence 0\\.90\\)\\. Probabilities — Pro: 0\\.90, Free: 0\\.10, none of these: 0\\.00',
+      "3\\. Popup or overlay covering the page — YES — probability of yes: 0\\.91",
+      "4\\. Sign-in wall — NO — probability of yes: 0\\.02",
+      "5\\. CAPTCHA or human check — NO — probability of yes: 0\\.01",
+      "6\\. Error message — NO — probability of yes: 0\\.03",
+      "7\\. Still loading — UNCERTAIN — probability of yes: 0\\.50",
+      "\\(jev-1\\.13\\.0, \\d+ms\\)$",
+    ].join("\n")));
+  });
+
+  it("rejects a call with nothing to ask, or options without a question", async () => {
+    const { context } = contextWith(config);
+    await expect(check.handle(context, {})).rejects.toThrow(/question, checks, or a preset/);
+    await expect(check.handle(context, { preset: "state", options: ["a", "b"] })).rejects.toThrow(/options needs a question/);
   });
 });

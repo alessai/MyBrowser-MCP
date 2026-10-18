@@ -102,6 +102,33 @@
         </div>
       </section>
 
+      <section class="guide-section" aria-labelledby="jev-title">
+        <div class="section-number" aria-hidden="true">3</div>
+        <div class="section-body">
+          <p class="section-kicker">Optional</p>
+          <h2 id="jev-title">Fewer retries with a TypeSafe key</h2>
+          <p>
+            With a <a href="https://console.typesafe.ai/keys" target="_blank" rel="noreferrer">TypeSafe API key</a>,
+            MyBrowser can find the element your AI described when its first attempt misses, and answer
+            quick questions about a page. Run this on the machine where the MCP server runs, then paste
+            your key when asked:
+          </p>
+          <div class="command-row">
+            <code>npx -y @alessai/mybrowser-mcp jev set-key</code>
+            <button
+              class="copy-button"
+              type="button"
+              data-copy="npx -y @alessai/mybrowser-mcp jev set-key"
+              aria-label="Copy the TypeSafe key command"
+            >Copy</button>
+          </div>
+          <p class="quiet-note">
+            Restart your AI client afterwards. Page titles, link paths, and element names are sent to
+            TypeSafe only when this is on; <code>jev remove</code> turns it off.
+          </p>
+        </div>
+      </section>
+
       <section class="support-section" aria-label="Connection troubleshooting">
         <details>
           <summary>Not connected?</summary>

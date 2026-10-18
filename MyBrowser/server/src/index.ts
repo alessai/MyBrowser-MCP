@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { program } from "commander";
 import { fileURLToPath } from "node:url";
 import { loadOrCreateConfig, validateConfigOverrides } from "./auth.js";
+import { registerJevCommands } from "./jev/commands.js";
 import { readJevConfig } from "./jev/config.js";
 import {
   allowsAutomaticLocalExtensionAuth,
@@ -130,10 +131,13 @@ program
   });
 
 registerTraceCommands(program);
+registerJevCommands(program);
 
 try {
   await program.parseAsync(process.argv);
 } catch (error) {
-  console.error(`[MyBrowser MCP] Startup failed: ${formatStartupFailure(error)}`);
+  // Subcommands (jev, trace) are not a server start; don't call their errors startup failures.
+  const label = program.commands.some((command) => command.name() === process.argv[2]) ? "Error" : "Startup failed";
+  console.error(`[MyBrowser MCP] ${label}: ${formatStartupFailure(error)}`);
   process.exitCode = 1;
 }
