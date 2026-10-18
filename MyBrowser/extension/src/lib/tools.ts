@@ -584,7 +584,8 @@ const handlers: Record<string, ToolHandler> = {
     const submit = args.submit as boolean | undefined;
     const tabId = ctx.getTabId();
     await ensureContentScript(tabId);
-    const selector = await resolveTarget(tabId, args);
+    // `text` is the string to type, not a targeting hint (targeting uses matchText).
+    const selector = await resolveTarget(tabId, { ...args, text: undefined });
     await runPreActionFallback(
       async () => {
         await scrollIntoView(tabId, selector);

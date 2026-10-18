@@ -143,6 +143,24 @@ describe('network idle readiness', () => {
   });
 });
 
+describe('typing target resolution', () => {
+  it('never uses the text being typed to find the field', async () => {
+    const { ctx } = context();
+    await ctx.setTabId(555_555);
+    const sendMessage = vi.fn(async (_tabId: number, message: { type: string; payload?: unknown }) => (
+      message.type === 'resolveElement' ? { __error: true, message: 'stop after resolution' } : { ok: true }
+    ));
+    vi.stubGlobal('chrome', { tabs: { sendMessage } });
+
+    await expect(handleTool('browser_type', { element: 'email field', name: 'Email', text: 'saif@example.com', submit: false }, ctx))
+      .rejects.toThrow('stop after resolution');
+
+    const resolveCall = sendMessage.mock.calls.find(([, message]) => message.type === 'resolveElement');
+    expect(resolveCall![1].payload).toEqual({ name: 'Email' });
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('console assertion truthfulness', () => {
   it('fails when console capture was never enabled for the tab', () => {
     expect(evaluateConsoleNoErrors(999_999)).toEqual({
