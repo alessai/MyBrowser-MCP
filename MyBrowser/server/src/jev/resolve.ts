@@ -25,14 +25,20 @@ export type Resolution =
 
 const MAX_OPTIONS = 254; // Choice allows 255 including "none"
 
+// The literal hints already failed to match, so they are framed as a failed
+// search: stated as requirements they pushed Jev to "none" (measured: "the
+// login link" + text "sign in" -> none @0.88; framed as a failed search -> the
+// login link @0.94).
 function intentOf(hints: TargetHints): string {
-  const extra = [
+  const tried = [
     hints.role && `role ${hints.role}`,
     hints.name && `name "${hints.name}"`,
     hints.matchText && `text "${hints.matchText}"`,
     hints.label && `label "${hints.label}"`,
   ].filter(Boolean);
-  return extra.length ? `${hints.element} (${extra.join(", ")})` : hints.element;
+  return tried.length
+    ? `${hints.element}. The agent also searched for ${tried.join(", ")}, which did not match any element exactly`
+    : hints.element;
 }
 
 function capCandidates(elements: PageElement[], intent: string): PageElement[] {

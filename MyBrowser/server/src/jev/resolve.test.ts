@@ -69,6 +69,15 @@ describe("resolveTargetWithJev", () => {
     });
   });
 
+  it("frames the agent's failed literal hints as a failed search, not a requirement", async () => {
+    const { context } = contextWith();
+    const ask = answering("e0", 0.9);
+    await resolveTargetWithJev(context, config, { element: "the issues tab", role: "tab", matchText: "Bugs" }, undefined, ask);
+    expect(ask.mock.calls[0]![1].questions.target!.instructions).toContain(
+      '"the issues tab. The agent also searched for role tab, text "Bugs", which did not match any element exactly"',
+    );
+  });
+
   it("does not act below the confidence threshold but hands back its best guess", async () => {
     const { context } = contextWith();
     const result = await resolveTargetWithJev(
