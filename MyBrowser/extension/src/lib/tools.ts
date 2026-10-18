@@ -447,6 +447,8 @@ function stripDataUrlPrefix(dataUrl: string): string {
   return dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
 }
 
+const SCREENSHOT_FRAME_TIMEOUT_MS = 10_000;
+
 async function captureScreenshot(tabId: number): Promise<string> {
   // Always use CDP for consistent sizing — capture at reduced scale to avoid
   // multi-MB images that timeout during WS transfer. This skips the content
@@ -463,17 +465,30 @@ async function captureScreenshot(tabId: number): Promise<string> {
   const scaleY = SCREENSHOT_MAX_HEIGHT / clientHeight;
   const scale = Math.min(scaleX, scaleY, 1); // Never upscale
 
-  const result = await sendCommand<{ data: string }>(tabId, 'Page.captureScreenshot', {
-    format: 'png',
-    clip: {
-      x: 0,
-      y: 0,
-      width: Math.ceil(clientWidth),
-      height: Math.ceil(clientHeight),
-      scale,
-    },
-    captureBeyondViewport: true,
-  });
+  // Page.captureScreenshot waits for a rendered frame. When the compositor stops
+  // drawing the window (minimized, or on a hidden Wayland workspace), that frame
+  // never arrives, so fail with the cause instead of the 30s transport timeout.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    sendCommand<{ data: string }>(tabId, 'Page.captureScreenshot', {
+      format: 'png',
+      clip: {
+        x: 0,
+        y: 0,
+        width: Math.ceil(clientWidth),
+        height: Math.ceil(clientHeight),
+        scale,
+      },
+      captureBeyondViewport: true,
+    }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(
+        `SCREENSHOT_NO_FRAME: the browser rendered no frame within ${SCREENSHOT_FRAME_TIMEOUT_MS / 1000}s. ` +
+        'Its window is probably minimized or on a hidden workspace or virtual desktop. Show the window, ' +
+        'or let it keep rendering while hidden (Hyprland: window rule render_unfocused = true).',
+      )), SCREENSHOT_FRAME_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
 
   return `data:image/png;base64,${result!.data}`;
 }

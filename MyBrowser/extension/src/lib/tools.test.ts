@@ -161,6 +161,35 @@ describe('typing target resolution', () => {
   });
 });
 
+describe('screenshot when the browser produces no frames', () => {
+  it('fails fast with the reason instead of hanging until the transport timeout', async () => {
+    vi.useFakeTimers();
+    const { ctx } = context();
+    await ctx.setTabId(444_444);
+    vi.stubGlobal('chrome', {
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+        sendCommand: vi.fn((_target: unknown, method: string) => (
+          method === 'Page.getLayoutMetrics'
+            ? Promise.resolve({ cssVisualViewport: { clientWidth: 1280, clientHeight: 800 } })
+            : method === 'Page.captureScreenshot'
+              ? new Promise(() => undefined) // compositor never delivers a frame
+              : Promise.resolve(undefined)
+        )),
+      },
+    });
+    try {
+      const outcome = handleTool('browser_screenshot', {}, ctx).then(() => 'resolved', (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(12_000);
+      await expect(outcome).resolves.toMatch(/^SCREENSHOT_NO_FRAME: .*minimized or on a hidden workspace/);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('console assertion truthfulness', () => {
   it('fails when console capture was never enabled for the tab', () => {
     expect(evaluateConsoleNoErrors(999_999)).toEqual({
