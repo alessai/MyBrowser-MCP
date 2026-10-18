@@ -45,7 +45,8 @@ async function dispatchTargeted(
     return note;
   } catch (error) {
     if (context.jev) {
-      const advice = await diagnoseRepeatedFailure(context, context.jev, validated.tabId);
+      const hadCandidate = (error as { jevCandidate?: boolean } | undefined)?.jevCandidate === true;
+      const advice = await diagnoseRepeatedFailure(context, context.jev, validated.tabId, undefined, undefined, { hadCandidate });
       if (advice && error instanceof Error) error.message = `${error.message} ${advice}`;
     }
     throw error;
@@ -75,7 +76,10 @@ async function dispatchWithFallback(
       throw error;
     }
     if (resolution.kind === "unresolved") {
-      if (resolution.hint && error instanceof Error) error.message = `${error.message} ${resolution.hint}`;
+      if (resolution.hint && error instanceof Error) {
+        error.message = `${error.message} ${resolution.hint}`;
+        (error as { jevCandidate?: boolean }).jevCandidate = true;
+      }
       throw error;
     }
     const retry: Record<string, unknown> = { ...payload, selector: resolution.selector };

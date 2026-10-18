@@ -48,6 +48,7 @@ export async function diagnoseRepeatedFailure(
   tabId: number | undefined,
   ask = askJev,
   now: () => number = Date.now,
+  options: { hadCandidate?: boolean } = {},
 ): Promise<string | undefined> {
   let failures = lastFailure.get(context);
   if (!failures) {
@@ -80,6 +81,8 @@ export async function diagnoseRepeatedFailure(
     });
     const answer = response.answers.cause;
     if (answer?.type !== "choice" || answer.confidence < config.minConfidence) return undefined;
+    // "Not on the page" would contradict a candidate the fallback just offered.
+    if (answer.choice === "none" && options.hadCandidate) return undefined;
     const cause = CAUSES[answer.choice];
     return cause ? `Page check after repeated failures (confidence ${answer.confidence.toFixed(2)}): ${cause.advice}` : undefined;
   } catch {

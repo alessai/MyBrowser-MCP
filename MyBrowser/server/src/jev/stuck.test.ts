@@ -55,6 +55,15 @@ describe("diagnoseRepeatedFailure", () => {
     expect(ask).not.toHaveBeenCalled();
   });
 
+  it("does not say the target is missing when the fallback just offered a candidate", async () => {
+    const { context, ask } = setup("none", 0.95);
+    let clock = 0;
+    const run = (hadCandidate: boolean) => diagnoseRepeatedFailure(context, config, 1, ask, () => (clock += 1000), { hadCandidate });
+    await run(true);
+    expect(await run(true)).toBeUndefined();
+    expect(await run(false)).toMatch(/target is probably not on it/);
+  });
+
   it("says nothing when Jev is unsure or unreachable", async () => {
     const unsure = setup("overlay", 0.4);
     await unsure.diagnose();

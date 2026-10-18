@@ -72,6 +72,10 @@ describe("resolveTargetWithJev", () => {
       e0: 'link "Issues" in nav -> /alessai/MyBrowser-MCP/issues',
       none: expect.any(String),
     });
+    expect(request.state).toEqual({
+      page: { title: page.title, url: page.url },
+      elements: ['link "Issues" in nav -> /alessai/MyBrowser-MCP/issues', 'button "Star alessai/MyBrowser-MCP" in header'],
+    });
   });
 
   it("frames the agent's failed literal hints as a failed search, not a requirement", async () => {

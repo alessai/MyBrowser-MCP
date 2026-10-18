@@ -100,7 +100,11 @@ export async function resolveTargetWithJev(
   const criteria: Record<string, string> = Object.fromEntries(candidates.map((e, i) => [`e${i}`, describeElement(e)]));
   criteria.none = "No element on the page matches the target";
   const response = await ask({ ...config, timeoutMs: remaining() }, {
-    state: { page: { title: page.title, url: page.url } },
+    // The element list must also be in the state: with only the page title, Jev
+    // answered "none" for 3 of 5 obvious targets on a 4-element page (all 5
+    // right at ~1.00 with the list). On the 50-target set the list raised
+    // confident picks from 39 to 41 of 42 with no wrong action (Oct 18 2026).
+    state: { page: { title: page.title, url: page.url }, elements: Object.values(criteria).slice(0, -1) },
     questions: {
       target: {
         type: "choice",
