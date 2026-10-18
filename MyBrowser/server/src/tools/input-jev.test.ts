@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "../context.js";
 import type { JevConfig } from "../jev/config.js";
+import { VERIFY_MARKER } from "../jev/page.js";
 import { click, type } from "./input.js";
 
 const config: JevConfig = { apiKey: "apikey_test", vision: false, minConfidence: 0.7, timeoutMs: 3000 };
@@ -24,15 +25,17 @@ function jevAnswer(choice: string, confidence: number) {
   }));
 }
 
-function contextFor(firstError: Error | undefined, jev: JevConfig | undefined = config) {
+function contextFor(firstError: Error | undefined, jev: JevConfig | undefined = config, verified: unknown = { ok: true }) {
   let attempts = 0;
-  const sendSocketMessage = vi.fn(async (kind: string, _payload?: unknown) => {
+  const sendSocketMessage = vi.fn(async (kind: string, payload?: unknown) => {
     if (kind === "browser_click" || kind === "browser_type") {
       attempts += 1;
       if (attempts === 1 && firstError) throw firstError;
       return undefined;
     }
-    if (kind === "browser_eval") return { value: page };
+    if (kind === "browser_eval") {
+      return { value: String((payload as { code: string }).code).startsWith(VERIFY_MARKER) ? verified : page };
+    }
     if (kind === "browser_snapshot") return "- button \"Sign in\" [ref=e1]";
     return "value";
   });
@@ -102,6 +105,16 @@ describe("Jev element-resolution fallback", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
     const { context, sendSocketMessage } = contextFor(new Error("No element found with text 'Sign in'."));
     await expect(click.handle(context, { element: "Sign in", matchText: "Sign in" })).rejects.toThrow("No element found with text 'Sign in'.");
+    expect(actionCalls(sendSocketMessage, "browser_click")).toHaveLength(1);
+  });
+
+  it("does not act when the page changed between the read and the retry", async () => {
+    vi.stubGlobal("fetch", jevAnswer("e1", 0.95));
+    const { context, sendSocketMessage } = contextFor(
+      new Error("No element found with text 'Sign in'."), config, { ok: false, reason: "the page URL changed" },
+    );
+    await expect(click.handle(context, { element: "Sign in", matchText: "Sign in" }))
+      .rejects.toThrow("No element found with text 'Sign in'. Jev chose button \"Sign in\" in form but did not act: the page URL changed since the page was read.");
     expect(actionCalls(sendSocketMessage, "browser_click")).toHaveLength(1);
   });
 

@@ -43,7 +43,8 @@ export const check: Tool = {
       ? {
         type: "choice",
         instructions: question,
-        criteria: Object.fromEntries(options.map((option, i) => [`o${i + 1}`, option])),
+        // Without "none" Jev must pick one of the agent's options even when none applies.
+        criteria: { ...Object.fromEntries(options.map((option, i) => [`o${i + 1}`, option])), none: "None of the listed answers applies" },
       }
       : { type: "noul", instructions: question };
     const response = await askJev(config, {
@@ -62,11 +63,14 @@ export const check: Tool = {
       const verdict = answer.noul >= 0.8 ? "YES" : answer.noul <= 0.2 ? "NO" : "UNCERTAIN";
       text = `${verdict} — probability of yes: ${answer.noul.toFixed(2)}`;
     } else if (answer?.type === "choice" && options) {
-      const chosen = options[Number(answer.choice.slice(1)) - 1] ?? answer.choice;
-      const ranked = options
-        .map((option, i) => `${option}: ${(answer.probabilities?.[`o${i + 1}`] ?? 0).toFixed(2)}`)
-        .join(", ");
-      text = `Answer: "${chosen}" (confidence ${answer.confidence.toFixed(2)}). Probabilities — ${ranked}`;
+      const chosen = answer.choice === "none" ? undefined : options[Number(answer.choice.slice(1)) - 1];
+      const ranked = [
+        ...options.map((option, i) => `${option}: ${(answer.probabilities?.[`o${i + 1}`] ?? 0).toFixed(2)}`),
+        `none of these: ${(answer.probabilities?.none ?? 0).toFixed(2)}`,
+      ].join(", ");
+      const verdict = chosen === undefined ? "none of the options applies" : `"${chosen}"`;
+      const prefix = answer.confidence >= config.minConfidence ? "Answer" : "UNCERTAIN — leaning";
+      text = `${prefix}: ${verdict} (confidence ${answer.confidence.toFixed(2)}). Probabilities — ${ranked}`;
     } else {
       throw new Error("JEV_BAD_RESPONSE");
     }

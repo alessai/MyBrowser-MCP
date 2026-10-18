@@ -1,7 +1,7 @@
 import type { Context } from "../context.js";
 import { askJev } from "./client.js";
 import type { JevConfig } from "./config.js";
-import { describeElement, readPageState, type PageElement } from "./page.js";
+import { describeElement, readPageState, verifyElement, type PageElement } from "./page.js";
 
 // Messages the extension's element resolver throws before any input is sent.
 // Only these are safe to retry: the first attempt never acted on the page.
@@ -57,13 +57,22 @@ export async function resolveTargetWithJev(
   tabId: number | undefined,
   ask = askJev,
 ): Promise<Resolution> {
-  const page = await readPageState(context, tabId);
+  // One budget for the whole fallback (page read + Jev + verify), so a failing
+  // action costs at most timeoutMs extra. Running out throws: callers fall back
+  // to the original error.
+  const deadline = Date.now() + config.timeoutMs;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("JEV_DEADLINE");
+    return ms;
+  };
+  const page = await readPageState(context, tabId, { timeoutMs: remaining() });
   const intent = intentOf(hints);
   const candidates = capCandidates(page.elements, intent);
   if (candidates.length === 0) return { kind: "unresolved" };
   const criteria: Record<string, string> = Object.fromEntries(candidates.map((e, i) => [`e${i}`, describeElement(e)]));
   criteria.none = "No element on the page matches the target";
-  const response = await ask(config, {
+  const response = await ask({ ...config, timeoutMs: remaining() }, {
     state: { page: { title: page.title, url: page.url } },
     questions: {
       target: {
@@ -78,6 +87,10 @@ export async function resolveTargetWithJev(
   const pick = (key: string) => (key === "none" ? undefined : candidates[Number(key.slice(1))]);
   const chosen = pick(answer.choice);
   if (chosen && answer.confidence >= config.minConfidence) {
+    const check = await verifyElement(context, tabId, page.url, chosen, remaining());
+    if (!check.ok) {
+      return { kind: "unresolved", hint: `Jev chose ${describeElement(chosen)} but did not act: ${check.reason} since the page was read.` };
+    }
     return { kind: "resolved", selector: chosen.selector, description: describeElement(chosen), confidence: answer.confidence };
   }
   const [bestKey, bestP] = Object.entries(answer.probabilities ?? {})

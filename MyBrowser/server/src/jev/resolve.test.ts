@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "../context.js";
 import type { JevConfig } from "./config.js";
 import type { JevRequest, JevResponse } from "./client.js";
+import { VERIFY_MARKER } from "./page.js";
 import { isTargetResolutionError, resolveTargetWithJev } from "./resolve.js";
 
 const config: JevConfig = { apiKey: "k", vision: false, minConfidence: 0.7, timeoutMs: 3000 };
@@ -14,10 +15,14 @@ const page = {
   ],
 };
 
-function contextWith(value: unknown = page) {
-  const sendSocketMessage = vi.fn(async () => ({ value }));
+function contextWith(value: unknown = page, verified: unknown = { ok: true }) {
+  const sendSocketMessage = vi.fn(async (_kind: string, payload: { code: string }) => (
+    { value: payload.code.startsWith(VERIFY_MARKER) ? verified : value }
+  ));
   return { context: { sendSocketMessage } as unknown as Context, sendSocketMessage };
 }
+
+afterEach(() => vi.restoreAllMocks());
 
 function answering(choice: string, confidence: number, probabilities: Record<string, number> = {}) {
   return vi.fn(async (_config: JevConfig, _request: JevRequest): Promise<JevResponse> => ({
@@ -58,7 +63,7 @@ describe("resolveTargetWithJev", () => {
       description: 'button "Star alessai/MyBrowser-MCP" in header',
       confidence: 0.93,
     });
-    expect(sendSocketMessage).toHaveBeenCalledWith("browser_eval", expect.objectContaining({ tabId: 7 }));
+    expect(sendSocketMessage).toHaveBeenCalledWith("browser_eval", expect.objectContaining({ tabId: 7 }), { timeoutMs: 3000 });
     const request = ask.mock.calls[0]![1];
     const question = request.questions.target!;
     expect(question.type).toBe("choice");
@@ -109,6 +114,39 @@ describe("resolveTargetWithJev", () => {
     const criteria = (ask.mock.calls[0]![1].questions.target as { criteria: Record<string, string> }).criteria;
     expect(criteria.e0).toBe('textbox "(no text)" near "username:" in form');
     expect(result).toMatchObject({ kind: "resolved", selector: "#p" });
+  });
+
+  it("does not act when the chosen element changed after the page was read", async () => {
+    const { context, sendSocketMessage } = contextWith(page, { ok: false, reason: "a different element is now at that position" });
+    const result = await resolveTargetWithJev(context, config, { element: "star this repository" }, 7, answering("e1", 0.95));
+    expect(result).toEqual({
+      kind: "unresolved",
+      hint: 'Jev chose button "Star alessai/MyBrowser-MCP" in header but did not act: a different element is now at that position since the page was read.',
+    });
+    const verify = sendSocketMessage.mock.calls.find(([, payload]) => payload.code.startsWith(VERIFY_MARKER));
+    expect(verify![1].code).toContain(JSON.stringify("div > button:nth-of-type(3)"));
+    expect(verify![1].code).toContain(JSON.stringify("Star alessai/MyBrowser-MCP"));
+  });
+
+  it("bounds the whole fallback by jev.timeoutMs", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const sendSocketMessage = vi.fn(async (_kind: string, payload: { code: string }, _options?: { timeoutMs: number }) => {
+      if (payload.code.startsWith(VERIFY_MARKER)) return { value: { ok: true } };
+      now += 1_000; // the page read takes 1s of the 3s budget
+      return { value: page };
+    });
+    const context = { sendSocketMessage } as unknown as Context;
+    const ask = answering("e1", 0.93);
+    await resolveTargetWithJev(context, config, { element: "star" }, undefined, ask);
+    expect(sendSocketMessage.mock.calls[0]![1]).toMatchObject({ timeout: 3000 });
+    expect(sendSocketMessage.mock.calls[0]![2]).toEqual({ timeoutMs: 3000 });
+    expect(ask.mock.calls[0]![0].timeoutMs).toBe(2000);
+
+    now += 5_000; // the next fallback's page read alone exceeds the budget
+    sendSocketMessage.mockImplementation(async () => { now += 3_000; return { value: page }; });
+    await expect(resolveTargetWithJev(context, config, { element: "star" }, undefined, ask)).rejects.toThrow("JEV_DEADLINE");
+    expect(ask).toHaveBeenCalledTimes(1);
   });
 
   it("caps very large pages at the Choice option limit", async () => {

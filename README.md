@@ -226,10 +226,10 @@ MyBrowser can use [TypeSafe Jev](https://docs.typesafe.ai), a fast decision mode
 
 Only `apiKey` is required. With it configured:
 
-1. When `browser_click`, `browser_type`, `browser_hover`, or `browser_select_option` cannot find the requested element, Jev picks the matching visible element from the agent's description and the action runs once against it. It only acts at or above `minConfidence`; otherwise the original error is returned with Jev's best guess and its selector. Failures that happen after an action started are never retried.
-2. `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second. With `"vision": true`, it can also send a viewport screenshot (`visual: true`).
+1. When `browser_click`, `browser_type`, `browser_hover`, or `browser_select_option` cannot find the requested element, Jev picks the matching visible element from the agent's description and the action runs once against it. It only acts at or above `minConfidence`, and only after re-checking that the element is still the one Jev chose; otherwise the original error is returned with Jev's best guess and its selector. Failures that happen after an action started are never retried.
+2. `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second. A multiple-choice question can also be answered with "none of the options", and answers below `minConfidence` are marked `UNCERTAIN`. With `"vision": true`, it can also send a viewport screenshot (`visual: true`).
 
-If TypeSafe is slow or unreachable, tools behave exactly as without the key. **Privacy:** the page URL, title, visible text, and visible element names (and screenshots, only when `vision` is enabled) are sent to TypeSafe. In a measurement run on 50 element descriptions across 8 public sites, Jev chose the right element every time and declined every absent one, in about 330 ms per decision.
+If TypeSafe is slow or unreachable, the original error is returned; the fallback adds at most `timeoutMs` to a failing action and nothing to one that succeeds. **Privacy:** the fallback sends the page title, the page URL and link targets with query values and long path tokens removed, and the names of visible elements. Field values are never used as names, except the labels of buttons. `browser_check` also sends up to 12,000 characters of the page's text. Screenshots are sent only when `vision` is enabled and `visual` is requested. In a measurement run on 50 element descriptions across 8 public sites, Jev chose the right element every time and declined every absent one, in about 330 ms per decision.
 
 ## MCP Config Example
 
