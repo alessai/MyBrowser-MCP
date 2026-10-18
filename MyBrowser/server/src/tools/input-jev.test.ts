@@ -109,7 +109,7 @@ describe("Jev element-resolution fallback", () => {
     vi.stubGlobal("fetch", jevAnswer("e1", 0.5));
     const { context, sendSocketMessage } = contextFor(new Error("No element found with text 'Login'."));
     await expect(click.handle(context, { element: "Login", matchText: "Login" }))
-      .rejects.toThrow(/No element found with text 'Login'\. Jev's best guess \(confidence 0\.50.*form > button/);
+      .rejects.toThrow(/No element found with text 'Login'\. Jev's best guess \(probability 0\.50, answer confidence 0\.50; acts only at confidence >= 0\.7\).*form > button/);
     expect(actionCalls(sendSocketMessage, "browser_click")).toHaveLength(1);
   });
 });

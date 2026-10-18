@@ -85,8 +85,10 @@ export async function resolveTargetWithJev(
     .sort((a, b) => b[1] - a[1])[0] ?? [];
   const best = bestKey ? pick(bestKey) : undefined;
   if (!best || (bestP ?? 0) < 0.2) return { kind: "unresolved" };
+  // Jev reports a per-option probability and a separate answer confidence; the
+  // action gate uses confidence, so show both to keep the refusal explainable.
   return {
     kind: "unresolved",
-    hint: `Jev's best guess (confidence ${bestP!.toFixed(2)}, below the ${config.minConfidence} action threshold): ${describeElement(best)} — selector: ${best.selector}`,
+    hint: `Jev's best guess (probability ${bestP!.toFixed(2)}, answer confidence ${answer.confidence.toFixed(2)}; acts only at confidence >= ${config.minConfidence}): ${describeElement(best)} — selector: ${best.selector}`,
   };
 }
