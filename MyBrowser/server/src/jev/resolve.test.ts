@@ -98,6 +98,19 @@ describe("resolveTargetWithJev", () => {
     expect(result).toEqual({ kind: "unresolved" });
   });
 
+  it("describes unnamed fields by their row text", async () => {
+    const elements = [
+      { role: "textbox", name: "", near: "username:", region: "form", href: "", selector: "#u" },
+      { role: "textbox", name: "", near: "password:", region: "form", href: "", selector: "#p" },
+    ];
+    const { context } = contextWith({ ...page, elements });
+    const ask = answering("e1", 0.9);
+    const result = await resolveTargetWithJev(context, config, { element: "the password box" }, undefined, ask);
+    const criteria = (ask.mock.calls[0]![1].questions.target as { criteria: Record<string, string> }).criteria;
+    expect(criteria.e0).toBe('textbox "(no text)" near "username:" in form');
+    expect(result).toMatchObject({ kind: "resolved", selector: "#p" });
+  });
+
   it("caps very large pages at the Choice option limit", async () => {
     const elements = Array.from({ length: 400 }, (_, i) => ({ role: "link", name: `Item ${i}`, region: "", href: "", selector: `#i${i}` }));
     elements[350] = { role: "button", name: "Checkout now", region: "", href: "", selector: "#checkout" };

@@ -6,6 +6,8 @@ export interface PageElement {
   region: string;
   href: string;
   selector: string;
+  /** Row/container text for unnamed elements, e.g. an unlabeled input's "username:" cell. */
+  near?: string;
 }
 
 export interface PageState {
@@ -31,6 +33,7 @@ function pageStateScript(includeText: boolean): string {
     return clean(el.getAttribute('aria-label') || byId || lab || el.innerText || el.getAttribute('placeholder') || el.getAttribute('title') || el.querySelector?.('img[alt]')?.alt || el.getAttribute('alt') || el.value || '');
   };
   const roleOf = (el) => el.getAttribute('role') || ({A:'link',BUTTON:'button',SELECT:'combobox',TEXTAREA:'textbox',SUMMARY:'button'}[el.tagName]) || (el.tagName === 'INPUT' ? ({checkbox:'checkbox',radio:'radio',submit:'button',button:'button',search:'searchbox'}[el.type] || 'textbox') : el.tagName.toLowerCase());
+  const nearOf = (el) => { const row = el.closest('tr,li,label,p,fieldset'); return row ? clean(row.innerText).slice(0, 60) : ''; };
   const region = (el) => { const r = el.closest('nav,header,footer,aside,main,dialog,[role=navigation],[role=banner],[role=contentinfo],[role=search],[role=dialog],form,table'); return r ? (r.getAttribute('role') || r.tagName.toLowerCase()) : ''; };
   const unique = (s) => { try { return document.querySelectorAll(s).length === 1; } catch { return false; } };
   const cssPath = (el) => {
@@ -55,7 +58,9 @@ function pageStateScript(includeText: boolean): string {
     const top = document.elementFromPoint(Math.min(W - 1, Math.max(0, r.left + r.width / 2)), Math.min(H - 1, Math.max(0, r.top + r.height / 2)));
     if (top && top !== el && !el.contains(top) && !top.contains(el)) continue;
     const href = el.getAttribute('href') || '';
-    out.push({ role: roleOf(el), name: nameOf(el), region: region(el), href: href.startsWith('javascript') ? '' : href.slice(0, 120), selector: cssPath(el) });
+    const name = nameOf(el);
+    const near = name ? '' : nearOf(el);
+    out.push({ role: roleOf(el), name, region: region(el), href: href.startsWith('javascript') ? '' : href.slice(0, 120), selector: cssPath(el), ...(near ? { near } : {}) });
   }
   return { url: location.href, title: document.title, ${includeText ? "text: (document.body?.innerText || '').slice(0, 12000), " : ""}elements: out };
 })()`;
@@ -80,5 +85,5 @@ export async function readPageState(
 }
 
 export function describeElement(e: PageElement): string {
-  return `${e.role} "${e.name || "(no text)"}"${e.region ? ` in ${e.region}` : ""}${e.href ? ` -> ${e.href}` : ""}`;
+  return `${e.role} "${e.name || "(no text)"}"${e.near ? ` near "${e.near}"` : ""}${e.region ? ` in ${e.region}` : ""}${e.href ? ` -> ${e.href}` : ""}`;
 }
