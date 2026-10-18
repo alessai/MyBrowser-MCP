@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import type { Context } from "../context.js";
+import { isTargetResolutionError, resolveTargetWithJev, type Resolution } from "../jev/resolve.js";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
@@ -20,6 +22,45 @@ const ElementTarget = TabIdParam.extend({
   matchText: z.string().optional().describe("Visible text content to match on the element"),
   label: z.string().optional().describe("Form field label text"),
 });
+
+const RETARGETED_KEYS = ["ref", "mark", "role", "name", "matchText", "label"] as const;
+
+/**
+ * Send a targeted input tool. When the extension's resolver cannot find the
+ * element (a pre-action failure, so nothing was clicked or typed) and the Jev
+ * layer is configured, Jev picks the element from the visible page using the
+ * agent's description and the tool is sent once more against that element.
+ * Any Jev failure falls back to the original error.
+ */
+async function dispatchTargeted(
+  context: Context,
+  toolName: string,
+  validated: z.infer<typeof ElementTarget> & Record<string, unknown>,
+): Promise<string> {
+  const { tabId, ...rest } = validated;
+  const payload: Record<string, unknown> = tabId !== undefined ? { ...rest, tabId } : rest;
+  try {
+    await context.sendSocketMessage(toolName, payload);
+    return "";
+  } catch (error) {
+    const config = context.jev;
+    if (!config || !isTargetResolutionError(error)) throw error;
+    let resolution: Resolution;
+    try {
+      resolution = await resolveTargetWithJev(context, config, validated, tabId);
+    } catch {
+      throw error;
+    }
+    if (resolution.kind === "unresolved") {
+      if (resolution.hint && error instanceof Error) error.message = `${error.message} ${resolution.hint}`;
+      throw error;
+    }
+    const retry: Record<string, unknown> = { ...payload, selector: resolution.selector };
+    for (const key of RETARGETED_KEYS) delete retry[key];
+    await context.sendSocketMessage(toolName, retry);
+    return ` (resolved by Jev to ${resolution.description}, confidence ${resolution.confidence.toFixed(2)})`;
+  }
+}
 
 const ClickArgs = ElementTarget;
 
@@ -65,13 +106,11 @@ export const click: Tool = {
   },
   handle: async (context, params) => {
     const validated = ClickArgs.parse(params);
-    const { tabId, ...rest } = validated;
-    const payload = tabId !== undefined ? { ...rest, tabId } : rest;
-    await context.sendSocketMessage("browser_click", payload);
-    const snapshot = await captureAriaSnapshot(context, "", tabId);
+    const note = await dispatchTargeted(context, "browser_click", validated);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
     return {
       content: [
-        { type: "text", text: `Clicked "${validated.element}"` },
+        { type: "text", text: `Clicked "${validated.element}"${note}` },
         ...snapshot.content,
       ],
     };
@@ -86,13 +125,11 @@ export const type: Tool = {
   },
   handle: async (context, params) => {
     const validated = TypeArgs.parse(params);
-    const { tabId, ...rest } = validated;
-    const payload = tabId !== undefined ? { ...rest, tabId } : rest;
-    await context.sendSocketMessage("browser_type", payload);
-    const snapshot = await captureAriaSnapshot(context, "", tabId);
+    const note = await dispatchTargeted(context, "browser_type", validated);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
     return {
       content: [
-        { type: "text", text: `Typed "${validated.text}" into "${validated.element}"` },
+        { type: "text", text: `Typed "${validated.text}" into "${validated.element}"${note}` },
         ...snapshot.content,
       ],
     };
@@ -107,13 +144,11 @@ export const hover: Tool = {
   },
   handle: async (context, params) => {
     const validated = HoverArgs.parse(params);
-    const { tabId, ...rest } = validated;
-    const payload = tabId !== undefined ? { ...rest, tabId } : rest;
-    await context.sendSocketMessage("browser_hover", payload);
-    const snapshot = await captureAriaSnapshot(context, "", tabId);
+    const note = await dispatchTargeted(context, "browser_hover", validated);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
     return {
       content: [
-        { type: "text", text: `Hovered over "${validated.element}"` },
+        { type: "text", text: `Hovered over "${validated.element}"${note}` },
         ...snapshot.content,
       ],
     };
@@ -164,13 +199,11 @@ export const selectOption: Tool = {
   },
   handle: async (context, params) => {
     const validated = SelectOptionArgs.parse(params);
-    const { tabId, ...rest } = validated;
-    const payload = tabId !== undefined ? { ...rest, tabId } : rest;
-    await context.sendSocketMessage("browser_select_option", payload);
-    const snapshot = await captureAriaSnapshot(context, "", tabId);
+    const note = await dispatchTargeted(context, "browser_select_option", validated);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
     return {
       content: [
-        { type: "text", text: `Selected option in "${validated.element}"` },
+        { type: "text", text: `Selected option in "${validated.element}"${note}` },
         ...snapshot.content,
       ],
     };

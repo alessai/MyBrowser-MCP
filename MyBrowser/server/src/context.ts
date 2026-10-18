@@ -23,6 +23,7 @@ import {
   type TransferChunkMessage,
 } from "./transfers/registry.js";
 import type { TelemetryManager } from "./telemetry/manager.js";
+import type { JevConfig } from "./jev/config.js";
 import type { TelemetryErrorCategory } from "./telemetry/types.js";
 
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
@@ -74,6 +75,8 @@ export interface BrowserInfo {
 
 export class Context {
   readonly localUrlHost?: string;
+  /** Optional TypeSafe Jev decision layer; undefined keeps every tool on its original path. */
+  jev?: JevConfig;
 
   constructor(readonly telemetry?: TelemetryManager, localUrlHost?: string) {
     this.localUrlHost = localUrlHost === undefined ? undefined : validateLocalUrlHost(localUrlHost);

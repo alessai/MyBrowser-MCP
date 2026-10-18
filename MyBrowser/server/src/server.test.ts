@@ -262,6 +262,33 @@ describe("production server diagnostics privacy", () => {
   });
 });
 
+describe("production server Jev decision layer", () => {
+  async function toolNames(jev?: { apiKey: string; vision: boolean; minConfidence: number; timeoutMs: number }) {
+    const server = await createServerWithTools({
+      host: "127.0.0.1",
+      port: await freePort(),
+      token,
+      sessionId: `jev-${jev ? "on" : "off"}-session`,
+      ...(jev ? { jev } : {}),
+    });
+    mcpServers.push(server);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "jev-tool-test", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      return (await client.listTools()).tools.map((tool) => tool.name);
+    } finally {
+      await client.close();
+    }
+  }
+
+  it("lists browser_check only when a TypeSafe key is configured", async () => {
+    expect(await toolNames()).not.toContain("browser_check");
+    expect(await toolNames({ apiKey: "k", vision: false, minConfidence: 0.7, timeoutMs: 3000 })).toContain("browser_check");
+  });
+});
+
 describe("production server local URL policy", () => {
   it("advertises the canonical device host on every URL-opening tool", async () => {
     const port = await freePort();

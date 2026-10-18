@@ -72,6 +72,8 @@ import { performance } from "./tools/performance.js";
 import { upload } from "./tools/upload.js";
 import { download } from "./tools/download.js";
 import { fetchFile } from "./tools/fetch-file.js";
+import { check } from "./tools/check.js";
+import type { JevConfig } from "./jev/config.js";
 import { clipboard } from "./tools/clipboard.js";
 
 // Annotated notes (user-initiated visual feedback inbox)
@@ -100,6 +102,8 @@ export interface ServerOptions {
   onHubUnavailable?: () => void;
   allowLocalExtensionWithoutToken?: boolean;
   localUrlHost?: string;
+  /** Optional TypeSafe Jev decision layer (element-resolution fallback + browser_check). */
+  jev?: JevConfig;
 }
 
 export let stateManager: IStateManager;
@@ -213,6 +217,7 @@ function schemaDigest(tools: readonly Tool[]): string {
 async function createServerWithTelemetry(options: ServerOptions, telemetry: TelemetryManager) {
   const { host, port, token } = options;
   const context = new Context(telemetry, options.localUrlHost);
+  context.jev = options.jev;
 
   const incarnation = new SessionIncarnation(options.sessionId);
   let sessionId = incarnation.sessionId;
@@ -290,7 +295,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     },
   });
 
-  const tools: Tool[] = [
+  const allTools: Tool[] = [
     // Navigation (with auto-snapshot)
     navigate(true), goBack(true), goForward(true), wait,
     // Input
@@ -329,7 +334,12 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     browserLock, browserUnlock, browserLocksList,
     // Diagnostics and support
     browserDiagnostics, browserSupportBundle,
+    // Jev decision layer
+    check,
   ];
+  // browser_check is only listed when configured, so agents never see a tool that always fails.
+  // Telemetry coverage still checks every defined tool.
+  const tools = context.jev ? allTools : allTools.filter((tool) => tool !== check);
   const urlPolicy = context.localUrlHost
     ? `Canonical host for services on this MCP device: ${context.localUrlHost}. Do not use localhost, 127.0.0.1, or ::1; they are rewritten to this host.`
     : undefined;
@@ -338,7 +348,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
       ? { ...schema, description: `${schema.description} ${urlPolicy}` }
       : schema
   ));
-  assertTelemetryPolicyCoverage(tools.map((tool) => {
+  assertTelemetryPolicyCoverage(allTools.map((tool) => {
     const properties = tool.schema.inputSchema.properties;
     return {
       name: tool.schema.name,

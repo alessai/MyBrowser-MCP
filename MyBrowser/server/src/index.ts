@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { program } from "commander";
 import { fileURLToPath } from "node:url";
 import { loadOrCreateConfig, validateConfigOverrides } from "./auth.js";
+import { readJevConfig } from "./jev/config.js";
 import {
   allowsAutomaticLocalExtensionAuth,
   assertLoopbackHubHost,
@@ -97,6 +98,7 @@ program
       sessionName: opts.session,
       telemetryConfig,
       localUrlHost: config.localUrlHost,
+      jev: readJevConfig(config.jev),
       requireHub: opts.hub === true,
       clientOnly: opts.ensureHub === true,
       allowLocalExtensionWithoutToken: localExtensionAuth,

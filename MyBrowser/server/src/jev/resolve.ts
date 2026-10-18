@@ -1,0 +1,86 @@
+import type { Context } from "../context.js";
+import { askJev } from "./client.js";
+import type { JevConfig } from "./config.js";
+import { describeElement, readPageState, type PageElement } from "./page.js";
+
+// Messages the extension's element resolver throws before any input is sent.
+// Only these are safe to retry: the first attempt never acted on the page.
+const RESOLUTION_ERROR = /No element targeting params provided|Empty descriptor|No element found (matching|with text|near)|No form element found|No visible element found for selector|Element with (ref|mark) .* not found or not visible/;
+
+export function isTargetResolutionError(error: unknown): boolean {
+  return RESOLUTION_ERROR.test(error instanceof Error ? error.message : String(error));
+}
+
+export interface TargetHints {
+  element: string;
+  role?: string;
+  name?: string;
+  matchText?: string;
+  label?: string;
+}
+
+export type Resolution =
+  | { kind: "resolved"; selector: string; description: string; confidence: number }
+  | { kind: "unresolved"; hint?: string };
+
+const MAX_OPTIONS = 254; // Choice allows 255 including "none"
+
+function intentOf(hints: TargetHints): string {
+  const extra = [
+    hints.role && `role ${hints.role}`,
+    hints.name && `name "${hints.name}"`,
+    hints.matchText && `text "${hints.matchText}"`,
+    hints.label && `label "${hints.label}"`,
+  ].filter(Boolean);
+  return extra.length ? `${hints.element} (${extra.join(", ")})` : hints.element;
+}
+
+function capCandidates(elements: PageElement[], intent: string): PageElement[] {
+  if (elements.length <= MAX_OPTIONS) return elements;
+  // shortcut: lexical pre-filter for very large pages, upgrade if long-tail pages miss targets
+  const words = new Set(intent.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
+  const score = (e: PageElement) => describeElement(e).toLowerCase().split(/\W+/).filter((w) => words.has(w)).length;
+  const keep = new Set(elements.map((e, i) => ({ i, s: score(e) })).sort((a, b) => b.s - a.s).slice(0, MAX_OPTIONS).map((x) => x.i));
+  return elements.filter((_, i) => keep.has(i));
+}
+
+export async function resolveTargetWithJev(
+  context: Context,
+  config: JevConfig,
+  hints: TargetHints,
+  tabId: number | undefined,
+  ask = askJev,
+): Promise<Resolution> {
+  const page = await readPageState(context, tabId);
+  const intent = intentOf(hints);
+  const candidates = capCandidates(page.elements, intent);
+  if (candidates.length === 0) return { kind: "unresolved" };
+  const criteria: Record<string, string> = Object.fromEntries(candidates.map((e, i) => [`e${i}`, describeElement(e)]));
+  criteria.none = "No element on the page matches the target";
+  const response = await ask(config, {
+    state: { page: { title: page.title, url: page.url } },
+    questions: {
+      target: {
+        type: "choice",
+        instructions: `Which page element best matches this target: "${intent}"? Choose none if no element matches.`,
+        criteria,
+      },
+    },
+  });
+  const answer = response.answers.target;
+  if (!answer || answer.type !== "choice") return { kind: "unresolved" };
+  const pick = (key: string) => (key === "none" ? undefined : candidates[Number(key.slice(1))]);
+  const chosen = pick(answer.choice);
+  if (chosen && answer.confidence >= config.minConfidence) {
+    return { kind: "resolved", selector: chosen.selector, description: describeElement(chosen), confidence: answer.confidence };
+  }
+  const [bestKey, bestP] = Object.entries(answer.probabilities ?? {})
+    .filter(([key]) => key !== "none")
+    .sort((a, b) => b[1] - a[1])[0] ?? [];
+  const best = bestKey ? pick(bestKey) : undefined;
+  if (!best || (bestP ?? 0) < 0.2) return { kind: "unresolved" };
+  return {
+    kind: "unresolved",
+    hint: `Jev's best guess (confidence ${bestP!.toFixed(2)}, below the ${config.minConfidence} action threshold): ${describeElement(best)} — selector: ${best.selector}`,
+  };
+}

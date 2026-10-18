@@ -122,6 +122,12 @@ const policies = {
   }),
   browser_upload: immutablePolicy({ selector: TARGET, files: count(128), tabId: TAB_ID, localFiles: pseudonym("local_path") }),
   browser_fetch_file: immutablePolicy({ url: url(), filename: pseudonym("download_name") }),
+  browser_check: immutablePolicy({
+    question: textLength(),
+    options: count(20),
+    visual: boolean(),
+    tabId: TAB_ID,
+  }),
   browser_drag: immutablePolicy({
     startElement: TARGET,
     startRef: TARGET,

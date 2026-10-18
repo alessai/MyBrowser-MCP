@@ -230,6 +230,19 @@ function resolveByRoleAndName(role: string, name?: string): Element[] {
   return candidates;
 }
 
+function resolveByAccessibleName(name: string): Element[] {
+  const exact: Element[] = [];
+  const partial: Element[] = [];
+  const query = normalizeText(name);
+  for (const el of document.querySelectorAll(INTERACTIVE_SELECTORS)) {
+    if (!isVisibleAndInteractable(el)) continue;
+    const accName = getAccessibleName(el);
+    if (!textMatches(accName, name)) continue;
+    (normalizeText(accName) === query ? exact : partial).push(el);
+  }
+  return [...exact, ...partial];
+}
+
 function resolveByLabel(labelText: string, placeholderText?: string): Element[] {
   const candidates: Element[] = [];
 
@@ -475,6 +488,19 @@ export function resolveElementFromDescriptor(descriptor: ElementDescriptor): Ele
     if (el) return el;
     throw new Error(
       `No element found near '${descriptor.near}' matching ${describeDescriptor(descriptor)}.`,
+    );
+  }
+
+  // 8. Accessible name alone — the tools advertise `name` as "Accessible name or
+  // partial match", so a name without a role must not fall through to an error.
+  if (descriptor.name) {
+    const candidates = resolveByAccessibleName(descriptor.name);
+    const el = pickByIndex(candidates, descriptor.index);
+    if (el) return el;
+    const visible = collectVisibleNames();
+    throw new Error(
+      `No element found matching ${describeDescriptor(descriptor)}.` +
+      (visible.length > 0 ? ` Visible interactive elements: [${visible.join(', ')}]` : ''),
     );
   }
 

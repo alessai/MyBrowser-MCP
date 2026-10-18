@@ -216,6 +216,21 @@ The extension's **Local URL Host** remains a browser-specific fallback for serve
 
 The target development server must listen on an interface reachable from the remote browser. Binding it only to `127.0.0.1` prevents remote access even after the URL is rewritten; bind it to the Tailscale interface or another intentionally exposed trusted-network interface.
 
+#### Optional TypeSafe Jev decision layer
+
+MyBrowser can use [TypeSafe Jev](https://docs.typesafe.ai), a fast decision model, so agents spend fewer turns finding elements and inspecting pages. It is off unless you add a `jev` section with your TypeSafe API key to `~/.mybrowser/config.json`:
+
+```json
+"jev": { "apiKey": "apikey_...", "vision": false, "minConfidence": 0.7, "timeoutMs": 3000 }
+```
+
+Only `apiKey` is required. With it configured:
+
+1. When `browser_click`, `browser_type`, `browser_hover`, or `browser_select_option` cannot find the requested element, Jev picks the matching visible element from the agent's description and the action runs once against it. It only acts at or above `minConfidence`; otherwise the original error is returned with Jev's best guess and its selector. Failures that happen after an action started are never retried.
+2. `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second. With `"vision": true`, it can also send a viewport screenshot (`visual: true`).
+
+If TypeSafe is slow or unreachable, tools behave exactly as without the key. **Privacy:** the page URL, title, visible text, and visible element names (and screenshots, only when `vision` is enabled) are sent to TypeSafe. In a measurement run on 50 element descriptions across 8 public sites, Jev chose the right element every time and declined every absent one, in about 330 ms per decision.
+
 ## MCP Config Example
 
 Example MCP config using the installed binary:

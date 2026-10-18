@@ -108,6 +108,19 @@ Normal tool calls use the shared default browser. Use `select_browser` only when
 
 Finalized sessions are cleaned automatically. If a browser was disconnected during finalization, its extension reports only the bounded session IDs in its local temporary-tab registry during authenticated reconnect; the hub returns only the matching in-memory finalized sessions. Older compatible peers can omit these optional fields. Temporary ownership uses `chrome.storage.session`; exact survival across a full browser restart or extension reload depends on Chrome. An abrupt hub-process death loses in-memory finalization tombstones, and explicit cleanup intentionally leaves no standing intent for a disconnected browser because it could otherwise close newer tabs after reconnect.
 
+## Optional TypeSafe Jev Decision Layer
+
+Add a `jev` section with your [TypeSafe](https://docs.typesafe.ai) API key to `~/.mybrowser/config.json` to enable it:
+
+```json
+"jev": { "apiKey": "apikey_...", "vision": false, "minConfidence": 0.7, "timeoutMs": 3000 }
+```
+
+- When a click, type, hover, or select cannot find its element, Jev picks the matching visible element from the agent's description and the action runs once against it (only at or above `minConfidence`; never after an action has started).
+- `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second; `"vision": true` also allows screenshots.
+
+Without the key, or when TypeSafe is unreachable, tools behave exactly as before. The page URL, title, visible text, and visible element names (and screenshots, only with `vision`) are sent to TypeSafe.
+
 ## Optional Internal Tool Telemetry
 
 Internal telemetry is an opt-in, local development aid for diagnosing repeated tool calls, retries, loops, no-op actions, and recovery behavior. It is **off by default**. MyBrowser does not enable it from an environment variable or send it over the network.

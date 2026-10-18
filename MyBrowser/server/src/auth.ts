@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { validateLocalUrlHost } from "./local-url.js";
 import { readTransfersConfig, type TransfersConfig } from "./transfers/retention.js";
+import { readJevConfig } from "./jev/config.js";
 
 export interface Config {
   token: string;
@@ -19,6 +20,8 @@ export interface Config {
   port: number;
   localUrlHost?: string;
   transfers?: TransfersConfig;
+  /** Raw optional jev section; validated by readJevConfig. */
+  jev?: unknown;
 }
 
 export const CONFIG_DIR = join(homedir(), ".mybrowser");
@@ -69,6 +72,7 @@ export function validateConfigOverrides(config: Partial<Config>): void {
   // Transfers config fails closed like localUrlHost: an invalid section
   // aborts startup instead of degrading to defaults.
   if (config.transfers !== undefined) readTransfersConfig(config.transfers);
+  if (config.jev !== undefined) readJevConfig(config.jev);
 }
 
 function readCreatedConfig(): Config {
@@ -86,12 +90,14 @@ function readCreatedConfig(): Config {
 function applyOverrides(config: Config, overrides?: Partial<Config>): Config {
   const localUrlHost = overrides?.localUrlHost ?? config.localUrlHost;
   const transfers = overrides?.transfers ?? config.transfers;
+  const jev = overrides?.jev ?? config.jev;
   return {
     token: overrides?.token ?? config.token,
     host: overrides?.host ?? config.host,
     port: overrides?.port ?? config.port,
     ...(localUrlHost === undefined ? {} : { localUrlHost }),
     ...(transfers === undefined ? {} : { transfers }),
+    ...(jev === undefined ? {} : { jev }),
   };
 }
 
