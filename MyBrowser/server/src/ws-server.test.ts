@@ -4008,7 +4008,11 @@ describe("real loopback session topology", () => {
       role: "client",
       protocolVersion: PROTOCOL_VERSION,
     }));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait (bounded) for the rejection while the persist is still blocked; a fixed
+    // 10 ms sleep raced on slow CI runners even though the rejection was correct.
+    for (let waited = 0; !latePersistSettled && waited < 1_000; waited += 10) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     const persistRejectedBeforeDrain = latePersistSettled;
     allowPersist.resolve(true);
     const latePersist = await latePersistResult;
