@@ -22,6 +22,7 @@ import {
   encodeBase64,
   isTransferAck,
   isTransferBegin,
+  TRANSFER_ID_RE,
   isTransferChunk,
   sanitizeTransferFilename,
   sha256Hex,
@@ -287,6 +288,22 @@ function handleTransferFrame(data: string): boolean {
   }
   if (isTransferChunk(parsed)) {
     void handleUploadChunk(parsed);
+    return true;
+  }
+  // Reject a begin we can't accept instead of dropping it: a silent drop left
+  // the sender waiting the full 5-minute deadline for an ack.
+  const frame = parsed as { type?: unknown; transferId?: unknown; requestId?: unknown };
+  if (frame?.type === 'transfer_begin' && typeof frame.transferId === 'string' && TRANSFER_ID_RE.test(frame.transferId)) {
+    sendTransferAck({
+      transferId: frame.transferId, seq: -1, ok: false,
+      code: 'TRANSFER_BAD_BEGIN', message: 'transfer_begin failed validation (check the filename and fields)',
+    });
+    if (typeof frame.requestId === 'string') {
+      void postToBackground({
+        type: 'transfer_upload_failed',
+        payload: { transferId: frame.transferId, requestId: frame.requestId, error: 'TRANSFER_BAD_BEGIN: transfer_begin failed validation' },
+      });
+    }
     return true;
   }
   return false;

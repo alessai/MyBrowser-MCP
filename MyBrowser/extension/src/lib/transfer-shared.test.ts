@@ -188,6 +188,28 @@ const validBegin = {
   selector: 'input[type=file]',
 };
 
+// Regression (Oct 26 2026): uploads of ordinary names were silently dropped,
+// stalling the transfer for 5 minutes and crashing the MCP client.
+const REAL_NAMES = [
+  '28-09_Athar+ Cycle 2 _ Applications Report - updated links.xlsx',
+  'Holiday Photo.JPG',
+  'تقرير الربع الثالث.pdf',
+  `${'a'.repeat(250)}.pdf`,
+];
+const BAD_NAMES = ['', '.', '..', '../passwd', 'a/b.txt', 'a\\b.txt', 'tab\there.txt', `${'a'.repeat(252)}.pdf`];
+
+describe('upload frame filenames', () => {
+  it.each(REAL_NAMES)('accepts %s in begin and chunk frames', (filename) => {
+    expect(isTransferBegin({ ...validBegin, filename })).toBe(true);
+    expect(isTransferChunk({ ...validChunk, filename })).toBe(true);
+  });
+
+  it.each(BAD_NAMES)('rejects %j', (filename) => {
+    expect(isTransferBegin({ ...validBegin, filename })).toBe(false);
+    expect(isTransferChunk({ ...validChunk, filename })).toBe(false);
+  });
+});
+
 describe('isTransferBegin', () => {
   it('accepts a valid begin', () => {
     expect(isTransferBegin(validBegin)).toBe(true);

@@ -123,6 +123,9 @@ export const upload: Tool = {
         .catch((error: unknown) => {
           throw error instanceof Error ? error : new Error(String(error));
         });
+      // If the transfer fails first we throw before awaiting this; a later
+      // rejection would then be unhandled and Node would kill the process.
+      socketPromise.catch(() => {});
 
       await withTimeout(
         startUploadTransfer.call(

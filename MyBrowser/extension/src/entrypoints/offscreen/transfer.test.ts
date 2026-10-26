@@ -399,6 +399,24 @@ describe('offscreen upload reassembly', () => {
     expect(ack).toMatchObject({ transferId: 'u3', code: 'TRANSFER_SHA256_MISMATCH' });
   });
 
+  it('rejects a malformed begin at once instead of dropping it silently', async () => {
+    // A dropped begin left the server waiting 5 minutes for its ack.
+    deliver({
+      type: 'transfer_begin', v: 2, transferId: 'bad1', requestId: 'req-bad1', direction: 'upload',
+      fileIndex: 0, fileCount: 1, filename: 'tab\there.txt', mimeType: 'text/plain',
+      totalBytes: 1, totalChunks: 1, sha256: 'a'.repeat(64), targetTabId: 3, selector: 'input[type=file]',
+    });
+    await vi.waitFor(() => expect(
+      sentFrames().some((f) => f.type === 'transfer_ack' && f.transferId === 'bad1'),
+    ).toBe(true));
+    expect(sentFrames().find((f) => f.transferId === 'bad1')).toMatchObject({
+      seq: -1, ok: false, code: 'TRANSFER_BAD_BEGIN',
+    });
+    await vi.waitFor(() => expect(
+      portPost.some((m) => m.type === 'transfer_upload_failed' && (m.payload as { requestId?: string })?.requestId === 'req-bad1'),
+    ).toBe(true));
+  });
+
   it('acks TRANSFER_UNKNOWN for chunks without a begin', async () => {
     deliver({
       type: 'transfer_chunk', v: 2, transferId: 'ghost', requestId: 'req-x', seq: 0,

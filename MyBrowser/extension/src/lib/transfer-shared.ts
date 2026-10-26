@@ -15,7 +15,16 @@ export const TRANSFER_DEADLINE_MS = 290_000;
 
 export const TRANSFER_FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
-const TRANSFER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+export const TRANSFER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Names on transfer frames: the user's real file name (spaces, `+`, Arabic...)
+ * only ever becomes a File object in page memory, so it only has to be a single
+ * path segment. TRANSFER_FILENAME_RE stays the stricter rule for names that
+ * land on disk. */
+function isTransferFrameName(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 255
+    && value !== '.' && value !== '..' && !/[\u0000-\u001f\u007f/\\]/.test(value);
+}
 
 // ---------------------------------------------------------------------------
 // Base64 + hashing
@@ -156,7 +165,7 @@ export function isTransferChunk(value: unknown): value is TransferChunkMessage {
     && value.totalBytes >= 0
     && value.seq >= 0 && value.seq < value.totalChunks
     && typeof value.sha256 === 'string' && SHA256_RE.test(value.sha256)
-    && typeof value.filename === 'string' && TRANSFER_FILENAME_RE.test(value.filename)
+    && isTransferFrameName(value.filename)
     && isBoundedText(value.mimeType, 127)
     && isCanonicalBase64(value.bytesBase64)
   );
@@ -219,7 +228,7 @@ export function isTransferBegin(value: unknown): value is TransferBeginMessage {
     && isInt(value.fileIndex) && isInt(value.fileCount)
     && value.fileCount >= 1
     && value.fileIndex >= 0 && value.fileIndex < value.fileCount
-    && typeof value.filename === 'string' && TRANSFER_FILENAME_RE.test(value.filename)
+    && isTransferFrameName(value.filename)
     && isBoundedText(value.mimeType, 127)
     && isInt(value.totalChunks) && isInt(value.totalBytes)
     && value.totalChunks >= 1

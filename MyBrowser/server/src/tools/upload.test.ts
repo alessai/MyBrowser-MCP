@@ -94,6 +94,30 @@ describe("browser_upload", () => {
     expect(socketPayload.transferRequestId).toBe(transferCall[0]);
   });
 
+  it("does not leave the browser request's rejection unhandled when the transfer fails first", async () => {
+    // Regression: a failed transfer made the handler throw before awaiting the
+    // browser request; when that request rejected later, Node's unhandled
+    // rejection killed the whole MCP client process (Oct 26 2026 crashes).
+    let rejectSocket!: (error: Error) => void;
+    const context = {
+      startUploadTransfer: vi.fn(async () => {
+        throw new Error("UPLOAD_TRANSFER_TIMEOUT: simulated");
+      }),
+      sendSocketMessage: vi.fn(() => new Promise((_resolve, reject) => { rejectSocket = reject; })),
+    } as unknown as Context;
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await expect(upload.handle(context, { selector: "#file", localFiles: ["/srv/a.txt"] }))
+        .rejects.toThrow(/UPLOAD_TRANSFER_TIMEOUT/);
+      rejectSocket(new Error("TRANSFER_UPLOAD_TIMEOUT"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("tells the truth about where paths resolve and the size cap", () => {
     expect(upload.schema.description).toContain("exactly one of the two");
     expect(upload.schema.description).toContain("BROWSER's machine");
