@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>MyBrowser 2.0 plan</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/light.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">MyBrowser 2.0 plan</h1>
+</header>
+<h1 id="mybrowser-2.0-plan">MyBrowser 2.0: plan</h1>
+<p>Status: draft for review, Nov 1 2026. Branch
+<code>exp/jev-experiments</code>.</p>
+<h2 id="what-2.0-is">1. What 2.0 is</h2>
+<p>MyBrowser 1.x makes the agent take one turn per small decision: find
+the control, set it, look again to check it worked. In the Nov 1 Sampo
+Meta-ad session that pattern took about 150 of 269 turns (about 90 of
+170 working minutes). The model’s thinking, not the browser, is where
+the time went.</p>
+<p>2.0 moves those small decisions out of the agent’s turns:</p>
+<ol type="1">
+<li><strong>Bigger tools.</strong> The agent hands over a whole list
+(“check these 40 settings”, “set these 18 fields”, “wait until the
+upload is processed”) and gets one structured answer back.</li>
+<li><strong>A decision layer inside the tools.</strong> Each item is
+resolved by fast code first, then by a decision model (Jev) when code is
+unsure, then handed back to the agent when both are unsure.</li>
+<li><strong>A better page reader.</strong> It reads the whole page, with
+section, row and label context, so both code and Jev see what a person
+sees.</li>
+</ol>
+<h3 id="rules-that-apply-to-every-part-of-this-plan">Rules that apply to
+every part of this plan</h3>
+<ol type="1">
+<li><strong>Everything works without Jev.</strong> No key, no network, a
+TypeSafe outage, or a revoked key: every tool still does its job.
+Without Jev, the items code can’t settle go back to the agent as a short
+list of candidates, so the agent decides in one turn instead of several.
+Jev only makes it faster.</li>
+<li><strong>Code first, Jev second, agent last.</strong> An exact label
+match never costs a model call. Jev is asked only when code finds
+several or no candidates.</li>
+<li><strong>Values stay on this machine.</strong> Jev sees element
+roles, labels and section names. It never sees what is typed in a field,
+and the state of a control is always read from the page by code, never
+guessed by a model.</li>
+<li><strong>Side effects fail closed.</strong> Pay, delete, send and
+publish actions need high confidence and are never part of an automatic
+batch unless the agent names them explicitly.</li>
+<li><strong>Measured before switched on.</strong> Every Jev feature
+ships behind a flag and becomes default only after it passes its
+experiment gate (section 7).</li>
+<li><strong>Not tied to TypeSafe.</strong> The decision layer talks to
+any server that speaks the System One API: TypeSafe, a local open model,
+or a gateway.</li>
+</ol>
+<h3 id="what-2.0-is-not">What 2.0 is not</h3>
+<ul>
+<li>Not a fork. Same extension, hub, transport, login and tool names.
+2.0 upgrades six existing tools and adds three.</li>
+<li>Not a free-text generator. Jev cannot write text. Values the agent
+wants typed come from the agent.</li>
+<li>Not a replacement for the agent’s judgment on new screens, sign-ins,
+payments or copywriting.</li>
+</ul>
+<h2 id="evidence-this-plan-rests-on">2. Evidence this plan rests on</h2>
+<h3 id="where-the-sampo-session-spent-its-time-nov-1-1653-2026">2.1
+Where the Sampo session spent its time (Nov 1, 16:53-20:26)</h3>
+<table>
+<thead>
+<tr>
+<th>What the turn was doing</th>
+<th>Turns</th>
+<th>Minutes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Checking a setting’s state</td>
+<td>73</td>
+<td>44</td>
+</tr>
+<tr>
+<td>Setting one field or toggle</td>
+<td>44</td>
+<td>28</td>
+</tr>
+<tr>
+<td>Scrolling to find something</td>
+<td>32</td>
+<td>18</td>
+</tr>
+<tr>
+<td>Waiting or reloading</td>
+<td>10</td>
+<td>10</td>
+</tr>
+<tr>
+<td>Real decisions (copy, CTA, targeting)</td>
+<td>5</td>
+<td>4</td>
+</tr>
+<tr>
+<td>No visible reasoning (mostly mechanical)</td>
+<td>92</td>
+<td>55</td>
+</tr>
+</tbody>
+</table>
+<p>Median turn: 34 s, of which about 27 s was the model thinking. The
+280 browser steps contained 290 <code>browser_eval</code> scripts the
+agent wrote itself. Jev’s existing click fallback ran 13 times and saved
+5-10 minutes.</p>
+<h3 id="experiments-already-run-mybrowserexperimentsjev">2.2 Experiments
+already run (<code>MyBrowser/experiments/jev/</code>)</h3>
+<p>Local replica pages in headless Chromium, scored against ground
+truth.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>Task</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E1</td>
+<td>Map 41 settings to their controls</td>
+<td>Today’s page reader 72/82, with section and row context 80/82,
+<strong>0 wrong</strong>. 41 checks in about 2.7 s</td>
+</tr>
+<tr>
+<td>E1</td>
+<td>Batch size</td>
+<td>20 questions in 0.58 s; 41 rejected (too many tokens). 8 one by one
+2.3 s, batched 0.45 s</td>
+</tr>
+<tr>
+<td>E2</td>
+<td>Fill 18 fields from one list</td>
+<td>18/18, nothing else changed, 2.4 s, 4 Jev calls</td>
+</tr>
+<tr>
+<td>E3</td>
+<td>Targets below the visible area</td>
+<td>Today 1/12, whole page 12/12</td>
+</tr>
+<tr>
+<td>E3b</td>
+<td>Targets in a 250-row table</td>
+<td>Today 0/10, with row text 10/10, row-then-control 10/10</td>
+</tr>
+<tr>
+<td>E4</td>
+<td>Wait for “upload finished”</td>
+<td>Detected about 0.2 s after it happened, 0 false alarms</td>
+</tr>
+</tbody>
+</table>
+<p>Limits: replica pages, not Meta’s real DOM. Native inputs only. These
+measure Jev’s part, not turns saved in a real task.</p>
+<h3 id="research-nov-1-2026">2.3 Research (Nov 1 2026)</h3>
+<p><strong>TypeSafe’s own docs</strong> - Jev 1.14
+(<code>jev-latest</code>) is the stable model; 1.13 is what we pin
+today. - Limits: 64k tokens per request, 32k per question, up to 255
+Choice options. Our 41-question failure came from repeating the element
+list in every question. - A long-context header raises both limits to
+262k tokens, but answers are slower and less accurate. - Images can go
+in the state, in a question’s instructions, or as Choice options. Images
+and Box questions are still marked not production-ready. - Known weak
+spots: - reads questions literally; - unreliable at counting, maths and
+dates; - accuracy drops with long, irrelevant state; - can be steered by
+adversarial page text; - leans towards the first Choice option; - cannot
+generate text. - Useful patterns: - ask many questions in one request,
+including speculative ones; - set confidence thresholds by risk; -
+line-by-line search with an “is it there at all” Noul; - turn a sentence
+into a function name plus arguments (54 questions in one request); -
+rank, then re-check; - choose from candidates extracted by regex instead
+of asking for a value; - check citations; - screen messages for
+guardrails; - remember things across turns.</p>
+<p><strong>Other browser agents built on Jev</strong> - browser-use
+<code>jev-ultrafast</code>: each step asks “which operation” (click,
+type, select, scroll, wait, done, blocked) and “which target for each
+operation” in one request. A small text model writes typed values.
+Measured 7.1 s for a Google Flights search. -
+<code>jkudish/jev-browser</code>: checks finish with two independent
+judgments (“I’m done” and “the goal is met”). Reads elements from the
+DOM rather than the accessibility tree, because the tree misses inputs.
+Caps at 240 elements per step. - <code>0x7067/jev-browse</code>: stops
+loops with step-cycle, revisit and idle limits, confirms DONE
+separately, and checks freshness before acting. -
+<code>vlad-terin/jev-browser</code>: the agent plans once and Jev runs
+the loop. Large pages are split into up to 6 parallel requests. Control
+returns to the agent when a step needs help. - CodexQA and
+jev-browser-qa: Jev checks whether an action took effect on the next
+page, and a test assertion passes only if “holds” is high and
+“contradicted” is low. - Voice control at about 300 ms per decision; a
+careers-page crawler across many sites.</p>
+<p><strong>Decision models other than Jev</strong> - Amazon’s Strands
+Decider 2B is open source and serves the same <code>/v1/systemone</code>
+API. Strands reports a median of about 115 ms on an RTX 3090, and
+seconds per question on CPU. This machine has an RTX 5090 (32 GB), so a
+local decider is practical here. On JevBench it scores 0.72; I haven’t
+checked Jev’s score on the same scale. - An ONNX build of Strands
+Decider runs inside the browser on WebGPU, about 130 ms per question on
+an M3. - LiteLLM and Vercel’s gateway offer one decisions endpoint for
+several models.</p>
+<h2 id="architecture">3. Architecture</h2>
+<pre><code>MCP client (agent)
+   |  existing tools (6 upgraded) + 3 new ones
+MyBrowser server  ---------------------------------------------------------+
+   |  Engine: runs lists of items (verify / apply / find / wait / triage)  |
+   |  Resolver: code -&gt; decider -&gt; hand back                               |
+   |  Decider interface: typesafe | local System One | none                |
+   |  Policies: risk classes, thresholds, redaction                       |
+   |  Site memory: phrase -&gt; element fingerprints, per domain              |
+   |  Receipts: every decision logged locally (off by default)             |
+   +-----------------------------------------------------------------------+
+   |  hub + WebSocket (unchanged)
+Extension
+   |  Page Model v2 reader (new content script function)
+   |  existing actions (click, type, select, scroll, eval)</code></pre>
+<p>The extension stays a thin executor. All decisions, thresholds and
+calls to TypeSafe stay in the server, as in 1.4. The one extension
+addition is the Page Model v2 reader, because whole-page reads need DOM
+access.</p>
+<h2 id="building-blocks">4. Building blocks</h2>
+<h3 id="page-model-v2-the-page-reader">4.1 Page Model v2 (the page
+reader)</h3>
+<p>One read returns every interactive element on the page, not just the
+visible part. Each element has:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Source</th>
+<th>Sent to Jev?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>stable fingerprint: role + name + section + row + position among
+equals</td>
+<td>no (local key)</td>
+</tr>
+<tr>
+<td><code>role</code>, <code>name</code></td>
+<td>same rules as 1.4 (<code>aria-label</code>, <code>labelledby</code>,
+<code>&lt;label&gt;</code>, text)</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>section</code>, <code>sub</code></td>
+<td>nearest section or dialog heading; legend,
+<code>&lt;details&gt;</code> summary or <code>h3</code></td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>row</code></td>
+<td>the nearest row’s text, or the parent’s text if it is under 80
+characters</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>state</code></td>
+<td>checked, on/off, mixed, selected option, value length</td>
+<td><strong>no</strong> (read locally)</td>
+</tr>
+<tr>
+<td><code>visible</code>, <code>inView</code>,
+<code>collapsed</code></td>
+<td><code>checkVisibility()</code>, rect, closed
+<code>&lt;details&gt;</code>/collapsed accordion</td>
+<td>flags only</td>
+</tr>
+<tr>
+<td><code>widget</code></td>
+<td>native, ARIA combobox, listbox, switch, slider, date picker, rich
+editor</td>
+<td>yes (kind only)</td>
+</tr>
+<tr>
+<td><code>selector</code></td>
+<td>CSS path, re-checked before any action (as in 1.4)</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>options</code></td>
+<td>for selects and open listboxes: option labels</td>
+<td>yes, when asked about values</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Coverage work (each with a fixture and a test):</strong> 1.
+Open shadow DOM and same-origin iframes (read into the same list, tagged
+by frame). 2. Custom ARIA widgets: comboboxes that open listboxes,
+switches built from <code>div</code>s, sliders, date pickers. Meta,
+Google and Shopify admin use these instead of native inputs. 3. Lazy
+sections: an optional scroll sweep renders them, then returns to the
+original scroll position. Off by default, because it moves the page; on
+for <code>verify</code>, <code>apply</code> and <code>find</code> when
+the caller allows it. 4. Virtual lists, which only render visible rows:
+report “list continues” with a scroll target rather than pretending the
+page has been fully read. 5. Size budget: about 1,500 elements per read.
+Above that, read by section.</p>
+<p><strong>Privacy rules (from 1.4, kept):</strong> - Field values are
+never used as names. - URLs keep only the path and query keys. - Long
+tokens in paths are masked. - Editable text is never sent.</p>
+<h3 id="decider-interface-the-decision-layer">4.2 Decider interface (the
+decision layer)</h3>
+<div class="sourceCode" id="cb2"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> Decider {</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  name<span class="op">:</span> <span class="st">&quot;typesafe&quot;</span> <span class="op">|</span> <span class="st">&quot;local&quot;</span> <span class="op">|</span> <span class="st">&quot;none&quot;</span><span class="op">;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">ask</span>(state<span class="op">:</span> <span class="dt">unknown</span><span class="op">,</span> questions<span class="op">:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> Question<span class="op">&gt;,</span> opts)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>Answers<span class="op">&gt;;</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>  limits<span class="op">:</span> { perRequestTokens<span class="op">:</span> <span class="dt">number</span><span class="op">;</span> perQuestionTokens<span class="op">:</span> <span class="dt">number</span><span class="op">;</span> maxOptions<span class="op">:</span> <span class="dt">number</span> }<span class="op">;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<ul>
+<li><strong>typesafe</strong>: the 1.4 client, extended with:
+<ul>
+<li>batching to a token budget, using the response’s
+<code>usage.input_tokens</code> to calibrate the estimate;</li>
+<li>up to 4 requests in parallel when a batch has to split;</li>
+<li>retries on 429 and 529, with backoff and the
+<code>retry-after</code> header;</li>
+<li>an opt-in long-context header;</li>
+<li>the model pinned per feature, because thresholds were measured per
+version.</li>
+</ul></li>
+<li><strong>local</strong>: any <code>/v1/systemone</code> server, such
+as Strands Decider. It uses its own thresholds file, because confidence
+scales differ between models.</li>
+<li><strong>none</strong>: no model at all. Everything code can’t decide
+goes back to the agent.</li>
+</ul>
+<p>Shared behaviour: - <strong>One element list per request.</strong>
+The element list goes in the state once, and each question’s options
+name element ids. This keeps a 41-check batch under the 64k limit (today
+it repeats the list in every question). - <strong>Short-lived
+cache.</strong> Answers are reused for 30 s, keyed on state hash +
+question + model. Identical re-asks inside one tool call cost nothing. -
+<strong>Order check for risky or close calls.</strong> If the top two
+options are within a 1.5× ratio, or the action is risky, the question is
+asked again with the options reversed, and the pick must agree. This
+addresses the documented first-option bias. - <strong>Receipts.</strong>
+Each call is logged with its model, number of questions, number of
+options, latency, tokens, picks and confidences. Logging goes to the
+existing local telemetry, off by default, under the same fail-closed
+privacy rules: no labels or page text are stored, only counts and hashed
+ids.</p>
+<h3 id="resolver-v2-from-a-phrase-to-an-element">4.3 Resolver v2 (from a
+phrase to an element)</h3>
+<p>For each item (“Daily budget”, “the Threads checkbox”):</p>
+<ol type="1">
+<li><strong>Site memory.</strong> If this domain has a remembered
+fingerprint for this phrase, and that element is on the page with the
+same role and section, use it. No model call.</li>
+<li><strong>Code.</strong> Score candidates by exact or normalised name
+match, synonyms (“CTA” = “call to action”), the section named in the
+phrase, and role words in the phrase (“checkbox”, “switch”, “dropdown”).
+If exactly one candidate clearly wins, use it.</li>
+<li><strong>Decider.</strong> Ask a Choice question over the candidates
+code kept, with “none” as an option.
+<ul>
+<li>Up to 254 candidates: one question.</li>
+<li>More: two stages, first pick the section or row (as in E3b), then
+the element inside it.</li>
+</ul></li>
+<li><strong>Decision rules:</strong>
+<ul>
+<li><strong>Act:</strong> confidence at or above the threshold for the
+item’s risk class (4.6), and the order check agrees when it
+applies.</li>
+<li><strong>Hand back:</strong> anything else. The agent gets up to 5
+candidates, each with a short id it can pass straight back.</li>
+</ul></li>
+<li><strong>Learn.</strong> Store the phrase → fingerprint mapping only
+when the action’s result was verified (4.5), never on a guess.</li>
+</ol>
+<h3 id="engine-runs-a-list-of-items">4.4 Engine (runs a list of
+items)</h3>
+<p><code>verify</code>, <code>apply</code>, <code>find</code>,
+<code>wait_until</code> and <code>triage</code> are thin layers on one
+engine. The engine works in four steps: 1. One page read. 2. Resolve all
+items in as few decider calls as possible. 3. Act or read, item by item.
+4. Re-read the changed parts and report per item: <code>done</code>,
+<code>already_set</code>, <code>mismatch</code> (with the actual value),
+<code>not_found</code>, <code>needs_choice</code> (with candidates),
+<code>blocked</code> (risky, or a dialog in the way) or
+<code>error</code>.</p>
+<p>It stops early and reports when: - the page navigates unexpectedly; -
+a dialog opens that no item expects; - the same item fails twice; - the
+step budget runs out.</p>
+<h3 id="did-it-work-outcome-checks">4.5 Did it work? (outcome
+checks)</h3>
+<p>Every action result gains a short, code-computed <code>effect</code>
+line: - <code>navigated to &lt;path&gt;</code>; -
+<code>dialog opened: "&lt;title&gt;"</code>; -
+<code>value now "&lt;x&gt;"</code>; - <code>toggled on</code>; -
+<code>no change detected</code>.</p>
+<p>Code computes this from a before/after diff, so it costs no model
+call. If the caller passes
+<code>expect: "&lt;what should happen&gt;"</code>, the decider also
+answers two questions: - “does the page now show this?” - “does the page
+contradict it?”</p>
+<p>The result is <code>confirmed</code> only if the first is high and
+the second is low (the jev-browser-qa rule).</p>
+<h3 id="risk-classes-and-thresholds">4.6 Risk classes and
+thresholds</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Class</th>
+<th>Examples</th>
+<th>Code signal</th>
+<th>Act at</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>read</td>
+<td>verify, find, wait</td>
+<td>none</td>
+<td>0.7</td>
+</tr>
+<tr>
+<td>reversible</td>
+<td>toggles, fields, tabs, scroll</td>
+<td>default</td>
+<td>0.7</td>
+</tr>
+<tr>
+<td>navigation</td>
+<td>links, Next, Back</td>
+<td>role link or nav</td>
+<td>0.75</td>
+</tr>
+<tr>
+<td>irreversible</td>
+<td>pay, buy, delete, send, publish, submit, accept invitation</td>
+<td>keyword list (several languages) <strong>or</strong> the 1.4 risk
+Noul at 0.5 or above</td>
+<td>0.9, and only when the agent named the action explicitly</td>
+</tr>
+</tbody>
+</table>
+<p>Rules for the irreversible class: - It is never inferred inside
+<code>apply</code> or <code>triage</code>. - <code>triage</code> actions
+(5.7) carry an explicit <code>action</code> and a dry run by
+default.</p>
+<h3 id="site-memory">4.7 Site memory</h3>
+<p><code>browser_learn</code> / <code>browser_site_info</code> already
+persist page models per domain in <code>~/.mybrowser/sites/</code>. 2.0
+adds three kinds of entries: - <strong>Phrase map:</strong> “daily
+budget” → fingerprint, with hit and miss counts. An entry is dropped
+after 2 misses. - <strong>Quirks:</strong> “Tracking section loads on
+scroll”, “CTA is a custom listbox”. Code writes these when it detects
+them, and they change how the next read runs. - <strong>Routes:</strong>
+a recorded sequence (existing recordings) with a check before each step:
+“does the page still match this step?” (decider Noul, or a code
+fingerprint match without Jev).</p>
+<h2 id="tools">5. Tools</h2>
+<p>Six existing tools are upgraded and three are added (71 → 74). Every
+tool keeps working without a decider; section 6 lists exactly what
+changes without one.</p>
+<h3 id="browser_outline-new">5.1 <code>browser_outline</code> (new)</h3>
+<p>A compact, whole-page map for the agent: sections, then each
+element’s short <code>id</code>, role, name and current state, read by
+code. A select also lists its options.</p>
+<ul>
+<li><strong>Why:</strong> without Jev, this is what turns “scroll,
+snapshot, squint” into one call. The ids are stable fingerprints and
+work in every other tool.</li>
+<li><strong>Size:</strong> aim for 2-4k tokens, against 7k or more for a
+full snapshot. Collapsed sections show a one-line summary.</li>
+<li><strong><code>focus: "&lt;question&gt;"</code>:</strong>
+<ul>
+<li>with a decider: one Noul per section (“is this section relevant
+to…”), and only relevant sections are returned;</li>
+<li>without one: sections ranked by word overlap.</li>
+</ul></li>
+<li><strong>Test:</strong> ids stay the same across two reads; ids stay
+stable after a re-render on fixtures; token size is held to budget on
+the adset fixture.</li>
+</ul>
+<h3 id="browser_assert-upgraded-check-many-things-at-once">5.2
+<code>browser_assert</code> (upgraded): check many things at once</h3>
+<p>New check types next to the existing ones
+(<code>text_contains</code>, <code>element_visible</code> and so on): -
+<code>{ type: "setting", target: "Advantage+ audience", expect: "off" }</code>.
+<code>expect</code> can be <code>on</code>, <code>off</code>, an exact
+value, or <code>{ contains }</code>. -
+<code>{ type: "page", question: "Is a sign-in wall shown?", expect: true }</code>.</p>
+<p>Behaviour: - <code>setting</code>: - Resolver v2 finds the control. -
+Code reads its state and compares it with <code>expect</code>. - Jev
+only finds the control; it never judges the value. - <code>page</code>:
+- Answered by a decider Noul. - Without one, it returns
+<code>needs_judgment</code> with the relevant outline excerpt, for the
+agent to answer. - <strong>Output:</strong> one line per check:
+<code>pass</code>, <code>fail (actual: "on")</code>,
+<code>not_found</code>, <code>needs_choice [ids]</code> or
+<code>needs_judgment</code>. - <strong>Test:</strong> E1 runs through
+this tool. Mixed (tri-state) controls report
+<code>fail (actual: mixed)</code>.</p>
+<h3 id="browser_fill_form-upgraded-set-many-fields-at-once">5.3
+<code>browser_fill_form</code> (upgraded): set many fields at once</h3>
+<p>Fields become a list: <code>{ target, value }</code>. Values are
+typed only from what the caller passes.</p>
+<p>Behaviour by control type: - <strong>Native inputs:</strong> set as
+in 1.4. - <strong>Toggles and switches:</strong> read first, then
+clicked only if the state differs. - <strong>Selects:</strong> - an
+exact option match is used directly; - otherwise a Choice over the
+select’s options (E2: “Get a quote” → “Get quote”); - without a decider,
+the item returns <code>needs_choice</code> with the options listed. -
+<strong>Custom comboboxes and search-as-you-type fields:</strong> 1.
+open or type the value; 2. wait for the listbox; 3. pick the option,
+exactly or by Choice; 4. confirm the chip or value appeared.</p>
+<p>Options and safety: - <code>dry_run: true</code> returns the field →
+element mapping without touching anything. - <code>submit</code> stays a
+separate, explicit option, as today. - Irreversible targets are refused
+inside a fill and reported as <code>blocked</code>. - The result is
+re-read after filling, and a side-effect diff lists any other control
+that changed, as E2 checked.</p>
+<p>Test: E2, E10.</p>
+<h3 id="browser_find-upgraded-semantic-search-on-the-page">5.4
+<code>browser_find</code> (upgraded): semantic search on the page</h3>
+<p>New <code>query: "&lt;plain-language target or question&gt;"</code>
+alongside the existing role, name and text search.</p>
+<ul>
+<li><strong>With a decider:</strong>
+<ul>
+<li>a Choice over elements or text lines (line ids, as in the TypeSafe
+line-search recipe), split into two passes for long pages;</li>
+<li>plus a Noul for “is it on this page at all”.</li>
+<li>Returns the top results with <code>exists</code> and an optional
+<code>scroll_to</code>.</li>
+</ul></li>
+<li><strong>Without one:</strong> word-overlap ranking, with
+<code>exists: not_scored</code>.</li>
+</ul>
+<h3 id="browser_wait_for-upgraded-wait-for-a-described-state">5.5
+<code>browser_wait_for</code> (upgraded): wait for a described
+state</h3>
+<p>New <code>until: "&lt;plain-language condition&gt;"</code>, with
+optional <code>fail_if: "&lt;condition&gt;"</code>.</p>
+<ul>
+<li><strong>With a decider:</strong>
+<ul>
+<li>polls every 500 ms with Noul questions;</li>
+<li>requires two readings in a row at 0.7 or above (E4: about 0.7 s
+after the change, 0 false alarms);</li>
+<li>stops early if <code>fail_if</code> holds.</li>
+</ul></li>
+<li><strong>Without one:</strong> the tool says it needs a code
+condition and lists them. Agents already have those
+(<code>text_visible</code>, <code>element_visible</code>,
+<code>url_contains</code>, <code>network_idle</code>), so nothing
+becomes impossible.</li>
+</ul>
+<h3 id="browser_click-type-hover-select_option-upgraded">5.6
+<code>browser_click</code> / <code>type</code> / <code>hover</code> /
+<code>select_option</code> (upgraded)</h3>
+<ul>
+<li>Resolver v2 replaces the 1.4 fallback: site memory, then code, then
+decider, then hand back.</li>
+<li>Every result gains the code-computed <code>effect</code> line
+(4.5).</li>
+<li>Optional <code>expect: "&lt;what should happen&gt;"</code> adds the
+confirm/contradict check.</li>
+<li><code>needs_choice</code> results list up to 5 candidate ids.
+Without a decider this is the main path, and it is still one turn.</li>
+</ul>
+<h3 id="browser_triage-new-sort-a-list-on-the-page-then-act-on-it">5.7
+<code>browser_triage</code> (new): sort a list on the page, then act on
+it</h3>
+<p>This is the LinkedIn invitation job as a tool.</p>
+<p><strong>Input:</strong></p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;items&quot;</span><span class="fu">:</span> <span class="st">&quot;auto | &lt;css selector of one card&gt;&quot;</span><span class="fu">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;read&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;text&quot;</span><span class="ot">,</span> <span class="st">&quot;link&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;labels&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;ignore&quot;</span><span class="fu">:</span> <span class="st">&quot;based in India or Pakistan&quot;</span><span class="fu">,</span> <span class="dt">&quot;keep&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span> <span class="fu">},</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;rules&quot;</span><span class="fu">:</span> <span class="st">&quot;optional plain rules applied in code, e.g. country lists&quot;</span><span class="fu">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;action&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;ignore&quot;</span><span class="fu">:</span> <span class="st">&quot;the Ignore button on the card&quot;</span> <span class="fu">},</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dry_run&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;pace_ms&quot;</span><span class="fu">:</span> <span class="dv">1500</span><span class="fu">,</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;max_items&quot;</span><span class="fu">:</span> <span class="dv">500</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Steps:</strong> 1. Code finds the repeating cards: same
+structure, with siblings. 2. Code reads each card’s text and link.
+Load-more and infinite scroll are followed up to <code>max_items</code>.
+3. <strong>With a decider:</strong> - one Choice per card over
+<code>labels</code>, with “unsure” added; - the card list goes in the
+state once, and requests are batched to the token budget; - answers
+below the threshold go to <code>review</code>. 4. <strong>Without a
+decider:</strong> returns the cards with ids for the agent to label. The
+agent then calls again with <code>labels_by_id</code>. That is two turns
+for 300 cards. 5. The dry run returns buckets, with counts and every
+card. 6. <strong>Apply:</strong> - the caller passes
+<code>confirm: [ids]</code> from the dry run; - each card is re-matched
+by fingerprint before its click; - paced, with a stop on the first
+unexpected dialog; - a final count is re-read from the page.</p>
+<p><strong>Safety:</strong> - No action runs without
+<code>confirm</code>. - Irreversible actions need the action named
+explicitly and the ids confirmed. - Pacing defaults are set per
+domain.</p>
+<p>Test: E11.</p>
+<h3 id="browser_run-new-behind-a-flag-bounded-autopilot">5.8
+<code>browser_run</code> (new, behind a flag): bounded autopilot</h3>
+<p><strong>Input:</strong> <code>goal</code>, <code>values</code> (named
+strings the agent provides; typing can only use these),
+<code>allow</code> (operations), <code>max_steps</code> (default 25),
+<code>stop_when</code> (plain condition) and the risk policy.</p>
+<p><strong>Each step makes one decider request containing:</strong> 1. a
+Choice of operation: click, type <code>&lt;value name&gt;</code>,
+select, scroll, wait, done, blocked; 2. a speculative Choice of target
+for every allowed operation; 3. Nouls for “goal met”, “stuck” and “a
+dialog needs a person”.</p>
+<p><strong>Then:</strong> 1. act; 2. compute the <code>effect</code>; 3.
+check the fuses: - the same state seen 3 times; - the same URL revisited
+4 times; - 3 steps with no change; - the same failure twice.</p>
+<p><strong>Done</strong> needs both “done” and “goal met” to be
+high.</p>
+<p><strong>Control returns to the agent with a trace when:</strong> - a
+fuse trips; - confidence is low; - a risky step comes up; - a value is
+missing; - the run is done.</p>
+<p><strong>Without a decider:</strong> the tool is not listed. Anything
+it does, the agent can do with the other tools; it is a speed mode
+only.</p>
+<p>Test: E13.</p>
+<h3 id="prompt-injection-guard-automatic-not-a-tool">5.9
+Prompt-injection guard (automatic, not a tool)</h3>
+<p>Page text that reaches the agent through <code>snapshot</code>,
+<code>extract</code>, <code>outline</code>, <code>find</code> or
+<code>triage</code> is checked for text aimed at an AI agent.</p>
+<ul>
+<li><strong>Code (always on):</strong>
+<ul>
+<li>hidden text (display none, zero size, text the same colour as its
+background);</li>
+<li>phrases such as “ignore previous instructions” or “you are an
+AI”.</li>
+</ul></li>
+<li><strong>Decider (opt-in):</strong> one Noul per text block: “does
+this text address an AI system or try to give it instructions?”</li>
+<li><strong>Marking:</strong> flagged blocks are prefixed
+<code>[page text, possible instruction to AI]</code>. They are not
+removed, so nothing silently disappears.</li>
+<li><strong>Jev’s own inputs:</strong> the same flags are added to Jev’s
+state, and risky actions are never decided from flagged text.</li>
+</ul>
+<p>Test: E12.</p>
+<h3 id="vision-behind-a-flag-jev-1.14-images">5.10 Vision (behind a
+flag, Jev 1.14 images)</h3>
+<p>Used only where the DOM can’t answer:</p>
+<ul>
+<li><strong>Icon-only buttons with no name:</strong>
+<ul>
+<li>crop each candidate (padded to the 280 px minimum);</li>
+<li>send the crops as Choice options (“define options by example” in
+TypeSafe’s images guide).</li>
+</ul></li>
+<li><strong>Canvas apps, maps and video:</strong>
+<ul>
+<li>a before/after screenshot pair, with the Noul “did the expected
+change happen?”;</li>
+<li>tile search (Choice over image tiles, repeated on the chosen
+tile);</li>
+<li>Box only as a last resort, because it measured 67% in October.</li>
+</ul></li>
+<li><strong>Box clicks:</strong> a Box result is clicked only after a
+re-check on the crop confirms the target is inside it.</li>
+</ul>
+<h2 id="without-jev-what-each-tool-does">6. Without Jev: what each tool
+does</h2>
+<p>The decider setting can be <code>typesafe</code>, <code>local</code>
+or <code>none</code>. With <code>none</code> (or when TypeSafe is down),
+each tool behaves as follows. Every task stays possible; the cost is
+extra agent turns, never a missing capability.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tool</th>
+<th>With a decider</th>
+<th>Without one</th>
+<th>Extra agent turns without</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>browser_outline</code></td>
+<td><code>focus</code> filters sections by relevance</td>
+<td><code>focus</code> ranks sections by word overlap</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>browser_assert</code> <code>setting</code></td>
+<td>Phrase → control by code, then Jev</td>
+<td>Code only; unclear items come back as <code>needs_choice</code> with
+ids</td>
+<td>+1 for the unclear items, all in one turn</td>
+</tr>
+<tr>
+<td><code>browser_assert</code> <code>page</code></td>
+<td>Jev Noul</td>
+<td><code>needs_judgment</code> plus an outline excerpt</td>
+<td>+1</td>
+</tr>
+<tr>
+<td><code>browser_fill_form</code></td>
+<td>Code, then Jev for fields and fuzzy options</td>
+<td>Code; unclear fields and options come back as
+<code>needs_choice</code></td>
+<td>+1</td>
+</tr>
+<tr>
+<td><code>browser_find</code> <code>query</code></td>
+<td>Ranked results with <code>exists</code></td>
+<td>Word-overlap ranking, <code>exists: not_scored</code></td>
+<td>0-1</td>
+</tr>
+<tr>
+<td><code>browser_wait_for</code> <code>until</code></td>
+<td>Polled Noul</td>
+<td>Asks for a code condition</td>
+<td>+1 (the agent picks a code condition)</td>
+</tr>
+<tr>
+<td>click / type / hover / select</td>
+<td>Memory, code, Jev, then hand back</td>
+<td>Memory, code, then hand back</td>
+<td>+1 when code is unsure</td>
+</tr>
+<tr>
+<td><code>browser_triage</code></td>
+<td>Labels by Jev, uncertain ones to <code>review</code></td>
+<td>Cards returned for the agent to label</td>
+<td>+1 (two turns total)</td>
+</tr>
+<tr>
+<td><code>browser_run</code></td>
+<td>Autopilot loop</td>
+<td>Not listed</td>
+<td>n/a: the agent drives with the tools above</td>
+</tr>
+<tr>
+<td>Guard</td>
+<td>Code + Jev</td>
+<td>Code only</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Vision</td>
+<td>Icon matching, visual checks</td>
+<td>Screenshots for the agent, as today</td>
+<td>as today</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Startup:</strong> - With no decider configured, the tools
+above are listed with the “without” behaviour described in their
+descriptions. - A decider that fails at runtime (timeout, 429/529, 5xx)
+switches that call to the “without” path and says so in the result
+(<code>decider: unavailable</code>). - A failing decider never changes
+or blocks the action path.</p>
+<p><strong>Tests:</strong> - Every tool test runs twice: once with a
+replayed decider and once with <code>none</code>. - The
+<code>none</code> run must finish the same fixture task, with
+<code>needs_choice</code> turns allowed.</p>
+<h2 id="experiments-and-the-gates-each-feature-must-pass">7. Experiments
+and the gates each feature must pass</h2>
+<p>Experiments live in <code>MyBrowser/experiments/</code>. A
+<strong>replay cache</strong> stores decider answers keyed by request
+hash, so the suites run in CI without a key and give identical results.
+A live run refreshes the cache.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>What</th>
+<th>How</th>
+<th>Gate to switch the feature on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E5</td>
+<td>Real pages, read-only</td>
+<td>Run <code>assert setting</code> checks and <code>outline</code> on
+real pages: the Sampo Meta Ads draft, GitHub repo settings, Gmail
+settings, a Shopify admin product form. Picks are labelled by hand. No
+clicks</td>
+<td>0 wrong picks; ≥ 90% resolved without hand-back</td>
+</tr>
+<tr>
+<td>E6</td>
+<td>Agent A/B</td>
+<td>Same tasks (18-field fill + 41 checks, and a Sampo-style ad set flow
+on fixtures) done by an agent with 1.4 tools and with 2.0 tools. Count
+turns, time, errors</td>
+<td>2.0 needs ≤ 50% of the turns, with no more errors</td>
+</tr>
+<tr>
+<td>E7</td>
+<td>Thinking effort</td>
+<td>E6 baseline at medium vs high effort</td>
+<td>Informational (guides agent setup)</td>
+</tr>
+<tr>
+<td>E8</td>
+<td>Providers</td>
+<td>E1-E4 + E5 on jev-1.13, jev-1.14 and Strands Decider (local)</td>
+<td>Thresholds file per provider; local default only if 0 wrong
+picks</td>
+</tr>
+<tr>
+<td>E9</td>
+<td>Shared list and order check</td>
+<td>One element list in the state vs repeated per question; options
+reversed</td>
+<td>Same accuracy; tokens per 41-check batch under 64k</td>
+</tr>
+<tr>
+<td>E10</td>
+<td>Custom widgets</td>
+<td>Fixtures: ARIA combobox, search-as-you-type, date picker, virtual
+list, shadow DOM, iframe</td>
+<td><code>fill_form</code> sets 100% of the reachable fields; reports
+the rest as <code>not_found</code></td>
+</tr>
+<tr>
+<td>E11</td>
+<td>Triage</td>
+<td>300-card fixture with ground truth, including look-alike cards</td>
+<td>≥ 99% precision on the action bucket at the default threshold;
+uncertain cards go to <code>review</code></td>
+</tr>
+<tr>
+<td>E12</td>
+<td>Guard</td>
+<td>50 benign + 50 injected blocks (visible, hidden, in alt text, in
+aria-labels)</td>
+<td>≥ 95% of hidden injections caught by code alone; ≤ 2% false
+flags</td>
+</tr>
+<tr>
+<td>E13</td>
+<td>Autopilot</td>
+<td>20 tasks on fixtures + 5 public test sites
+(the-internet.herokuapp.com, demo shops)</td>
+<td>≥ 85% success, 0 wrong irreversible actions, median steps
+reported</td>
+</tr>
+<tr>
+<td>E14</td>
+<td>Without-Jev parity</td>
+<td>E6 and E13-style tasks with <code>decider: none</code></td>
+<td>Every task completes; extra turns counted</td>
+</tr>
+</tbody>
+</table>
+<p>Existing E1-E4 are kept as regression suites.</p>
+<h2 id="phases">8. Phases</h2>
+<p>Estimates are my implementation time as the agent, not human
+developer days. Each phase ends with the full release gate from project
+rules: - server and extension suites; - both typechecks and both builds;
+- a live smoke on ArchyMain; - for releases, npm pack and an isolated
+install.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Version</th>
+<th>Contents</th>
+<th>Estimate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0 Foundation</td>
+<td>2.0.0-alpha.1</td>
+<td>Decider interface (typesafe, local, none), shared-list batching,
+retries, receipts, replay cache; Page Model v2 reader (native, shadow
+DOM, same-origin iframes, sections and rows, visibility, local state);
+<code>browser_outline</code>; Resolver v2 with code tier and site-memory
+phrase map</td>
+<td>1.5-2 days</td>
+</tr>
+<tr>
+<td>P1 Bulk tools</td>
+<td>2.0.0-alpha.2</td>
+<td><code>assert</code> setting/page, <code>fill_form</code> v2 with
+custom widgets, <code>find</code> query, <code>wait_for</code> until,
+<code>effect</code> lines and <code>expect</code> on actions;
+experiments E5, E6, E9, E10</td>
+<td>2 days</td>
+</tr>
+<tr>
+<td>P2 Lists and safety</td>
+<td>2.0.0-beta.1</td>
+<td><code>browser_triage</code>, guard (code + optional Jev),
+site-memory quirks and routes; E11, E12, E14</td>
+<td>1.5 days</td>
+</tr>
+<tr>
+<td>P3 Speed modes</td>
+<td>2.0.0-beta.2</td>
+<td><code>browser_run</code> (flag), vision (flag), local provider
+thresholds; E8, E13</td>
+<td>2-3 days</td>
+</tr>
+<tr>
+<td>P4 Release</td>
+<td>2.0.0</td>
+<td>Config migration, CLI, tutorial, README, tool descriptions that
+steer agents to the bulk tools, full gates, GitHub release and npm
+publish (only after your go-ahead, as always)</td>
+<td>0.5-1 day</td>
+</tr>
+</tbody>
+</table>
+<p>Total: about 8-10 days of agent work, plus live experiment runs. Each
+phase can be released on its own; P0-P1 alone covers the Sampo-type
+slowdown.</p>
+<h2 id="configuration-and-migration">9. Configuration and migration</h2>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="st">&quot;decider&quot;</span><span class="er">:</span> <span class="fu">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;provider&quot;</span><span class="fu">:</span> <span class="st">&quot;typesafe&quot;</span><span class="fu">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;apiKey&quot;</span><span class="fu">:</span> <span class="st">&quot;&lt;kept in this file only, mode 0600&gt;&quot;</span><span class="fu">,</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;model&quot;</span><span class="fu">:</span> <span class="st">&quot;jev-1.13.0&quot;</span><span class="fu">,</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;localUrl&quot;</span><span class="fu">:</span> <span class="kw">null</span><span class="fu">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;timeoutMs&quot;</span><span class="fu">:</span> <span class="dv">3000</span><span class="fu">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;longContext&quot;</span><span class="fu">:</span> <span class="kw">false</span><span class="fu">,</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;features&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;resolve&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span> <span class="dt">&quot;assert&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span> <span class="dt">&quot;fill&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span> <span class="dt">&quot;find&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span> <span class="dt">&quot;wait&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;triage&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span> <span class="dt">&quot;guard&quot;</span><span class="fu">:</span> <span class="st">&quot;code&quot;</span><span class="fu">,</span> <span class="dt">&quot;run&quot;</span><span class="fu">:</span> <span class="kw">false</span><span class="fu">,</span> <span class="dt">&quot;vision&quot;</span><span class="fu">:</span> <span class="kw">false</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<ul>
+<li>An existing <code>jev</code> section is read as
+<code>provider: "typesafe"</code> with the same key and settings, so 1.4
+configs keep working unchanged.</li>
+<li>CLI:
+<ul>
+<li><code>mybrowser-mcp decider status | set-key | use-local &lt;url&gt; | off</code>;</li>
+<li><code>mybrowser-mcp jev set-key</code> stays as an alias;</li>
+<li>every command validates before it writes, as
+<code>jev set-key</code> does today.</li>
+</ul></li>
+<li>The tutorial step changes from “add a Jev key” to “optional: add a
+decision model (TypeSafe key, or a local server)”.</li>
+</ul>
+<h2 id="risks-and-open-questions">10. Risks and open questions</h2>
+<p><strong>Risks:</strong> 1. <strong>Real-site DOMs.</strong> Meta,
+Google and Shopify use custom widgets my replica pages don’t. E5 and E10
+run first in P1, and their results can change P1’s scope. 2.
+<strong>Agents ignoring the new tools.</strong> Agents wrote 290
+<code>browser_eval</code> scripts in the Sampo session. Tool
+descriptions, plus a hint in long-form snapshot results (“12 settings in
+view: <code>browser_assert</code> can check them in one call”), are
+measured in E6. 3. <strong>Vendor change.</strong> TypeSafe is API-only
+and models move. Mitigations: pinned versions, per-model thresholds, the
+local provider, and the <code>none</code> path. 4.
+<strong>Privacy.</strong> Labels, section names and page text excerpts
+go to TypeSafe; values never do. The README says so, and the local
+provider keeps everything on the machine. 5. <strong>Page text steering
+Jev.</strong> Covered by the guard, by risk classes, and by checking
+every action’s result. 6. <strong>Rate limits.</strong> TypeSafe limits
+are per organisation; batching keeps requests few, and at most 4 run in
+parallel. 7. <strong>Site terms.</strong> Bulk actions on LinkedIn and
+similar sites may break their rules. <code>triage</code> defaults to
+slow pacing and a dry run, and the README says the risk is the
+user’s.</p>
+<p><strong>Open questions (they don’t block P0):</strong> 1. Should the
+code-only guard be on by default from alpha.1? I recommend yes. 2. Any
+real sites besides Meta Ads, GitHub, Gmail and Shopify admin for E5?</p>
+<h2 id="jev-uses-from-the-research-and-where-each-lands">11. Jev uses
+from the research, and where each lands</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Use found</th>
+<th>Source</th>
+<th>In this plan</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Operation + speculative targets in one request</td>
+<td>browser-use <code>jev-ultrafast</code></td>
+<td><code>browser_run</code> step (5.8)</td>
+</tr>
+<tr>
+<td>Two independent judgments before “done”</td>
+<td><code>jkudish/jev-browser</code></td>
+<td><code>browser_run</code> done rule; <code>expect</code>
+confirm/contradict (4.5)</td>
+</tr>
+<tr>
+<td>Loop fuses (cycle, revisit, idle)</td>
+<td><code>0x7067/jev-browse</code></td>
+<td><code>browser_run</code> fuses; engine stop rules (4.4)</td>
+</tr>
+<tr>
+<td>Plan once, Jev runs the loop, hand back on doubt</td>
+<td><code>vlad-terin/jev-browser</code></td>
+<td><code>needs_choice</code> hand-back everywhere;
+<code>browser_run</code></td>
+</tr>
+<tr>
+<td>Effect check on the next page</td>
+<td>CodexQA, jev-browser-qa</td>
+<td><code>effect</code> lines and <code>expect</code> (4.5)</td>
+</tr>
+<tr>
+<td>Many questions in one request</td>
+<td>TypeSafe fan-out pattern; E1</td>
+<td>Engine batching with one shared element list (4.2)</td>
+</tr>
+<tr>
+<td>Line-by-line search plus “is it there” Noul</td>
+<td>TypeSafe cookbook</td>
+<td><code>browser_find</code> <code>query</code> (5.4)</td>
+</tr>
+<tr>
+<td>Sentence → function + arguments (54 questions in one call)</td>
+<td>TypeSafe function-calling cookbook</td>
+<td>Not adopted now: agents already call tools directly. Possible later
+as a natural-language entry point for voice control</td>
+</tr>
+<tr>
+<td>Rank, then re-check</td>
+<td>TypeSafe skill-suggestion cookbook</td>
+<td>Order check on close or risky picks (4.2)</td>
+</tr>
+<tr>
+<td>Pick from candidates found by code</td>
+<td>TypeSafe pre-parsed extraction</td>
+<td>Select options and combobox picks; <code>extract</code> values
+(5.3)</td>
+</tr>
+<tr>
+<td>Citation check</td>
+<td>TypeSafe cookbook</td>
+<td>Possible P2 addition: check that <code>extract</code> results are
+supported by the page</td>
+</tr>
+<tr>
+<td>Guardrail screening</td>
+<td>TypeSafe cookbook, Spring AI</td>
+<td>Prompt-injection guard (5.9)</td>
+</tr>
+<tr>
+<td>Simple memory</td>
+<td>TypeSafe cookbook</td>
+<td>Site memory phrase map, learned only from verified actions
+(4.7)</td>
+</tr>
+<tr>
+<td>Images as Choice options; frame history; tile search</td>
+<td>TypeSafe images guide</td>
+<td>Vision flag (5.10)</td>
+</tr>
+<tr>
+<td>Confidence thresholds scaled by risk</td>
+<td>TypeSafe confidence guide</td>
+<td>Risk classes (4.6)</td>
+</tr>
+<tr>
+<td>Self-consistency over repeated asks</td>
+<td>TypeSafe cookbook</td>
+<td>Order check only (cheaper); full self-consistency not needed at 0
+wrong picks</td>
+</tr>
+<tr>
+<td>Classifying many items</td>
+<td>TypeSafe classification cookbooks; our LinkedIn run</td>
+<td><code>browser_triage</code> (5.7)</td>
+</tr>
+<tr>
+<td>Open local decision models (Strands Decider, in-browser ONNX)</td>
+<td>AWS Strands Labs</td>
+<td><code>local</code> provider (4.2); in-browser WebGPU noted for
+later, not planned</td>
+</tr>
+<tr>
+<td>Real-time voice control at ~300 ms</td>
+<td>community demo</td>
+<td>Not planned; becomes possible on top of
+<code>browser_run</code></td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>
