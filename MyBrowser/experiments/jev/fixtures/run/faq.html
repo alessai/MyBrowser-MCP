@@ -1,0 +1,4 @@
+<!doctype html><meta charset="utf-8"><title>Help centre</title>
+<style>body{font:15px sans-serif;max-width:760px;margin:30px auto} label{display:block;margin:8px 0} .hidden{display:none} .tall{height:1400px}</style>
+<h1>Help centre</h1><div role="tablist"><button role="tab" aria-selected="true" id="tg">General</button><button role="tab" aria-selected="false" id="ts">Shipping</button></div>
+<div id="pg"><p>General questions about accounts.</p></div><div id="ps" class="hidden"><details id="d1"><summary>Delivery times</summary><p>2-5 days.</p></details><details id="d2"><summary>Returns</summary><p>Returns are accepted within 30 days.</p></details></div><script>window.__done=false;window.__risky=false;ts.onclick=()=>{ pg.classList.add('hidden'); ps.classList.remove('hidden'); ts.setAttribute('aria-selected','true'); tg.setAttribute('aria-selected','false'); }; setInterval(()=>{ window.__done = d2.open && !ps.classList.contains('hidden'); },100);</script>

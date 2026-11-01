@@ -141,6 +141,7 @@ async function pageModelScript(opts: { sweep: boolean; max: number }) {
     if (aria("aria-valuenow") !== null) return clean(aria("aria-valuetext") || aria("aria-valuenow"), 40);
     const role = aria("role");
     if (role === "combobox") return clean((el as HTMLElement).innerText || el.getAttribute("value"), 60);
+    if (el.tagName === "SUMMARY") return el.parentElement?.hasAttribute("open") ? "expanded" : "collapsed";
     if (aria("aria-selected") === "true") return "selected";
     if (aria("aria-expanded") !== null) return aria("aria-expanded") === "true" ? "expanded" : "collapsed";
     return "";

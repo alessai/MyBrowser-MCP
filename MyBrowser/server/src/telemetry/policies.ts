@@ -138,6 +138,15 @@ const policies = {
     allowIrreversible: boolean(),
     paceMs: number(300, 10_000, 100),
   }),
+  browser_run: immutablePolicy({
+    tabId: TAB_ID,
+    goal: textLength(),
+    values: count(64),
+    allow: count(5),
+    maxSteps: number(1, 50, 1),
+    stopWhen: textLength(),
+    allowIrreversible: boolean(),
+  }),
   browser_check: immutablePolicy({
     question: textLength(),
     options: count(20),

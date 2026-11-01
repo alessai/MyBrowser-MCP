@@ -14,13 +14,15 @@ export interface JevConfig {
   model?: string;
   /** Allow screenshots to be sent for visual checks. */
   vision: boolean;
+  /** List browser_run (the decision-model autopilot). Off by default. */
+  autopilot?: boolean;
   /** Minimum Choice confidence before the server acts on an answer. */
   minConfidence: number;
   timeoutMs: number;
 }
 
 const DEFAULTS = { vision: false, minConfidence: 0.7, timeoutMs: 3_000 } as const;
-const ALLOWED = new Set(["provider", "apiKey", "url", "model", "vision", "minConfidence", "timeoutMs"]);
+const ALLOWED = new Set(["provider", "apiKey", "url", "model", "vision", "autopilot", "minConfidence", "timeoutMs"]);
 const EXAMPLE = '{ "apiKey": "apikey_...", "vision": false, "minConfidence": 0.7, "timeoutMs": 3000 }';
 
 export function readJevConfig(raw: unknown): JevConfig | undefined {
@@ -54,6 +56,9 @@ export function readJevConfig(raw: unknown): JevConfig | undefined {
   if (value.vision !== undefined && typeof value.vision !== "boolean") {
     throw new Error('Invalid jev config: "vision" must be true or false');
   }
+  if (value.autopilot !== undefined && typeof value.autopilot !== "boolean") {
+    throw new Error('Invalid jev config: "autopilot" must be true or false');
+  }
   const minConfidence = value.minConfidence ?? DEFAULTS.minConfidence;
   if (typeof minConfidence !== "number" || !(minConfidence >= 0.5 && minConfidence <= 0.99)) {
     throw new Error('Invalid jev config: "minConfidence" must be a number between 0.5 and 0.99');
@@ -68,6 +73,7 @@ export function readJevConfig(raw: unknown): JevConfig | undefined {
     ...(value.url !== undefined ? { url: value.url as string } : {}),
     ...(value.model !== undefined ? { model: (value.model as string).trim() } : {}),
     vision: (value.vision as boolean | undefined) ?? DEFAULTS.vision,
+    ...(value.autopilot === true ? { autopilot: true } : {}),
     minConfidence,
     timeoutMs: timeoutMs as number,
   };
