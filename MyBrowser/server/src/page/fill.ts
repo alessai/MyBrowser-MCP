@@ -81,7 +81,7 @@ async function setCustomCombobox(context: Context, tabId: number | undefined, e:
 export async function fillItems(context: Context, tabId: number | undefined, items: FillItem[], dryRun: boolean): Promise<{ results: FillResult[]; sideEffects: string[] }> {
   const before = await readModel(context, tabId);
   const direct = items.map((i) => outlineRefNumber(i.target));
-  const pending = items.filter((_, i) => direct[i] === undefined).map((i) => ({ target: i.target }));
+  const pending = items.filter((_, i) => direct[i] === undefined).map((i) => ({ target: i.target, stateful: true }));
   const resolved = pending.length ? await resolveOnPage(context, before, pending) : [];
   let k = 0;
   const resolutions: ItemResolution[] = items.map((_, i) => {

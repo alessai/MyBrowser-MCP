@@ -20,6 +20,12 @@ describe("setting checks are judged by code", () => {
     expect(compareSetting(el("checkbox", "on"), "Learn more").pass).toBe(false);
   });
 
+  it("treats a selected tab as on and refuses on/off for buttons", () => {
+    expect(compareSetting(el("tab", "selected"), "selected")).toEqual({ pass: true, actual: "selected" });
+    expect(compareSetting(el("tab", ""), "on")).toEqual({ pass: false, actual: "not selected" });
+    expect(compareSetting(el("button", "", { disabled: true }), "off")).toMatchObject({ pass: false, actual: "disabled", reason: "a button has no on/off state" });
+  });
+
   it("compares values case-insensitively, numbers by value, and empty", () => {
     expect(compareSetting(el("combobox", "Daily budget"), "daily budget").pass).toBe(true);
     expect(compareSetting(el("spinbutton", "\"20.00\""), "20").pass).toBe(true);
@@ -50,7 +56,10 @@ describe("fill never clicks buttons, links or disabled controls", () => {
       : {}));
     const context = { jev: undefined, outlineSelectors: new Map(), sendSocketMessage } as never;
     const { results } = await fillItems(context, undefined, [{ target: "Publish", value: "on" }, { target: "Budget", value: "20" }], false);
-    expect(results.map((r) => r.status)).toEqual(["blocked", "blocked"]);
-    expect(sendSocketMessage.mock.calls.map((c) => c[0])).toEqual(["browser_eval"]);
+    // A button is not a setting: it is handed back (or blocked when picked by ref), never clicked.
+    expect(results.map((r) => r.status)).toEqual(["needs_choice", "blocked"]);
+    const { results: byRef } = await fillItems(context, undefined, [{ target: "o1", value: "on" }], false);
+    expect(byRef[0]!.status).toBe("blocked");
+    expect(sendSocketMessage.mock.calls.every((c) => c[0] === "browser_eval")).toBe(true);
   });
 });

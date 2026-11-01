@@ -52,6 +52,14 @@ export function compareSetting(e: ModelElement, expect: string, match: "exact" |
     if (e.state !== "on" && e.state !== "off") return { pass: false, actual: e.state || "unknown", reason: "the control's on/off state could not be read" };
     return (e.state === "on") === b ? { pass: true, actual: e.state } : { pass: false, actual: e.state };
   }
+  // Tabs and options are "on" when selected.
+  if (b !== undefined && ["tab", "option", "treeitem"].includes(e.role)) {
+    const on = e.state === "selected";
+    return on === b ? { pass: true, actual: on ? "selected" : "not selected" } : { pass: false, actual: on ? "selected" : "not selected" };
+  }
+  if (b !== undefined && ["button", "link", "menuitem"].includes(e.role)) {
+    return { pass: false, actual: e.disabled ? "disabled" : e.state || "enabled", reason: `a ${e.role} has no on/off state` };
+  }
   const actual = plainValue(e);
   if (norm(expect) === "empty") return actual === "" ? { pass: true, actual: "(empty)" } : { pass: false, actual };
   const ok = match === "contains" ? norm(actual).includes(norm(expect)) : sameValue(actual, expect);
@@ -64,7 +72,7 @@ export async function readModel(context: Context, tabId: number | undefined, swe
   return model;
 }
 
-export async function resolveOnPage(context: Context, model: PageModel, targets: Array<{ target: string; role?: string }>): Promise<ItemResolution[]> {
+export async function resolveOnPage(context: Context, model: PageModel, targets: Array<{ target: string; role?: string; stateful?: boolean }>): Promise<ItemResolution[]> {
   const memory = model.host ? recallPhrases(model.host) : {};
   const { results } = await resolveItems(model, targets, { decider: context.jev, memory });
   return results;

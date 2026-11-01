@@ -149,8 +149,16 @@ async function pageModelScript(opts: { sweep: boolean; max: number }) {
   const rowOf = (el: Element): string => {
     const row = el.closest('tr,li,label,[role=row],[role=listitem],[role=option],p');
     if (row && row !== el) return clean((row as HTMLElement).innerText, 80);
-    const t = clean((el.parentElement as HTMLElement | null)?.innerText, 81);
-    return t.length <= 80 ? t : "";
+    // Div-built tables and lists (Meta Ads Manager): the nearest ancestor with
+    // text besides the control's own, if it is still row-sized.
+    const own = clean((el as HTMLElement).innerText, 200);
+    let node = el.parentElement;
+    // Meta nests a row's switch 10 levels below the row's first text.
+    for (let depth = 0; node && depth < 14; depth++, node = node.parentElement) {
+      const text = clean(node.innerText, 400);
+      if (text && text !== own) return text.length <= 300 ? text.slice(0, 80) : "";
+    }
+    return "";
   };
   const headingLevel = (el: Element): number => {
     const m = /^H([1-6])$/.exec(el.tagName);
@@ -170,7 +178,7 @@ async function pageModelScript(opts: { sweep: boolean; max: number }) {
   const visit = (node: Element, hosts: string[]) => {
     // Column headers are headings to a screen reader but not sections: tracking
     // them filed every table row under the last column's title (Meta Ads Manager).
-    const level = node.closest("th,thead,[role=columnheader],[role=rowheader]") ? 0 : headingLevel(node);
+    const level = node.closest("th,thead,[role=columnheader],[role=rowheader],[role=tab]") ? 0 : headingLevel(node);
     if (level) {
       const text = clean((node as HTMLElement).innerText || node.textContent, 80);
       if (text) {

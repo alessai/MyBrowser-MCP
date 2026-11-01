@@ -27,6 +27,14 @@ describe("resolver v2, code tier", () => {
     expect(resolveByCode(model, { target: "Threads" }).done).toBeUndefined();
   });
 
+  it("prefers a stateful control for settings when a link has the same name", () => {
+    const nav = el("link", "Issues", { section: "Repository" });
+    const box = el("checkbox", "Issues", { section: "Features" });
+    const m = page([nav, box]);
+    expect(resolveByCode(m, { target: "Issues" }).done).toBeUndefined();
+    expect(resolveByCode(m, { target: "Issues", stateful: true }).done).toMatchObject({ element: box });
+  });
+
   it("prefers a verified memory over code", () => {
     const memory = { threads: { role: "link", name: "Threads", section: "Footer", sub: "", hits: 2, misses: 0 } };
     expect(resolveByCode(model, { target: "Threads" }, memory).done).toMatchObject({ element: threadsLink, via: "memory" });

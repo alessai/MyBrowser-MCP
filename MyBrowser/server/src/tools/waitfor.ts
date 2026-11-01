@@ -123,7 +123,7 @@ type CheckResult = { type: string; passed: boolean; message: string; status?: st
 
 async function settingChecks(context: Parameters<Tool["handle"]>[0], tabId: number | undefined, checks: z.infer<typeof AssertCheckSchema>[]): Promise<CheckResult[]> {
   const model = await readModel(context, tabId);
-  const targets = checks.map((c) => ({ target: c.target ?? "" }));
+  const targets = checks.map((c) => ({ target: c.target ?? "", stateful: true }));
   const direct = checks.map((c) => outlineRefNumber(c.target));
   const pending = targets.filter((_, i) => direct[i] === undefined);
   const resolved = pending.length ? await resolveOnPage(context, model, pending) : [];
@@ -143,7 +143,9 @@ async function settingChecks(context: Parameters<Tool["handle"]>[0], tabId: numb
     const where = `o${r.element.n} ${r.element.role} "${r.element.name}"${r.via === "decider" ? ` (found by the decision model, ${r.confidence.toFixed(2)})` : ""}`;
     return verdict.pass
       ? { type: "setting", passed: true, status: "pass", message: `${label}: pass (${where} is ${verdict.actual})` }
-      : { type: "setting", passed: false, status: "fail", message: `${label}: FAIL, actual ${verdict.actual}${verdict.reason ? ` (${verdict.reason})` : ""} at ${where}` };
+      : verdict.reason
+        ? { type: "setting", passed: false, status: "error", message: `${label}: cannot check: ${verdict.reason} (it is ${verdict.actual}) at ${where}` }
+        : { type: "setting", passed: false, status: "fail", message: `${label}: FAIL, actual ${verdict.actual} at ${where}` };
   });
 }
 

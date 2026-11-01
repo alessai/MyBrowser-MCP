@@ -16,7 +16,12 @@ export interface ResolveItem {
   target: string;
   /** Optional role constraint from the caller (e.g. "checkbox"). */
   role?: string;
+  /** The item is a setting to read or set: prefer controls with a state over links and buttons
+   *  (GitHub: "Issues" is both a nav link and the feature checkbox). */
+  stateful?: boolean;
 }
+
+const STATELESS = new Set(["link", "button", "menuitem"]);
 
 export type ItemResolution =
   | { status: "resolved"; element: ModelElement; via: "memory" | "code" | "decider"; confidence: number }
@@ -107,7 +112,9 @@ export function resolveByCode(
     if (hits.length === 1) return { done: { status: "resolved", element: hits[0]!, via: "memory", confidence: 1 }, ranked: [] };
   }
   const phrase = parsePhrase(item.target, item.role);
-  const ranked = model.elements.map((e) => ({ e, s: score(e, phrase) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
+  const ranked = model.elements
+    .map((e) => ({ e, s: score(e, phrase) - (item.stateful && STATELESS.has(e.role) && !phrase.roles.includes(e.role) ? 60 : 0) }))
+    .filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
   const [top, second] = ranked;
   // A clear winner: a full match on label (and section, when the phrase names one)
   // with nothing else matching fully; ties are left to the decision model or the agent.
@@ -120,6 +127,8 @@ export function resolveByCode(
 function questionFor(target: string): string {
   return `Which page element is this target: "${target}"? Elements are listed in the state by id. Choose none if no element matches.`;
 }
+
+const SETTING_HINT = " It is a setting, so prefer a control that holds a value or an on/off state (checkbox, switch, field, dropdown) over a link or button with the same name.";
 
 export async function resolveItems(
   model: PageModel,
@@ -154,7 +163,7 @@ export async function resolveItems(
     for (const p of pending) {
       const criteria: Record<string, string | null> = Object.fromEntries(p.candidates.map((e) => [`o${e.n}`, null]));
       criteria.none = "No listed element matches the target";
-      questions[`q${p.index}`] = { type: "choice", instructions: questionFor(items[p.index]!.target), criteria };
+      questions[`q${p.index}`] = { type: "choice", instructions: questionFor(items[p.index]!.target) + (items[p.index]!.stateful ? SETTING_HINT : ""), criteria };
     }
     const response = await askMany(options.decider, state, questions);
     deciderRequests = response.requests;
