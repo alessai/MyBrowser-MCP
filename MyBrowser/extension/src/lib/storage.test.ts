@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getStorageAll } from './storage';
+import { getStorageAll, isAccessEnabled } from './storage';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -24,5 +24,21 @@ describe('local URL host defaults', () => {
     });
 
     await expect(getStorageAll()).resolves.toMatchObject({ localUrlHost: '' });
+  });
+});
+
+describe('agent access switch', () => {
+  const stored = (value: Record<string, unknown>) => vi.stubGlobal('chrome', {
+    storage: { local: { get: vi.fn(async () => value) } },
+  });
+
+  it('is on unless explicitly switched off', async () => {
+    stored({});
+    await expect(isAccessEnabled()).resolves.toBe(true);
+    stored({ accessEnabled: 'false' });
+    await expect(isAccessEnabled()).resolves.toBe(true);
+    stored({ accessEnabled: false });
+    await expect(isAccessEnabled()).resolves.toBe(false);
+    await expect(getStorageAll()).resolves.toMatchObject({ accessEnabled: false });
   });
 });

@@ -51,6 +51,7 @@ import {
   startDialogCapture,
   startNetworkTimeoutWatchdog,
   onDebuggerAttached,
+  detachAll,
 } from '../../lib/debugger';
 import {
   dispatchDialog,
@@ -62,7 +63,7 @@ import {
   clearHandlersForSession,
   resetHandlersAfterTransportDisconnect,
 } from '../../lib/events';
-import { getStorageAll } from '../../lib/storage';
+import { getStorageAll, isAccessEnabled, setStorage } from '../../lib/storage';
 import { resolveConnectionTarget } from '../../lib/local-connection';
 import { openInstallTutorial } from '../../lib/onboarding';
 import { importInstallerBootstrap } from '../../lib/installer-bootstrap';
@@ -88,13 +89,14 @@ export default defineBackground(() => {
   // Badge indicator
   // =====================================================================
 
-  type BadgeState = 'connected' | 'connecting' | 'disconnected';
+  type BadgeState = 'connected' | 'connecting' | 'disconnected' | 'off';
 
   function setBadge(state: BadgeState): void {
     const config: Record<BadgeState, { text: string; color: string; title: string }> = {
       connected:    { text: '',   color: '#22c55e', title: 'MyBrowser — Connected' },
       connecting:   { text: '...', color: '#eab308', title: 'MyBrowser — Connecting...' },
       disconnected: { text: '!',  color: '#ef4444', title: 'MyBrowser — Disconnected' },
+      off:          { text: 'OFF', color: '#6b7280', title: 'MyBrowser — Agent access off' },
     };
     const { text, color, title } = config[state];
     chrome.action.setBadgeText({ text });
@@ -478,6 +480,13 @@ export default defineBackground(() => {
   // =====================================================================
 
   async function handleToolRequest(rawFrame: unknown): Promise<void> {
+    // Access off: nothing from the server runs, even a request that raced the disconnect.
+    // Checked from a cache so the request is registered synchronously (transfer
+    // events from the offscreen document follow it immediately).
+    if (accessCache === false || (accessCache === undefined && !(await refreshAccess()))) {
+      await tellOffscreen({ type: '_os_ws_disconnect' }).catch(() => {});
+      return;
+    }
     const frame = readOffscreenToolFrame(rawFrame);
     if (!frame) return;
     const decoded = parseInboundWsFrame(frame.raw);
@@ -722,8 +731,7 @@ export default defineBackground(() => {
       }
 
       if (msg.type === '_os_connected') {
-        recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
-        setBadge('connected');
+        void onTransportConnected();
         return;
       }
 
@@ -731,7 +739,7 @@ export default defineBackground(() => {
         recordingPortGeneration.disconnect(portGeneration);
         resetHandlersAfterTransportDisconnect();
         recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
-        setBadge('disconnected');
+        void isAccessEnabled().then((on) => setBadge(on ? 'disconnected' : 'off'));
         return;
       }
 
@@ -787,15 +795,14 @@ export default defineBackground(() => {
   });
 
   addMessageHandler('_os_connected', async () => {
-    recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
-    setBadge('connected');
+    await onTransportConnected();
   });
 
   addMessageHandler('_os_disconnected', async () => {
     disconnectRecordingTransport();
     resetHandlersAfterTransportDisconnect();
     recordExtensionIssue('connection', 'Disconnected from MyBrowser MCP server', undefined, 'warn');
-    setBadge('disconnected');
+    setBadge((await isAccessEnabled()) ? 'disconnected' : 'off');
   });
 
   addMessageHandler('_os_temp_tab_sessions', async (_payload, sender) => (
@@ -837,7 +844,36 @@ export default defineBackground(() => {
   // Offscreen connection management
   // =====================================================================
 
+  let accessCache: boolean | undefined;
+  async function refreshAccess(): Promise<boolean> {
+    accessCache = await isAccessEnabled();
+    return accessCache;
+  }
+  void refreshAccess();
+
+  // A connection that finished after access was switched off is dropped at once.
+  async function onTransportConnected(): Promise<void> {
+    if (!(await isAccessEnabled())) {
+      await tellOffscreen({ type: '_os_ws_disconnect' }).catch(() => {});
+      setBadge('off');
+      return;
+    }
+    recordExtensionIssue('connection', 'Connected to MyBrowser MCP server', undefined, 'info');
+    setBadge('connected');
+  }
+
+  async function switchAccessOff(): Promise<void> {
+    setBadge('off');
+    await ensureOffscreen().catch(() => {});
+    await tellOffscreen({ type: '_os_ws_disconnect' }).catch(() => {});
+    await detachAll();
+  }
+
   async function connectOffscreen(): Promise<void> {
+    if (!(await isAccessEnabled())) {
+      await switchAccessOff();
+      return;
+    }
     const { serverAddress, serverPort, authToken, browserName } = await getStorageAll();
     const target = resolveConnectionTarget({ serverAddress, serverPort, authToken });
     if (!target) {
@@ -853,6 +889,11 @@ export default defineBackground(() => {
 
   async function ensureAlive(): Promise<void> {
     await ensureOffscreen();
+    if (!(await isAccessEnabled())) {
+      // Keep it off across service-worker restarts and keepalive checks.
+      await switchAccessOff();
+      return;
+    }
 
     const resp = await askOffscreen({ type: '_os_ping' }) as
       { alive?: boolean; wsState?: string } | undefined;
@@ -977,6 +1018,24 @@ export default defineBackground(() => {
   }
 
   addMessageHandler('get_diagnostics', async () => buildPopupDiagnostics());
+
+  addMessageHandler('get_access', async () => ({ enabled: await isAccessEnabled() }));
+
+  addMessageHandler('set_access', async (payload, sender) => {
+    // Only extension pages (the popup) may flip it; content scripts report the website's URL.
+    if (sender?.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) throw new Error('ACCESS_SWITCH_FORBIDDEN');
+    const enabled = (payload as { enabled?: unknown } | undefined)?.enabled === true;
+    accessCache = enabled;
+    await setStorage('accessEnabled', enabled);
+    if (enabled) {
+      recordExtensionIssue('connection', 'Agent access switched on', undefined, 'info');
+      await connectOffscreen();
+    } else {
+      recordExtensionIssue('connection', 'Agent access switched off', undefined, 'info');
+      await switchAccessOff();
+    }
+    return { enabled };
+  });
 
   addMessageHandler('ws_reconnect', async () => {
     setBadge('connecting');
@@ -1368,6 +1427,7 @@ export default defineBackground(() => {
   // Re-connect when user updates settings
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    if (changes.accessEnabled) accessCache = changes.accessEnabled.newValue !== false;
     if (changes.serverAddress || changes.serverPort || changes.authToken || changes.browserName) {
       setBadge('connecting');
       connectOffscreen();

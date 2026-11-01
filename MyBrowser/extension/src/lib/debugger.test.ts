@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { enableRuntime, isConsoleCaptureActive, sendCommand } from "./debugger";
+import { detachAll, enableRuntime, getAttachedTabs, isConsoleCaptureActive, sendCommand } from "./debugger";
 
 describe("sendCommand", () => {
   let attach: ReturnType<typeof vi.fn>;
@@ -39,6 +39,18 @@ describe("sendCommand", () => {
 
     await expect(sendCommand(4, "Network.enable")).rejects.toThrow("Network.enable failed");
     expect(command).toHaveBeenCalledTimes(2);
+  });
+
+  it("detaches from every attached tab when access is switched off", async () => {
+    command.mockResolvedValue(undefined);
+    await enableRuntime(7);
+    await enableRuntime(8);
+    const detach = (globalThis as unknown as { chrome: { debugger: { detach: ReturnType<typeof vi.fn> } } }).chrome.debugger.detach;
+    await detachAll();
+    expect(detach).toHaveBeenCalledWith({ tabId: 7 });
+    expect(detach).toHaveBeenCalledWith({ tabId: 8 });
+    expect(getAttachedTabs()).toEqual([]);
+    expect(isConsoleCaptureActive(7)).toBe(false);
   });
 
   it("reports console capture only after Runtime.enable succeeds", async () => {

@@ -8,6 +8,8 @@ export interface StorageSchema {
   authToken: string;
   browserName: string;
   localUrlHost: string;
+  /** Popup switch: false disconnects from the MCP server and refuses every tool request. */
+  accessEnabled: boolean;
 }
 
 const DEFAULTS: StorageSchema = {
@@ -16,7 +18,14 @@ const DEFAULTS: StorageSchema = {
   authToken: '',
   browserName: '',
   localUrlHost: '',
+  accessEnabled: true,
 };
+
+// Only an explicit false turns access off; a missing or corrupt value keeps today's behaviour.
+export async function isAccessEnabled(): Promise<boolean> {
+  const { accessEnabled } = await chrome.storage.local.get('accessEnabled');
+  return accessEnabled !== false;
+}
 
 function localUrlHostFromStored(result: Partial<StorageSchema>): string {
   if (Object.prototype.hasOwnProperty.call(result, 'localUrlHost')) {
@@ -37,7 +46,7 @@ export async function getStorage<K extends keyof StorageSchema>(
 
 export async function getStorageAll(): Promise<StorageSchema> {
   const result = await chrome.storage.local.get(Object.keys(DEFAULTS));
-  return { ...DEFAULTS, ...result, localUrlHost: localUrlHostFromStored(result) } as StorageSchema;
+  return { ...DEFAULTS, ...result, localUrlHost: localUrlHostFromStored(result), accessEnabled: result.accessEnabled !== false } as StorageSchema;
 }
 
 export async function getLocalUrlHost(): Promise<string> {

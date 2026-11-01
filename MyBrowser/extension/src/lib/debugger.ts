@@ -166,6 +166,16 @@ export async function ensureAttached(tabId: number): Promise<void> {
   }
 }
 
+/** Detach from every tab now (used when the user switches agent access off). */
+export async function detachAll(): Promise<void> {
+  for (const timer of detachTimers.values()) clearTimeout(timer);
+  detachTimers.clear();
+  const tabs = Array.from(attachedTabs);
+  attachedTabs.clear();
+  runtimeEnabledTabs.clear();
+  await Promise.all(tabs.map((tabId) => doDetach({ tabId }).catch(() => {})));
+}
+
 export function scheduleDetach(tabId: number): void {
   const existing = detachTimers.get(tabId);
   if (existing) clearTimeout(existing);

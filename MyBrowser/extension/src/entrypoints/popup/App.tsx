@@ -38,7 +38,10 @@ export default function App() {
     authToken: '',
     browserName: '',
     localUrlHost: '',
+    accessEnabled: true,
   });
+  const [accessOn, setAccessOn] = useState(true);
+  const [accessBusy, setAccessBusy] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -63,8 +66,35 @@ export default function App() {
     }
   }, []);
 
+  const fetchAccess = useCallback(async () => {
+    try {
+      const res = await sendToBackground<{ enabled: boolean }>('get_access');
+      setAccessOn(res.enabled !== false);
+    } catch {
+      // Keep the last known value; the background may be restarting.
+    }
+  }, []);
+
+  const toggleAccess = async () => {
+    const next = !accessOn;
+    setAccessBusy(true);
+    setAccessOn(next);
+    try {
+      const res = await sendToBackground<{ enabled: boolean }>('set_access', { enabled: next });
+      setAccessOn(res.enabled);
+      setSettings((s) => ({ ...s, accessEnabled: res.enabled }));
+    } catch {
+      await fetchAccess();
+    } finally {
+      setAccessBusy(false);
+      fetchStatus();
+      setTimeout(fetchStatus, 1500);
+    }
+  };
+
   useEffect(() => {
     getStorageAll().then(setSettings);
+    fetchAccess();
     // Initial fetch on mount.
     fetchStatus();
     fetchAnnotation();
@@ -258,13 +288,31 @@ export default function App() {
         <span className="version">v{chrome.runtime.getManifest().version}</span>
       </header>
 
+      <div className={`access-row${accessOn ? '' : ' access-row--off'}`}>
+        <div className="access-text">
+          <span className="access-title" id="access-title">Agent access</span>
+          <span className="access-hint">
+            {accessOn ? 'AI agents can use this browser' : 'Off: agents cannot see or control this browser'}
+          </span>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          className="access-switch"
+          aria-checked={accessOn}
+          aria-labelledby="access-title"
+          disabled={accessBusy}
+          onClick={toggleAccess}
+        />
+      </div>
+
       <div className="status-section">
         <div className="status-row">
           <span
             className="status-dot"
-            style={{ backgroundColor: STATE_COLORS[status.state] }}
+            style={{ backgroundColor: accessOn ? STATE_COLORS[status.state] : 'var(--text-secondary)' }}
           />
-          <span className="status-label">{STATE_LABELS[status.state]}</span>
+          <span className="status-label">{accessOn ? STATE_LABELS[status.state] : 'Access off'}</span>
         </div>
 
         <div className="info-grid">
