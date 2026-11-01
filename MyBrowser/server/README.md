@@ -108,18 +108,33 @@ Normal tool calls use the shared default browser. Use `select_browser` only when
 
 Finalized sessions are cleaned automatically. If a browser was disconnected during finalization, its extension reports only the bounded session IDs in its local temporary-tab registry during authenticated reconnect; the hub returns only the matching in-memory finalized sessions. Older compatible peers can omit these optional fields. Temporary ownership uses `chrome.storage.session`; exact survival across a full browser restart or extension reload depends on Chrome. An abrupt hub-process death loses in-memory finalization tombstones, and explicit cleanup intentionally leaves no standing intent for a disconnected browser because it could otherwise close newer tabs after reconnect.
 
+## Whole-Page Tools (2.0)
+
+These work without any decision model:
+
+- `browser_outline`: every control on the page, including below the fold and collapsed sections, grouped by section with an id (`o12`), role, label and current state. Pass the id as `ref: "o12"` to click, type, hover and select.
+- `browser_assert` with `{type: "setting", target, expect}`: check many settings in one call. The control is found from the agent's words; its state is always read by code.
+- `browser_fill_form` with `items: [{target, value}]`: set many controls in one call, with `dryRun` to preview. Each item is verified afterwards and other controls that changed are listed. Buttons and links are never clicked.
+- `browser_find` with `query`, `browser_wait_for` with `until`, and `browser_triage` (sort a list of cards, then act on the confirmed ones).
+
+When code cannot tell which control is meant, the item comes back as `needs_choice` with up to five candidate ids, so the agent decides in one turn. Page text that addresses AI agents (prompt injection) is flagged in snapshots, outlines and triage output.
+
 ## Optional TypeSafe Jev Decision Layer
 
-Add a `jev` section with your [TypeSafe](https://docs.typesafe.ai) API key to `~/.mybrowser/config.json` to enable it:
+A decision model resolves the items code is unsure about, which turns most `needs_choice` results into direct answers. Turn it on with `mybrowser-mcp jev set-key` (prompts for your [TypeSafe](https://docs.typesafe.ai) key), or point it at a decision model you run yourself with `mybrowser-mcp jev use-local http://127.0.0.1:8000/v1/systemone` (any server speaking TypeSafe's System One API, such as Strands Decider). The config lives in `~/.mybrowser/config.json`:
 
 ```json
-"jev": { "apiKey": "apikey_...", "vision": false, "minConfidence": 0.7, "timeoutMs": 3000 }
+"jev": { "apiKey": "apikey_...", "vision": false, "autopilot": false, "minConfidence": 0.7, "timeoutMs": 3000 }
 ```
 
-- When a click, type, hover, or select cannot find its element, Jev picks the matching visible element from the agent's description and the action runs once against it (only at or above `minConfidence`; never after an action has started).
-- `browser_check` answers yes/no or multiple-choice questions about the current page in about half a second; `"vision": true` also allows screenshots.
+With it on:
 
-Without the key, or when TypeSafe is unreachable, tools behave exactly as before. The page URL, title, visible text, and visible element names (and screenshots, only with `vision`) are sent to TypeSafe.
+- Click, type, hover and select fall back to the decision model when their target is not found (only at or above `minConfidence`, never after an action started, and never for a guessed pay/delete/send target below 0.9).
+- Setting checks, fills and `browser_find` queries resolve phrases such as "Threads placements" or "CTA" that code alone cannot.
+- `browser_check` and `browser_assert` `page` checks answer yes/no or multiple-choice questions about the page; `browser_wait_for` `until` waits for a described state; `browser_triage` labels the cards.
+- `browser_run` (only with `"autopilot": true`, `mybrowser-mcp jev autopilot on`): a bounded autopilot for well-defined tasks. It types only the named values the agent passes, never clicks a pay/send/submit/delete control on its own, and hands back on doubt, loops or no progress.
+
+If the model is unreachable, every tool falls back to its no-model behaviour. Sent to the decision model: page URL path, title, visible text, element roles, labels, section and row text, and on/off states (screenshots only with `vision`). Never sent: the values of input, password and text-area fields, the values given to `browser_run`, cookies, or link query values. Text in rich editors (contenteditable) is part of the visible page text.
 
 ## Optional Internal Tool Telemetry
 

@@ -57,7 +57,7 @@ const defaultDependencies: JevCommandDependencies = {
   stdout: (text) => process.stdout.write(text),
   readSecret: readSecretFromTerminal,
   verifyKey: async (apiKey) => {
-    const response = await askJev({ apiKey, vision: false, minConfidence: 0.7, timeoutMs: 10_000 }, {
+    const response = await askJev({ provider: "typesafe", apiKey, vision: false, minConfidence: 0.7, timeoutMs: 10_000 }, {
       state: { note: "MyBrowser key check" },
       questions: { ok: { type: "noul", instructions: "Does the `state` contain a note?" } },
     });
@@ -120,7 +120,9 @@ export function registerJevCommands(root: Command, overrides: Partial<JevCommand
       }
       deps.ensureConfig();
       const config = readConfigObject(deps.configFile);
-      config.jev = { ...(isObject(config.jev) ? config.jev : {}), apiKey: key };
+      // Setting a TypeSafe key switches back from a local decision server.
+      const { provider: _p, url: _u, model: _m, ...rest } = isObject(config.jev) ? config.jev : {};
+      config.jev = { ...rest, apiKey: key };
       writeConfigObject(deps.configFile, config);
       deps.stdout(`Saved TypeSafe key ${maskKey(key)} to ${deps.configFile} (${verified}).\n${RESTART}\n`);
     });
@@ -137,9 +139,37 @@ export function registerJevCommands(root: Command, overrides: Partial<JevCommand
         return;
       }
       const jevConfig = readJevConfig(config.jev);
+      const where = jevConfig?.provider === "local" ? `local server ${jevConfig.url}${jevConfig.model ? ` (${jevConfig.model})` : ""}` : jevConfig ? `TypeSafe, key ${maskKey(jevConfig.apiKey)}` : "";
       deps.stdout(jevConfig
-        ? `Jev: on, key ${maskKey(jevConfig.apiKey)}, vision ${jevConfig.vision ? "on" : "off"}, minConfidence ${jevConfig.minConfidence}, timeoutMs ${jevConfig.timeoutMs}\n`
+        ? `Jev: on, ${where}, autopilot ${jevConfig.autopilot ? "on" : "off"}, vision ${jevConfig.vision ? "on" : "off"}, minConfidence ${jevConfig.minConfidence}, timeoutMs ${jevConfig.timeoutMs}\n`
         : "Jev: off (no key). Turn it on with: mybrowser-mcp jev set-key\n");
+    });
+
+  jev.command("use-local <url>")
+    .description("Use a decision model you run yourself (any /v1/systemone server, e.g. Strands Decider) instead of TypeSafe; nothing leaves your network")
+    .option("--model <name>", "Model name the server expects")
+    .action((url: string, options: { model?: string }) => {
+      deps.ensureConfig();
+      const config = readConfigObject(deps.configFile);
+      const prior = isObject(config.jev) ? config.jev : {};
+      // The TypeSafe key is dropped: it must never be sent to another server.
+      const { apiKey: _k, provider: _p, url: _u, model: _m, ...rest } = prior;
+      config.jev = { ...rest, provider: "local", url, ...(options.model ? { model: options.model } : {}) };
+      writeConfigObject(deps.configFile, config);
+      deps.stdout(`Jev now uses ${url}${options.model ? ` (${options.model})` : ""}. Run set-key again to go back to TypeSafe. ${RESTART}\n`);
+    });
+
+  jev.command("autopilot <state>")
+    .description("Turn the browser_run autopilot tool on or off (default off)")
+    .action((state: string) => {
+      const on = state === "on" ? true : state === "off" ? false : undefined;
+      if (on === undefined) throw new Error('Use "on" or "off"');
+      const config = readConfigObject(deps.configFile);
+      if (!isObject(config.jev)) throw new Error("Jev is off; run mybrowser-mcp jev set-key first");
+      const { autopilot: _a, ...rest } = config.jev;
+      config.jev = on ? { ...rest, autopilot: true } : rest;
+      writeConfigObject(deps.configFile, config);
+      deps.stdout(`Autopilot (browser_run) ${on ? "on" : "off"}. ${RESTART}\n`);
     });
 
   jev.command("remove")

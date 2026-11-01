@@ -83,12 +83,43 @@ describe("mybrowser-mcp jev status / remove", () => {
     await run(["set-key", KEY]).done;
     const status = run(["status"]);
     await status.done;
-    expect(status.output.join("")).toBe("Jev: on, key apikey_012\u20263210, vision on, minConfidence 0.7, timeoutMs 3000\n");
+    expect(status.output.join("")).toBe("Jev: on, TypeSafe, key apikey_012\u20263210, autopilot off, vision on, minConfidence 0.7, timeoutMs 3000\n");
 
     await run(["remove"]).done;
     expect(stored().jev).toBeUndefined();
     const after = run(["status"]);
     await after.done;
     expect(after.output.join("")).toContain("Jev: off (no key)");
+  });
+});
+
+describe("mybrowser-mcp jev use-local and autopilot", () => {
+  it("switches to a local server and drops the TypeSafe key", async () => {
+    const r = run(["use-local", "http://127.0.0.1:8000/v1/systemone", "--model", "strands-decider-2b"]);
+    await r.done;
+    expect(stored().jev).toEqual({ vision: true, provider: "local", url: "http://127.0.0.1:8000/v1/systemone", model: "strands-decider-2b" });
+    expect(stored().token).toBe("t".repeat(64));
+  });
+
+  it("goes back to TypeSafe on set-key", async () => {
+    await run(["use-local", "http://127.0.0.1:8000/v1/systemone"]).done;
+    await run(["set-key", KEY]).done;
+    expect(stored().jev).toEqual({ vision: true, apiKey: KEY });
+  });
+
+  it("rejects a bad local URL before writing", async () => {
+    await expect(run(["use-local", "ftp://x"]).done).rejects.toThrow(/url/);
+    expect(stored().jev).toEqual({ apiKey: "old", vision: true });
+  });
+
+  it("turns the autopilot on and off", async () => {
+    await run(["autopilot", "on"]).done;
+    expect(stored().jev.autopilot).toBe(true);
+    const status = run(["status"]);
+    await status.done;
+    expect(status.output.join("")).toMatch(/autopilot on/);
+    await run(["autopilot", "off"]).done;
+    expect(stored().jev.autopilot).toBeUndefined();
+    await expect(run(["autopilot", "maybe"]).done).rejects.toThrow(/on" or "off/);
   });
 });
