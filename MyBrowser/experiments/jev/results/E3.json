@@ -1,0 +1,289 @@
+{
+  "runs": [
+    {
+      "config": {
+        "id": "P",
+        "label": "viewport only, product descriptions (today)",
+        "mode": "viewport",
+        "context": "product"
+      },
+      "optionCount": 25,
+      "cases": [
+        {
+          "phrase": "the Manual placements option",
+          "gt": "placements.mode.manual",
+          "picked": null,
+          "confidence": 0.67,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Threads checkbox",
+          "gt": "placements.platform.threads",
+          "picked": null,
+          "confidence": 0.57,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the call to action dropdown",
+          "gt": "ad.cta",
+          "picked": null,
+          "confidence": 0.74,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Advanced preview button",
+          "gt": "ad.advanced_preview",
+          "picked": null,
+          "confidence": 1,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the button that removes the UAE location",
+          "gt": "adset.location.remove_uae",
+          "picked": null,
+          "confidence": 1,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Instagram account selector",
+          "gt": "ad.instagram",
+          "picked": null,
+          "confidence": 1,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the website URL field",
+          "gt": "ad.url",
+          "picked": null,
+          "confidence": 1,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Facebook Reels placement checkbox",
+          "gt": "placements.fb_reels",
+          "picked": null,
+          "confidence": 0.46,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the gender option for women",
+          "gt": "adset.gender.women",
+          "picked": null,
+          "confidence": 1,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the switch for Arabic translation",
+          "gt": "ad.translate.arabic",
+          "picked": null,
+          "confidence": 0.98,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Advantage+ creative enhancements section",
+          "gt": null,
+          "picked": null,
+          "confidence": 0.92,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Save as draft button",
+          "gt": "footer.save",
+          "picked": "footer.save",
+          "confidence": 1,
+          "outcome": "right"
+        }
+      ]
+    },
+    {
+      "config": {
+        "id": "F",
+        "label": "whole page, product descriptions",
+        "mode": "full",
+        "context": "product"
+      },
+      "optionCount": 81,
+      "cases": [
+        {
+          "phrase": "the Manual placements option",
+          "gt": "placements.mode.manual",
+          "picked": "placements.mode.manual",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Threads checkbox",
+          "gt": "placements.platform.threads",
+          "picked": "placements.platform.threads",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the call to action dropdown",
+          "gt": "ad.cta",
+          "picked": "ad.cta",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Advanced preview button",
+          "gt": "ad.advanced_preview",
+          "picked": "ad.advanced_preview",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the button that removes the UAE location",
+          "gt": "adset.location.remove_uae",
+          "picked": "adset.location.remove_uae",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Instagram account selector",
+          "gt": "ad.instagram",
+          "picked": "ad.instagram",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the website URL field",
+          "gt": "ad.url",
+          "picked": "ad.url",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Facebook Reels placement checkbox",
+          "gt": "placements.fb_reels",
+          "picked": "placements.fb_reels",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the gender option for women",
+          "gt": "adset.gender.women",
+          "picked": "adset.gender.women",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the switch for Arabic translation",
+          "gt": "ad.translate.arabic",
+          "picked": "ad.translate.arabic",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Advantage+ creative enhancements section",
+          "gt": null,
+          "picked": "Advantage+ creative enhancements",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Save as draft button",
+          "gt": "footer.save",
+          "picked": "footer.save",
+          "confidence": 1,
+          "outcome": "right"
+        }
+      ]
+    },
+    {
+      "config": {
+        "id": "R",
+        "label": "whole page, + section and row context",
+        "mode": "full",
+        "context": "rich"
+      },
+      "optionCount": 81,
+      "cases": [
+        {
+          "phrase": "the Manual placements option",
+          "gt": "placements.mode.manual",
+          "picked": "placements.mode.manual",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Threads checkbox",
+          "gt": "placements.platform.threads",
+          "picked": "placements.platform.threads",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the call to action dropdown",
+          "gt": "ad.cta",
+          "picked": "ad.cta",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Advanced preview button",
+          "gt": "ad.advanced_preview",
+          "picked": "ad.advanced_preview",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the button that removes the UAE location",
+          "gt": "adset.location.remove_uae",
+          "picked": "adset.location.remove_uae",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Instagram account selector",
+          "gt": "ad.instagram",
+          "picked": "ad.instagram",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the website URL field",
+          "gt": "ad.url",
+          "picked": "ad.url",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Facebook Reels placement checkbox",
+          "gt": "placements.fb_reels",
+          "picked": "placements.fb_reels",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the gender option for women",
+          "gt": "adset.gender.women",
+          "picked": "adset.gender.women",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the switch for Arabic translation",
+          "gt": "ad.translate.arabic",
+          "picked": "ad.translate.arabic",
+          "confidence": 1,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Advantage+ creative enhancements section",
+          "gt": null,
+          "picked": "Advantage+ creative enhancements",
+          "confidence": 0.98,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Save as draft button",
+          "gt": "footer.save",
+          "picked": "footer.save",
+          "confidence": 1,
+          "outcome": "right"
+        }
+      ]
+    }
+  ]
+}

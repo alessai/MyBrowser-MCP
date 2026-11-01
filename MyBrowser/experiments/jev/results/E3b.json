@@ -1,0 +1,352 @@
+{
+  "elements": {
+    "viewport": 118,
+    "full": 1253
+  },
+  "runs": [
+    {
+      "id": "P",
+      "label": "viewport only, product descriptions (today)",
+      "cases": [
+        {
+          "phrase": "the on/off switch for the \"National Day sale - UAE 2025\" campaign",
+          "gt": "row.37.toggle",
+          "picked": null,
+          "confidence": 0.83,
+          "ms": 283,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Edit button for the \"New Year traffic - UAE 2025\" campaign",
+          "gt": "row.88.edit",
+          "picked": null,
+          "confidence": 0.99,
+          "ms": 285,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Black Friday leads - KSA 2025\" campaign",
+          "gt": "row.142.duplicate",
+          "picked": null,
+          "confidence": 1,
+          "ms": 292,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the row checkbox for the \"Spring price audit - KSA 2025\" campaign",
+          "gt": "row.199.select",
+          "picked": null,
+          "confidence": 1,
+          "ms": 285,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the name link of the \"Q4 sale - Oman 2026\" campaign",
+          "gt": "row.233.link",
+          "picked": null,
+          "confidence": 1,
+          "ms": 274,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the on/off switch for the \"Eid video views - UAE 2025\" campaign",
+          "gt": "row.61.toggle",
+          "picked": null,
+          "confidence": 1,
+          "ms": 271,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Edit button for the \"Back to school app installs - KSA 2025\" campaign",
+          "gt": "row.175.edit",
+          "picked": null,
+          "confidence": 1,
+          "ms": 317,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Spring leads - Oman 2024\" campaign",
+          "gt": "row.249.duplicate",
+          "picked": null,
+          "confidence": 1,
+          "ms": 301,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the on/off switch for the \"Back to school retargeting - UAE 2026\" campaign",
+          "gt": "row.5.toggle",
+          "picked": null,
+          "confidence": 0.16,
+          "ms": 269,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the row checkbox for the \"Ramadan brand awareness - KSA 2024\" campaign",
+          "gt": "row.120.select",
+          "picked": null,
+          "confidence": 0.99,
+          "ms": 272,
+          "outcome": "declined"
+        }
+      ]
+    },
+    {
+      "id": "F",
+      "label": "whole page + product pre-filter, product descriptions",
+      "cases": [
+        {
+          "phrase": "the on/off switch for the \"National Day sale - UAE 2025\" campaign",
+          "gt": "row.37.toggle",
+          "picked": null,
+          "confidence": 0.22,
+          "ms": 434,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Edit button for the \"New Year traffic - UAE 2025\" campaign",
+          "gt": "row.88.edit",
+          "picked": null,
+          "confidence": 0.64,
+          "ms": 407,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Black Friday leads - KSA 2025\" campaign",
+          "gt": "row.142.duplicate",
+          "picked": null,
+          "confidence": 0.44,
+          "ms": 321,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the row checkbox for the \"Spring price audit - KSA 2025\" campaign",
+          "gt": "row.199.select",
+          "picked": null,
+          "confidence": 0.2,
+          "ms": 315,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the name link of the \"Q4 sale - Oman 2026\" campaign",
+          "gt": "row.233.link",
+          "picked": "row.233.link",
+          "confidence": 1,
+          "ms": 446,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the on/off switch for the \"Eid video views - UAE 2025\" campaign",
+          "gt": "row.61.toggle",
+          "picked": null,
+          "confidence": 0.33,
+          "ms": 339,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Edit button for the \"Back to school app installs - KSA 2025\" campaign",
+          "gt": "row.175.edit",
+          "picked": null,
+          "confidence": 0.27,
+          "ms": 322,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Spring leads - Oman 2024\" campaign",
+          "gt": "row.249.duplicate",
+          "picked": null,
+          "confidence": 0.9,
+          "ms": 323,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the on/off switch for the \"Back to school retargeting - UAE 2026\" campaign",
+          "gt": "row.5.toggle",
+          "picked": null,
+          "confidence": 0.2,
+          "ms": 454,
+          "outcome": "declined"
+        },
+        {
+          "phrase": "the row checkbox for the \"Ramadan brand awareness - KSA 2024\" campaign",
+          "gt": "row.120.select",
+          "picked": null,
+          "confidence": 0.12,
+          "ms": 434,
+          "outcome": "declined"
+        }
+      ]
+    },
+    {
+      "id": "R",
+      "label": "whole page + product pre-filter, row context",
+      "cases": [
+        {
+          "phrase": "the on/off switch for the \"National Day sale - UAE 2025\" campaign",
+          "gt": "row.37.toggle",
+          "picked": "row.37.toggle",
+          "confidence": 1,
+          "ms": 460,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Edit button for the \"New Year traffic - UAE 2025\" campaign",
+          "gt": "row.88.edit",
+          "picked": "row.88.edit",
+          "confidence": 1,
+          "ms": 482,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Black Friday leads - KSA 2025\" campaign",
+          "gt": "row.142.duplicate",
+          "picked": "row.142.duplicate",
+          "confidence": 1,
+          "ms": 460,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the row checkbox for the \"Spring price audit - KSA 2025\" campaign",
+          "gt": "row.199.select",
+          "picked": "row.199.select",
+          "confidence": 0.98,
+          "ms": 493,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the name link of the \"Q4 sale - Oman 2026\" campaign",
+          "gt": "row.233.link",
+          "picked": "row.233.link",
+          "confidence": 1,
+          "ms": 506,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the on/off switch for the \"Eid video views - UAE 2025\" campaign",
+          "gt": "row.61.toggle",
+          "picked": "row.61.toggle",
+          "confidence": 1,
+          "ms": 392,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Edit button for the \"Back to school app installs - KSA 2025\" campaign",
+          "gt": "row.175.edit",
+          "picked": "row.175.edit",
+          "confidence": 1,
+          "ms": 361,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Spring leads - Oman 2024\" campaign",
+          "gt": "row.249.duplicate",
+          "picked": "row.249.duplicate",
+          "confidence": 1,
+          "ms": 378,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the on/off switch for the \"Back to school retargeting - UAE 2026\" campaign",
+          "gt": "row.5.toggle",
+          "picked": "row.5.toggle",
+          "confidence": 1,
+          "ms": 479,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the row checkbox for the \"Ramadan brand awareness - KSA 2024\" campaign",
+          "gt": "row.120.select",
+          "picked": "row.120.select",
+          "confidence": 1,
+          "ms": 454,
+          "outcome": "right"
+        }
+      ]
+    },
+    {
+      "id": "T",
+      "label": "two steps: pick the row, then the control in it",
+      "cases": [
+        {
+          "phrase": "the on/off switch for the \"National Day sale - UAE 2025\" campaign",
+          "gt": "row.37.toggle",
+          "picked": "row.37.toggle",
+          "confidence": 1,
+          "ms": 618,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Edit button for the \"New Year traffic - UAE 2025\" campaign",
+          "gt": "row.88.edit",
+          "picked": "row.88.edit",
+          "confidence": 1,
+          "ms": 598,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Black Friday leads - KSA 2025\" campaign",
+          "gt": "row.142.duplicate",
+          "picked": "row.142.duplicate",
+          "confidence": 1,
+          "ms": 616,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the row checkbox for the \"Spring price audit - KSA 2025\" campaign",
+          "gt": "row.199.select",
+          "picked": "row.199.select",
+          "confidence": 1,
+          "ms": 584,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the name link of the \"Q4 sale - Oman 2026\" campaign",
+          "gt": "row.233.link",
+          "picked": "row.233.link",
+          "confidence": 1,
+          "ms": 574,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the on/off switch for the \"Eid video views - UAE 2025\" campaign",
+          "gt": "row.61.toggle",
+          "picked": "row.61.toggle",
+          "confidence": 1,
+          "ms": 597,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Edit button for the \"Back to school app installs - KSA 2025\" campaign",
+          "gt": "row.175.edit",
+          "picked": "row.175.edit",
+          "confidence": 1,
+          "ms": 599,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the Duplicate button for the \"Spring leads - Oman 2024\" campaign",
+          "gt": "row.249.duplicate",
+          "picked": "row.249.duplicate",
+          "confidence": 1,
+          "ms": 593,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the on/off switch for the \"Back to school retargeting - UAE 2026\" campaign",
+          "gt": "row.5.toggle",
+          "picked": "row.5.toggle",
+          "confidence": 1,
+          "ms": 612,
+          "outcome": "right"
+        },
+        {
+          "phrase": "the row checkbox for the \"Ramadan brand awareness - KSA 2024\" campaign",
+          "gt": "row.120.select",
+          "picked": "row.120.select",
+          "confidence": 1,
+          "ms": 569,
+          "outcome": "right"
+        }
+      ]
+    }
+  ]
+}

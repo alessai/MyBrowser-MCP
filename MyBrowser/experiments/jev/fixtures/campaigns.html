@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Campaigns table with 250 rows (about 1,250 interactive elements), for the
+  large-page experiment. Every row has the same five controls, so only the row
+  text tells them apart. Names are deterministic; data-gt = "row.<i>.<control>".
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Campaigns - Ads Manager</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 16px; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { border-bottom: 1px solid #eee; padding: 4px 8px; text-align: left; }
+  [role=switch] { width: 30px; height: 16px; border-radius: 8px; background: #ccc; display: inline-block; }
+  [role=switch][aria-checked=true] { background: #1877f2; }
+</style></head>
+<body>
+<h1>Campaigns</h1>
+<button>Create</button> <button>Export</button> <input type="search" placeholder="Search campaigns">
+<table><thead><tr><th>Select</th><th>On/Off</th><th>Campaign</th><th>Budget</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table>
+<script>
+  const a = ['Ramadan', 'Eid', 'Black Friday', 'Q4', 'Summer', 'Back to school', 'White Friday', 'National Day', 'New Year', 'Spring'];
+  const b = ['retargeting', 'lookalike', 'brand awareness', 'sale', 'leads', 'catalogue', 'video views', 'app installs', 'traffic', 'price audit'];
+  const c = ['UAE', 'KSA', 'Oman', 'Qatar', 'Kuwait'];
+  const rows = [];
+  for (let i = 0; i < 250; i++) {
+    const name = `${a[i % 10]} ${b[Math.floor(i / 10) % 10]} - ${c[Math.floor(i / 100) % 5]} ${2024 + (i % 3)}`;
+    rows.push(`<tr><td><input type="checkbox" aria-label="Select row" data-gt="row.${i}.select"></td>
+      <td><div role="switch" tabindex="0" aria-checked="${i % 3 ? 'true' : 'false'}" aria-label="On/Off" data-gt="row.${i}.toggle"></div></td>
+      <td><a href="/campaign/${1000 + i}" data-gt="row.${i}.link">${name}</a></td>
+      <td>AED ${20 + (i % 9) * 5}/day</td>
+      <td><button data-gt="row.${i}.edit">Edit</button> <button data-gt="row.${i}.duplicate">Duplicate</button></td></tr>`);
+  }
+  document.getElementById('rows').innerHTML = rows.join('');
+  window.__names = [...document.querySelectorAll('[data-gt$=".link"]')].map((x) => x.textContent);
+</script>
+</body></html>

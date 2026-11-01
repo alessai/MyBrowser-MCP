@@ -1,0 +1,219 @@
+<!doctype html>
+<!--
+  Ads Manager-style edit page for the Jev experiments. Every control carries
+  data-gt (ground truth). The page mixes the labelling styles seen on the real
+  Meta UI: <label for>, wrapping labels, aria-label, aria-labelledby, and
+  switches/checkboxes whose only label is sibling text in a plain <div> row.
+  Traps: three fields called just "Name"/"Campaign name", four "Advantage+"
+  settings, a tri-state parent checkbox, a closed <details> section, and a
+  Tracking section that only renders after it is scrolled into view.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Edit ad set - Sampo price audit - Ads Manager</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; display: grid; grid-template-columns: 200px 1fr; }
+  header { grid-column: 1 / 3; background: #1c2b33; color: #fff; padding: 10px 16px; display: flex; gap: 16px; }
+  header a { color: #fff; }
+  aside { padding: 16px; border-right: 1px solid #ddd; }
+  aside a { display: block; margin: 6px 0; }
+  main { padding: 16px 24px 120px; max-width: 760px; }
+  section { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin-bottom: 24px; }
+  .row, li { display: flex; align-items: center; gap: 8px; margin: 10px 0; list-style: none; }
+  ul { padding: 0; }
+  .help { color: #666; font-size: 12px; margin: 4px 0 14px; }
+  .filler { height: 160px; color: #888; }
+  [role=switch] { width: 36px; height: 20px; border-radius: 10px; background: #ccc; display: inline-block; cursor: pointer; }
+  [role=switch][aria-checked=true] { background: #1877f2; }
+  .chip { background: #eef; padding: 2px 8px; border-radius: 10px; }
+  footer { position: fixed; bottom: 0; left: 200px; right: 0; background: #fff; border-top: 1px solid #ddd; padding: 10px 24px; display: flex; gap: 8px; }
+  label.block { display: block; margin-top: 10px; }
+  input[type=text], input[type=number], input[type=url], textarea, select { padding: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Ads Manager</strong>
+  <a href="/campaigns">Campaigns</a><a href="/adsets">Ad sets</a><a href="/ads">Ads</a><a href="/help">Help</a>
+</header>
+<aside>
+  <a href="#campaign">Campaign</a><a href="#adset">Ad set</a><a href="#placements">Placements</a><a href="#ad">Ad</a><a href="#tracking">Tracking</a>
+</aside>
+<main>
+
+<section id="campaign" aria-labelledby="h-campaign">
+  <h2 id="h-campaign">Campaign</h2>
+  <label class="block" for="c-name">Campaign name</label>
+  <input type="text" id="c-name" data-gt="campaign.name" value="Sampo - Price audit - Nov">
+  <label class="block" for="c-buy">Buying type</label>
+  <select id="c-buy" data-gt="campaign.buying_type"><option selected>Auction</option><option>Reservation</option></select>
+  <fieldset>
+    <legend>Campaign objective</legend>
+    <label><input type="radio" name="obj" data-gt="campaign.objective.awareness"> Awareness</label>
+    <label><input type="radio" name="obj" data-gt="campaign.objective.traffic"> Traffic</label>
+    <label><input type="radio" name="obj" data-gt="campaign.objective.engagement"> Engagement</label>
+    <label><input type="radio" name="obj" data-gt="campaign.objective.leads" checked> Leads</label>
+    <label><input type="radio" name="obj" data-gt="campaign.objective.app"> App promotion</label>
+    <label><input type="radio" name="obj" data-gt="campaign.objective.sales"> Sales</label>
+  </fieldset>
+  <div class="row"><div role="switch" tabindex="0" aria-checked="false" aria-label="Advantage+ campaign budget" data-gt="campaign.adv_budget"></div> Advantage+ campaign budget</div>
+  <p class="help">Distributes your budget across ad sets to get more results.</p>
+  <ul><li><div role="switch" tabindex="0" aria-checked="false" data-gt="campaign.ab_test"></div> A/B test</li></ul>
+  <div class="row"><input type="checkbox" data-gt="campaign.spending_limit"><span>Set campaign spending limit</span></div>
+  <div class="filler">Campaign details, special ad categories and scheduling notes.</div>
+</section>
+
+<section id="adset" aria-labelledby="h-adset">
+  <h2 id="h-adset">Ad set</h2>
+  <label class="block" for="as-name">Name</label>
+  <input type="text" id="as-name" data-gt="adset.name" value="UAE - sellers - 25-65">
+  <fieldset>
+    <legend>Conversion location</legend>
+    <label><input type="radio" name="conv" data-gt="adset.conv.website" checked> Website</label>
+    <label><input type="radio" name="conv" data-gt="adset.conv.app"> App</label>
+    <label><input type="radio" name="conv" data-gt="adset.conv.messaging"> Messaging apps</label>
+    <label><input type="radio" name="conv" data-gt="adset.conv.calls"> Calls</label>
+  </fieldset>
+  <label class="block" for="as-goal">Performance goal</label>
+  <select id="as-goal" data-gt="adset.performance_goal">
+    <option selected>Maximise number of leads</option>
+    <option>Maximise number of conversions</option>
+    <option>Maximise number of landing page views</option>
+  </select>
+  <label class="block" for="as-budget">Budget</label>
+  <select id="as-budget" data-gt="adset.budget_type"><option selected>Daily budget</option><option>Lifetime budget</option></select>
+  <input type="number" aria-label="Amount" data-gt="adset.budget_amount" value="20"> AED
+  <label class="block" for="as-start">Start date</label>
+  <input type="date" id="as-start" data-gt="adset.start_date" value="2026-11-03">
+  <label class="block"><input type="checkbox" data-gt="adset.end_date"> Set an end date</label>
+  <div class="row"><div role="switch" tabindex="0" aria-checked="true" aria-labelledby="l-advaud" data-gt="adset.adv_audience"></div><span id="l-advaud">Advantage+ audience</span></div>
+  <p>Locations: <span class="chip">United Arab Emirates <button aria-label="Remove United Arab Emirates" data-gt="adset.location.remove_uae">x</button></span></p>
+  <input type="text" placeholder="Search locations" data-gt="adset.location_search">
+  <div class="row">
+    <select aria-label="Minimum age" data-gt="adset.age_min"><option>18</option><option selected>25</option><option>35</option><option>45</option></select> to
+    <select aria-label="Maximum age" data-gt="adset.age_max"><option>35</option><option>45</option><option>55</option><option selected>65+</option></select>
+  </div>
+  <fieldset>
+    <legend>Gender</legend>
+    <label><input type="radio" name="gender" data-gt="adset.gender.all" checked> All</label>
+    <label><input type="radio" name="gender" data-gt="adset.gender.men"> Men</label>
+    <label><input type="radio" name="gender" data-gt="adset.gender.women"> Women</label>
+  </fieldset>
+  <input type="text" placeholder="Add demographics, interests or behaviours" data-gt="adset.detailed_targeting">
+  <div class="filler">Audience definition and estimated reach.</div>
+</section>
+
+<section id="placements" aria-labelledby="h-plc">
+  <h2 id="h-plc">Placements</h2>
+  <fieldset>
+    <legend>Placements</legend>
+    <label><input type="radio" name="plc" data-gt="placements.mode.advantage"> Advantage+ placements (recommended)</label>
+    <label><input type="radio" name="plc" data-gt="placements.mode.manual" checked> Manual placements</label>
+  </fieldset>
+  <select aria-label="Devices" data-gt="placements.devices"><option selected>All devices</option><option>Mobile only</option><option>Desktop only</option></select>
+  <h3>Platforms</h3>
+  <ul>
+    <li><label><input type="checkbox" data-gt="placements.platform.facebook" checked> Facebook</label></li>
+    <li><label><input type="checkbox" data-gt="placements.platform.instagram" checked> Instagram</label></li>
+    <li><label><input type="checkbox" data-gt="placements.platform.audience_network"> Audience Network</label></li>
+    <li><label><input type="checkbox" data-gt="placements.platform.messenger"> Messenger</label></li>
+    <li><label><input type="checkbox" data-gt="placements.platform.threads"> Threads</label></li>
+  </ul>
+  <h3>Placements</h3>
+  <ul>
+    <li><label><input type="checkbox" data-gt="placements.feeds" checked> Feeds</label></li>
+    <li><label><input type="checkbox" id="stories-parent" data-gt="placements.stories_reels"> Stories, Status &amp; Reels</label></li>
+    <li style="margin-left:24px"><label><input type="checkbox" class="story" data-gt="placements.ig_stories" checked> Instagram Stories</label></li>
+    <li style="margin-left:24px"><label><input type="checkbox" class="story" data-gt="placements.fb_stories"> Facebook Stories</label></li>
+    <li style="margin-left:24px"><label><input type="checkbox" class="story" data-gt="placements.messenger_stories"> Messenger Stories</label></li>
+    <li style="margin-left:24px"><label><input type="checkbox" class="story" data-gt="placements.ig_reels" checked> Instagram Reels</label></li>
+    <li style="margin-left:24px"><label><input type="checkbox" class="story" data-gt="placements.fb_reels"> Facebook Reels</label></li>
+    <li><label><input type="checkbox" data-gt="placements.instream"> In-stream ads for videos and reels</label></li>
+    <li><label><input type="checkbox" data-gt="placements.search"> Search results</label></li>
+    <li><label><input type="checkbox" data-gt="placements.apps"> Apps and sites</label></li>
+  </ul>
+  <div class="filler">Placement previews and asset customisation.</div>
+</section>
+
+<section id="ad" aria-labelledby="h-ad">
+  <h2 id="h-ad">Ad</h2>
+  <label class="block" for="ad-name">Name</label>
+  <input type="text" id="ad-name" data-gt="ad.name" value="Hook 3 - competitor price">
+  <select aria-label="Facebook Page" data-gt="ad.page"><option selected>Sampo</option><option>Sampo Test</option></select>
+  <select aria-label="Instagram account" data-gt="ad.instagram"><option>Use Facebook Page</option><option selected>@getsampo</option></select>
+  <fieldset>
+    <legend>Ad format</legend>
+    <label><input type="radio" name="fmt" data-gt="ad.format.single" checked> Single image or video</label>
+    <label><input type="radio" name="fmt" data-gt="ad.format.carousel"> Carousel</label>
+    <label><input type="radio" name="fmt" data-gt="ad.format.collection"> Collection</label>
+  </fieldset>
+  <div class="row"><input type="checkbox" data-gt="ad.multi_advertiser" checked><span>Multi-advertiser ads</span></div>
+  <label class="block" for="ad-text">Primary text</label>
+  <textarea id="ad-text" data-gt="ad.primary_text" rows="3">Competitors undercutting your best sellers on Noon and Amazon.ae? Get a free price audit.</textarea>
+  <input type="text" aria-label="Headline" data-gt="ad.headline" value="Free price audit">
+  <input type="text" aria-label="Description" data-gt="ad.description" value="">
+  <label class="block" for="ad-cta">Call to action</label>
+  <select id="ad-cta" data-gt="ad.cta"><option selected>Learn more</option><option>Sign up</option><option>Get quote</option><option>See details</option><option>Contact us</option></select>
+  <label class="block" for="ad-url">Website URL</label>
+  <input type="url" id="ad-url" data-gt="ad.url" value="https://getsampo.com/audit">
+  <h3>Translate text</h3>
+  <ul>
+    <li><div role="switch" tabindex="0" aria-checked="false" data-gt="ad.translate.arabic"></div> Arabic (machine translation)</li>
+    <li><div role="switch" tabindex="0" aria-checked="false" data-gt="ad.translate.tagalog"></div> Tagalog (machine translation)</li>
+  </ul>
+  <details>
+    <summary>Advantage+ creative enhancements</summary>
+    <div class="row"><div role="switch" tabindex="0" aria-checked="true" aria-label="Visual touch-ups" data-gt="ad.enh.visual"></div> Visual touch-ups</div>
+    <div class="row"><div role="switch" tabindex="0" aria-checked="true" aria-label="Text improvements" data-gt="ad.enh.text"></div> Text improvements</div>
+    <div class="row"><div role="switch" tabindex="0" aria-checked="false" aria-label="Music" data-gt="ad.enh.music"></div> Music</div>
+    <div class="row"><div role="switch" tabindex="0" aria-checked="false" aria-label="3D animation" data-gt="ad.enh.3d"></div> 3D animation</div>
+  </details>
+  <button data-gt="ad.advanced_preview">Advanced preview</button>
+  <div class="filler">Ad preview area.</div>
+</section>
+
+<section id="tracking" aria-labelledby="h-trk">
+  <h2 id="h-trk">Tracking</h2>
+  <div id="tracking-body"><p class="help">Loading tracking settings...</p></div>
+</section>
+<div class="filler"></div>
+</main>
+<footer>
+  <button data-gt="footer.close">Close</button>
+  <button data-gt="footer.discard">Discard draft</button>
+  <button data-gt="footer.save">Save as draft</button>
+  <button data-gt="footer.publish">Publish</button>
+</footer>
+<script>
+  // Tri-state parent, as on the real placements list.
+  const parent = document.getElementById('stories-parent');
+  const kids = [...document.querySelectorAll('.story')];
+  const sync = () => {
+    const on = kids.filter((k) => k.checked).length;
+    parent.checked = on === kids.length;
+    parent.indeterminate = on > 0 && on < kids.length;
+  };
+  kids.forEach((k) => k.addEventListener('change', sync));
+  parent.addEventListener('change', () => { kids.forEach((k) => (k.checked = parent.checked)); sync(); });
+  sync();
+  // Switches toggle on click / space.
+  document.querySelectorAll('[role=switch]').forEach((s) => {
+    const flip = () => s.setAttribute('aria-checked', s.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+    s.addEventListener('click', flip);
+    s.addEventListener('keydown', (e) => { if (e.key === ' ') { e.preventDefault(); flip(); } });
+  });
+  // Tracking renders lazily, like Ads Manager's lower cards.
+  new IntersectionObserver((entries, obs) => {
+    if (!entries.some((e) => e.isIntersecting)) return;
+    obs.disconnect();
+    document.getElementById('tracking-body').innerHTML = `
+      <label class="block"><input type="checkbox" data-gt="tracking.website_events" checked> Website events</label>
+      <select aria-label="Pixel" data-gt="tracking.pixel"><option selected>Sampo Pixel</option><option>Old test pixel</option></select>
+      <label class="block" for="trk-utm">URL parameters</label>
+      <input type="text" id="trk-utm" data-gt="tracking.url_params" value="utm_source=meta">
+      <label class="block"><input type="checkbox" data-gt="tracking.offline"> Offline events</label>`;
+  }).observe(document.getElementById('tracking'));
+</script>
+</body>
+</html>

@@ -1,0 +1,312 @@
+{
+  "runs": [
+    {
+      "rep": 0,
+      "wallMs": 2337,
+      "jevCalls": 4,
+      "steps": [
+        {
+          "phrase": "Campaign name",
+          "value": "Sampo - Price audit - Hook 4",
+          "gt": "campaign.name",
+          "picked": "campaign.name",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Advantage+ campaign budget",
+          "value": "off",
+          "gt": "campaign.adv_budget",
+          "picked": "campaign.adv_budget",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "A/B test",
+          "value": "on",
+          "gt": "campaign.ab_test",
+          "picked": "campaign.ab_test",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Performance goal",
+          "value": "landing page views",
+          "gt": "adset.performance_goal",
+          "picked": "adset.performance_goal",
+          "confidence": 1,
+          "optionConfidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Daily budget amount",
+          "value": "35",
+          "gt": "adset.budget_amount",
+          "picked": "adset.budget_amount",
+          "confidence": 0.89,
+          "done": true
+        },
+        {
+          "phrase": "Ad set start date",
+          "value": "2026-11-05",
+          "gt": "adset.start_date",
+          "picked": "adset.start_date",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Maximum age",
+          "value": "55",
+          "gt": "adset.age_max",
+          "picked": "adset.age_max",
+          "confidence": 0.99,
+          "done": true
+        },
+        {
+          "phrase": "Gender",
+          "value": "Women",
+          "gt": "adset.gender.women",
+          "picked": "adset.gender.women",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Audience Network placements",
+          "value": "off",
+          "gt": "placements.platform.audience_network",
+          "picked": "placements.platform.audience_network",
+          "confidence": 0.97,
+          "done": true
+        },
+        {
+          "phrase": "Threads placements",
+          "value": "on",
+          "gt": "placements.platform.threads",
+          "picked": "placements.platform.threads",
+          "confidence": 0.99,
+          "done": true
+        },
+        {
+          "phrase": "Facebook Reels",
+          "value": "on",
+          "gt": "placements.fb_reels",
+          "picked": "placements.fb_reels",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Ad name",
+          "value": "Hook 4 - margin",
+          "gt": "ad.name",
+          "picked": "ad.name",
+          "confidence": 0.99,
+          "done": true
+        },
+        {
+          "phrase": "Headline",
+          "value": "See who undercuts you",
+          "gt": "ad.headline",
+          "picked": "ad.headline",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Call to action",
+          "value": "Get a quote",
+          "gt": "ad.cta",
+          "picked": "ad.cta",
+          "confidence": 1,
+          "optionConfidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Arabic translation",
+          "value": "on",
+          "gt": "ad.translate.arabic",
+          "picked": "ad.translate.arabic",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Tagalog translation",
+          "value": "off",
+          "gt": "ad.translate.tagalog",
+          "picked": "ad.translate.tagalog",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Website URL",
+          "value": "https://getsampo.com/audit?h=4",
+          "gt": "ad.url",
+          "picked": "ad.url",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "URL parameters",
+          "value": "utm_source=meta&utm_content=hook4",
+          "gt": "tracking.url_params",
+          "picked": "tracking.url_params",
+          "confidence": 1,
+          "done": true
+        }
+      ],
+      "collateral": []
+    },
+    {
+      "rep": 1,
+      "wallMs": 2427,
+      "jevCalls": 4,
+      "steps": [
+        {
+          "phrase": "Campaign name",
+          "value": "Sampo - Price audit - Hook 4",
+          "gt": "campaign.name",
+          "picked": "campaign.name",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Advantage+ campaign budget",
+          "value": "off",
+          "gt": "campaign.adv_budget",
+          "picked": "campaign.adv_budget",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "A/B test",
+          "value": "on",
+          "gt": "campaign.ab_test",
+          "picked": "campaign.ab_test",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Performance goal",
+          "value": "landing page views",
+          "gt": "adset.performance_goal",
+          "picked": "adset.performance_goal",
+          "confidence": 1,
+          "optionConfidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Daily budget amount",
+          "value": "35",
+          "gt": "adset.budget_amount",
+          "picked": "adset.budget_amount",
+          "confidence": 0.87,
+          "done": true
+        },
+        {
+          "phrase": "Ad set start date",
+          "value": "2026-11-05",
+          "gt": "adset.start_date",
+          "picked": "adset.start_date",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Maximum age",
+          "value": "55",
+          "gt": "adset.age_max",
+          "picked": "adset.age_max",
+          "confidence": 0.98,
+          "done": true
+        },
+        {
+          "phrase": "Gender",
+          "value": "Women",
+          "gt": "adset.gender.women",
+          "picked": "adset.gender.women",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Audience Network placements",
+          "value": "off",
+          "gt": "placements.platform.audience_network",
+          "picked": "placements.platform.audience_network",
+          "confidence": 0.98,
+          "done": true
+        },
+        {
+          "phrase": "Threads placements",
+          "value": "on",
+          "gt": "placements.platform.threads",
+          "picked": "placements.platform.threads",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Facebook Reels",
+          "value": "on",
+          "gt": "placements.fb_reels",
+          "picked": "placements.fb_reels",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Ad name",
+          "value": "Hook 4 - margin",
+          "gt": "ad.name",
+          "picked": "ad.name",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Headline",
+          "value": "See who undercuts you",
+          "gt": "ad.headline",
+          "picked": "ad.headline",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Call to action",
+          "value": "Get a quote",
+          "gt": "ad.cta",
+          "picked": "ad.cta",
+          "confidence": 1,
+          "optionConfidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Arabic translation",
+          "value": "on",
+          "gt": "ad.translate.arabic",
+          "picked": "ad.translate.arabic",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Tagalog translation",
+          "value": "off",
+          "gt": "ad.translate.tagalog",
+          "picked": "ad.translate.tagalog",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "Website URL",
+          "value": "https://getsampo.com/audit?h=4",
+          "gt": "ad.url",
+          "picked": "ad.url",
+          "confidence": 1,
+          "done": true
+        },
+        {
+          "phrase": "URL parameters",
+          "value": "utm_source=meta&utm_content=hook4",
+          "gt": "tracking.url_params",
+          "picked": "tracking.url_params",
+          "confidence": 1,
+          "done": true
+        }
+      ],
+      "collateral": []
+    }
+  ]
+}

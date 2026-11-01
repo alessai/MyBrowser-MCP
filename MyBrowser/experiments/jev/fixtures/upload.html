@@ -1,0 +1,47 @@
+<!doctype html>
+<!--
+  Video upload card for the wait experiment. ?done=<ms> sets when upload ends.
+  Timeline: uploading 0-100% until done, "Processing video..." for 2 s, then
+  "Upload complete", then the ad preview 1 s later. Distractors: a "Draft saved"
+  toast at 1 s and static help text that contains the word "failed".
+  window.__truth exposes the true transition times for scoring.
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Ad creative - Ads Manager</title>
+<style>body { font: 14px system-ui, sans-serif; margin: 24px; } .bar { height: 8px; background: #eee; width: 300px; } .fill { height: 8px; background: #1877f2; width: 0; }</style>
+</head>
+<body>
+<h2>Ad creative</h2>
+<p class="help">If an upload failed earlier, you can retry it from the media library.</p>
+<div id="status">Uploading video... 0%</div>
+<div class="bar"><div class="fill" id="fill"></div></div>
+<div id="toast"></div>
+<div id="preview"></div>
+<button>Edit media</button> <button>Media library</button>
+<script>
+  const done = Number(new URLSearchParams(location.search).get('done') || 6000);
+  const t0 = performance.now();
+  window.__truth = { uploadFinishedAt: done + 2000, previewAt: done + 3000, errorAt: null };
+  const tick = () => {
+    const t = performance.now() - t0;
+    const status = document.getElementById('status');
+    if (t < done) {
+      const p = Math.floor((t / done) * 100);
+      status.textContent = `Uploading video... ${p}%`;
+      document.getElementById('fill').style.width = `${p * 3}px`;
+    } else if (t < done + 2000) {
+      status.textContent = 'Processing video...';
+      document.getElementById('fill').style.width = '300px';
+    } else {
+      status.textContent = 'Upload complete. sampo-hook-4.mp4 (00:12)';
+    }
+    if (t > 1000 && t < 3500) document.getElementById('toast').textContent = 'Draft saved';
+    else document.getElementById('toast').textContent = '';
+    if (t >= done + 3000 && !document.getElementById('preview').textContent) {
+      document.getElementById('preview').innerHTML = '<h3>Ad preview</h3><p>Sampo - Free price audit. Learn more</p>';
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
+</script>
+</body></html>
