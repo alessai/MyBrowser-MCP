@@ -1,4 +1,5 @@
 import type { Context } from "../context.js";
+import { guardNote } from "./guard.js";
 
 const MAX_SNAPSHOT_CHARS = 30_000;
 
@@ -40,11 +41,12 @@ export async function captureAriaSnapshot(
       `\n... (truncated at ${MAX_SNAPSHOT_CHARS} chars. ${hint})`;
   }
 
+  const warning = guardNote(`${title}\n${snapshot ?? ""}`);
   return {
     content: [
       {
         type: "text" as const,
-        text: `${status ? `${status}\n` : ""}\n- Page URL: ${url}\n- Page Title: ${title}\n- Page Snapshot\n\`\`\`yaml\n${snapshot}\n\`\`\`\n`,
+        text: `${status ? `${status}\n` : ""}${warning ? `${warning}\n` : ""}\n- Page URL: ${url}\n- Page Title: ${title}\n- Page Snapshot\n\`\`\`yaml\n${snapshot}\n\`\`\`\n`,
       },
     ],
   };

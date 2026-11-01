@@ -41,6 +41,7 @@ async function waitUntil(context: Parameters<Tool["handle"]>[0], args: z.infer<t
   let last: number | undefined;
   let polls = 0;
   while (Date.now() - started < timeout) {
+    const pollStarted = Date.now();
     polls += 1;
     const page = await readPageText(context, args.tabId);
     const [reached, failed] = await askPage(context, page, [
@@ -53,7 +54,9 @@ async function waitUntil(context: Parameters<Tool["handle"]>[0], args: z.infer<t
     last = reached;
     streak = reached !== undefined && reached >= UNTIL_THRESHOLD ? streak + 1 : 0;
     if (streak >= 2) return `Reached after ${((Date.now() - started) / 1000).toFixed(1)} s: "${args.until}" (probability ${reached!.toFixed(2)}, ${polls} checks).`;
-    await new Promise((r) => setTimeout(r, interval));
+    // Confirm a first hit right away; otherwise poll on a fixed rhythm (the check itself counts).
+    const wait = streak === 1 ? 150 : Math.max(0, interval - (Date.now() - pollStarted));
+    await new Promise((r) => setTimeout(r, wait));
   }
   throw new Error(`WAIT_TIMEOUT: "${args.until}" not reached within ${timeout} ms (last probability ${last === undefined ? "unknown" : last.toFixed(2)}).`);
 }

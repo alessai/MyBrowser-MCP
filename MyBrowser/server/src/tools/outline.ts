@@ -3,6 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { askMany, type JevQuestion } from "../jev/client.js";
 import { readPageModel, type ModelElement, type PageModel } from "../page/model.js";
 import { rememberOutline } from "../page/refs.js";
+import { guardNote } from "../utils/guard.js";
 import type { Tool } from "./types.js";
 
 const OutlineArgs = z.object({
@@ -120,6 +121,8 @@ export const outline: Tool = {
       }
     }
     if (hidden) out.push(`…${hidden} more controls not shown; pass section or focus to see them.`);
+    const warning = guardNote(out.join("\n"));
+    if (warning) out.splice(1, 0, warning);
     return { content: [{ type: "text", text: out.join("\n") }] };
   },
 };

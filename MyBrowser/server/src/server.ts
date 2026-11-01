@@ -74,6 +74,7 @@ import { download } from "./tools/download.js";
 import { fetchFile } from "./tools/fetch-file.js";
 import { check } from "./tools/check.js";
 import { outline } from "./tools/outline.js";
+import { triage } from "./tools/triage.js";
 import type { JevConfig } from "./jev/config.js";
 import { clipboard } from "./tools/clipboard.js";
 
@@ -117,7 +118,7 @@ const MUTATING_TOOLS = new Set([
   "browser_click", "browser_type", "browser_hover", "browser_press_key",
   "browser_drag", "browser_select_option",
   "select_tab", "close_tab",
-  "browser_fill_form", "browser_action",
+  "browser_fill_form", "browser_action", "browser_triage",
   "browser_record_start", "browser_replay",
   "browser_eval", "browser_storage", "browser_upload", "browser_clipboard",
   "browser_set_viewport", "browser_reset_viewport",
@@ -336,7 +337,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     // Diagnostics and support
     browserDiagnostics, browserSupportBundle,
     // Page map and Jev decision layer
-    outline, check,
+    outline, triage, check,
   ];
   // browser_check is only listed when configured, so agents never see a tool that always fails.
   // Telemetry coverage still checks every defined tool.
