@@ -78,6 +78,8 @@ export interface WsServerOptions {
   recordingFileOps?: Partial<RecordingFileOps>;
   recordingRetryRegistry?: RecordingRetryRegistry;
   sessionReconnectGraceMs?: number;
+  /** How long a client session that has a resume key is kept after its process stops. */
+  sessionResumeGraceMs?: number;
   finalizedSessionTtlMs?: number;
   finalizedSessionLimit?: number;
   clientReconnectDelayMs?: number;
@@ -212,6 +214,10 @@ const CLIENT_TIMEOUT_MS = 45_000;      // MCP clients: 45s inactivity → discon
 const BROWSER_TIMEOUT_MS = 120_000;    // Browser extensions: 120s (8 missed heartbeats)
 const LIVENESS_SWEEP_INTERVAL_MS = 30_000; // Hub pings all connections every 30s
 const SESSION_RECONNECT_GRACE_MS = 15_000;
+// OpenCode v2 stops an MCP process after about 61 min idle, so an agent that
+// comes back has been idle over an hour; 2 h keeps its tabs for that return.
+const SESSION_RESUME_GRACE_MS = 2 * 60 * 60_000;
+const RESUME_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 const CLIENT_HEARTBEAT_INTERVAL_MS = 15_000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 10_000;
 const DEFAULT_PROXY_TIMEOUT_MS = 29_000;
@@ -320,6 +326,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   const destructiveFinalizerOwners = new Map<string, number>();
   const sessionReconnectGraceMs = options.sessionReconnectGraceMs
     ?? SESSION_RECONNECT_GRACE_MS;
+  const sessionResumeGraceMs = options.sessionResumeGraceMs ?? SESSION_RESUME_GRACE_MS;
+  // sessionId -> resume key (a hash of the client's working folder).
+  const sessionResumeKeys = new Map<string, string>();
   const finalizedSessions = new FinalizedSessionRegistry({
     ttlMs: options.finalizedSessionTtlMs ?? FINALIZED_SESSION_TTL_MS,
     maxEntries: options.finalizedSessionLimit ?? MAX_FINALIZED_SESSION_TOMBSTONES,
@@ -453,6 +462,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       if (generationAware && sessionGenerations.get(sessionId) !== generation) return false;
       sessionGenerations.delete(sessionId);
       finalizedSessions.add(sessionId);
+      sessionResumeKeys.delete(sessionId);
       await step(() => stateManager.removeSession(sessionId));
       if (errors.length > 0) {
         throw new AggregateError(errors, `finalizeSession(${sessionId})`);
@@ -487,7 +497,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
   function scheduleSessionCleanup(
     sessionId: string,
-    delayMs = sessionReconnectGraceMs,
+    delayMs = sessionResumeKeys.has(sessionId) ? sessionResumeGraceMs : sessionReconnectGraceMs,
   ): void {
     cancelSessionCleanup(sessionId);
     const expectedGeneration = sessionGenerations.get(sessionId) ?? 0;
@@ -970,7 +980,27 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         }
 
         if (msg.method === "registerSession") {
-          const sessionId = msg.params?.sessionId;
+          const requestedSessionId = msg.params?.sessionId;
+          const resumeKey = typeof msg.params?.resumeKey === "string" && RESUME_KEY.test(msg.params.resumeKey)
+            ? msg.params.resumeKey
+            : undefined;
+          // A restarted client from the same folder takes over the stopped
+          // session it left behind, so its tabs and claims carry over.
+          let adoptedSessionId: string | undefined;
+          if (resumeKey && connectionSessions.getSession(ws) === undefined) {
+            for (const parkedId of pendingSessionCleanup.keys()) {
+              if (
+                sessionResumeKeys.get(parkedId) === resumeKey
+                && !connectionSessions.hasLiveSession(parkedId)
+                && !finalizedSessions.has(parkedId)
+                && !destructiveFinalizerOwners.has(parkedId)
+              ) {
+                adoptedSessionId = parkedId;
+                break;
+              }
+            }
+          }
+          const sessionId = adoptedSessionId ?? requestedSessionId;
           if (!isValidV2SessionId(sessionId)) {
             safeSend(ws, {
               type: "hub_rpc_result",
@@ -1007,6 +1037,10 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             );
           }
           cancelSessionCleanup(sessionId);
+          if (resumeKey) sessionResumeKeys.set(sessionId, resumeKey);
+          if (adoptedSessionId) {
+            console.error(`[MyBrowser MCP] Client resumed stopped session "${adoptedSessionId}"`);
+          }
 
           try {
             await stateManager.registerSession(
@@ -1016,7 +1050,7 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
             safeSend(ws, {
               type: "hub_rpc_result",
               id: msg.id,
-              result: { ok: true },
+              result: adoptedSessionId ? { ok: true, sessionId: adoptedSessionId } : { ok: true },
             });
           } catch (err) {
             safeSend(ws, {
@@ -1039,6 +1073,14 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
         }
 
         if (msg.method === "removeSession") {
+          // A client shutting down with a resume key is parked, not finalized:
+          // its replacement process can pick the session up again.
+          if (msg.params?.park === true && sessionResumeKeys.has(sessionId)) {
+            connectionSessions.unbind(ws);
+            scheduleSessionCleanup(sessionId);
+            safeSend(ws, { type: "hub_rpc_result", id: msg.id, result: { ok: true, parked: true } });
+            return;
+          }
           const expectedGeneration = sessionGenerations.get(sessionId) ?? 0;
           try {
             const finalized = await finalizeSession(
@@ -1757,8 +1799,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       const closedSessionId = connectionSessions.unbind(ws);
       if (closedSessionId && !shuttingDown) {
         scheduleSessionCleanup(closedSessionId);
+        const graceMs = sessionResumeKeys.has(closedSessionId) ? sessionResumeGraceMs : sessionReconnectGraceMs;
         console.error(
-          `[MyBrowser MCP] Client session "${closedSessionId}" disconnected — waiting ${sessionReconnectGraceMs / 1000}s for reconnect before cleanup`,
+          `[MyBrowser MCP] Client session "${closedSessionId}" disconnected — waiting ${graceMs / 1000}s for reconnect before cleanup`,
         );
       }
 

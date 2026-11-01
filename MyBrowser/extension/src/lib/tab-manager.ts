@@ -40,11 +40,12 @@ export async function resolveTabId(
     } catch {}
   }
 
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (activeTab?.id !== undefined) {
-    return activeTab.id;
-  }
-  throw new Error('TAB_CLOSED');
+  // Never fall back to the user's active tab: an agent without its own tab
+  // would otherwise start driving whatever the user is looking at.
+  throw new Error(
+    'NO_SESSION_TAB: this agent session has no tab yet. Open one with new_tab (browser_navigate opens one automatically), '
+    + 'or use list_tabs and pass tabId / select_tab to work in an existing tab.',
+  );
 }
 
 export async function listTabs(): Promise<TabInfo[]> {

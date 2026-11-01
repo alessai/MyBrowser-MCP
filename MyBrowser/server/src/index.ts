@@ -2,6 +2,8 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { program } from "commander";
+import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadOrCreateConfig, validateConfigOverrides } from "./auth.js";
 import { registerJevCommands } from "./jev/commands.js";
@@ -96,7 +98,11 @@ program
       host: config.host,
       port: config.port,
       token: config.token,
-      sessionName: opts.session,
+      // Default to the project folder name so messages say which agent holds a tab.
+      sessionName: opts.session ?? (opts.hub ? undefined : basename(process.cwd()) || undefined),
+      // MCP hosts (OpenCode v2) start one process per project folder and restart
+      // it after idling; the folder lets the replacement resume the session.
+      resumeKey: opts.hub ? undefined : createHash("sha256").update(`mybrowser-resume\0${process.cwd()}`).digest("base64url").slice(0, 32),
       telemetryConfig,
       localUrlHost: config.localUrlHost,
       jev: readJevConfig(config.jev),

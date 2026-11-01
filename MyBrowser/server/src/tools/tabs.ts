@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Context } from "../context.js";
-import type { IStateManager } from "../state-manager.js";
+import { makeTabKey, type IStateManager } from "../state-manager.js";
 import type { Tool } from "./types.js";
 
 const ListTabsArgs = z.object({});
@@ -16,6 +16,16 @@ const KeepTabArgs = z.object({
   browserId: z.string().optional().describe("Browser containing the tab. Defaults to this session's resolved browser."),
 });
 const CleanupArgs = z.object({});
+
+/** Opens a tab for this session (temporary unless told otherwise) and claims it. */
+export async function openSessionTab(context: Context, url: string | undefined, temporary?: boolean): Promise<number | undefined> {
+  const result = await context.sendSocketMessage("new_tab", { url, temporary });
+  const tabId = (result as { tabId?: unknown } | undefined)?.tabId;
+  if (typeof tabId !== "number") return undefined;
+  // The tab is open either way; a failed claim must not turn that into an error.
+  await context.claimTab?.(tabId).catch(() => {});
+  return tabId;
+}
 
 export interface TabToolDependencies {
   stateManager: IStateManager;
@@ -48,7 +58,7 @@ export function createTabTools({
   const selectTab: Tool = {
     schema: {
       name: "select_tab",
-      description: "Switch to a specific browser tab by its ID",
+      description: "Make a tab this session's current tab, so tools without tabId act on it. The tab becomes this session's; a tab another agent session is using is refused.",
       inputSchema: zodToJsonSchema(SelectTabArgs),
     },
     handle: async (_context, params) => {
@@ -66,8 +76,7 @@ export function createTabTools({
     },
     handle: async (_context, params) => {
       const { url, temporary } = NewTabArgs.parse(params ?? {});
-      const result = await context.sendSocketMessage("new_tab", { url, temporary });
-      const tabId = (result as any)?.tabId;
+      const tabId = await openSessionTab(context, url, temporary);
       const resolvedUrl = url === undefined ? undefined : context.resolveNavigationUrl(url);
       const text = resolvedUrl
         ? `Opened new tab ${tabId ?? ""} with ${resolvedUrl}`
@@ -85,6 +94,9 @@ export function createTabTools({
     handle: async (_context, params) => {
       const { tabId } = CloseTabArgs.parse(params);
       await context.sendSocketMessage("close_tab", { tabId });
+      await getActiveBrowser()
+        .then((browserId) => stateManager.releaseTab(getSessionId(), makeTabKey(browserId, tabId)))
+        .catch(() => {});
       return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
     },
   };

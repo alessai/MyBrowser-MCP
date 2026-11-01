@@ -425,9 +425,10 @@ describe("resolveTabId", () => {
     expect(chrome.tabs.query).not.toHaveBeenCalled();
   });
 
-  it("uses the active tab when the stored fallback is stale", async () => {
+  it("never falls back to the user's active tab", async () => {
     vi.mocked(chrome.tabs.get).mockRejectedValueOnce(new Error("missing"));
-
-    await expect(resolveTabId(undefined, 8)).resolves.toBe(3);
+    await expect(resolveTabId(undefined, 8)).rejects.toThrow("NO_SESSION_TAB");
+    await expect(resolveTabId(undefined, undefined)).rejects.toThrow("NO_SESSION_TAB");
+    expect(chrome.tabs.query).not.toHaveBeenCalled();
   });
 });

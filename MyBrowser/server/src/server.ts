@@ -98,6 +98,8 @@ export interface ServerOptions {
   token: string;
   sessionId?: string;
   sessionName?: string;
+  /** Stable key for this client's workspace; lets a restarted process resume its stopped session on the hub. */
+  resumeKey?: string;
   telemetryConfig?: TelemetryConfig;
   telemetry?: TelemetryManager;
   requireHub?: boolean;
@@ -242,7 +244,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   stateManager = wss.stateManager;
 
   const registerSession = async (): Promise<void> => {
-    const registration = await incarnation.register(stateManager, options.sessionName);
+    const registration = await incarnation.register(stateManager, options.sessionName, options.resumeKey);
     sessionId = registration.sessionId;
     context.sessionId = registration.sessionId;
   };
@@ -259,6 +261,10 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   };
 
   context.setTargetBrowserResolver(getActiveBrowser);
+  // Tabs a session opens are its own; another session cannot drive them.
+  context.claimTab = async (tabId: number) => {
+    await stateManager.claimTab(sessionId, makeTabKey(await getActiveBrowser(), tabId));
+  };
 
   // Create tool sets
   const { claimTab, releaseTab, sessions } = createSessionTools(stateManager, () => sessionId, getActiveBrowser);
@@ -429,34 +435,21 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
 
       await stateManager.touchSession(sessionId);
 
-      // Ownership check for mutating tools
-      if (MUTATING_TOOLS.has(toolName) && await stateManager.shouldEnforceOwnership()) {
-        const tabId = extractTabId(request.params.arguments);
-        if (tabId === undefined) {
-          failureOutcome = { status: "error", errorCategory: "ownership_denied" };
-          recordIssue({
-            level: "warn",
-            area: "ownership",
-            message: `${toolName} rejected because tabId is required while ownership is enforced`,
-            toolName,
-            sessionId,
-          });
-          return {
-            content: [{
-              type: "text",
-              text: `tabId is required when tab ownership is enforced (multiple sessions active). Use list_tabs to find tab IDs.`,
-            }],
-            isError: true,
-          };
-        }
-
+      // Ownership: acting on a tab by id claims it for this session, unless another
+      // session owns it. Calls without tabId run on the session's own tab, which
+      // it got from new_tab, select_tab or an earlier tabId (all claimed), never
+      // on the user's active tab.
+      const ownedTabId = MUTATING_TOOLS.has(toolName) ? extractTabId(request.params.arguments) : undefined;
+      if (ownedTabId !== undefined) {
+        const tabId = ownedTabId;
         try {
           const browserId = await getActiveBrowser();
           const tabKey = makeTabKey(browserId, tabId);
-          if (!await stateManager.isTabAvailable(tabKey, sessionId)) {
+          const claim = await stateManager.claimTab(sessionId, tabKey);
+          if (!claim.ok && claim.owner !== undefined) {
             failureOutcome = { status: "error", errorCategory: "ownership_denied" };
-            const owner = await stateManager.getTabOwner(tabKey);
-            const ownerName = owner ? (await stateManager.getSessionName(owner) ?? owner) : "unknown";
+            const owner = claim.owner;
+            const ownerName = await stateManager.getSessionName(owner) ?? owner;
             recordIssue({
               level: "warn",
               area: "ownership",
@@ -468,7 +461,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
             return {
               content: [{
                 type: "text",
-                text: `Tab ${tabId} on browser ${browserId} is owned by session "${ownerName}". Claim it first with browser_claim_tab or ask the owner to release it.`,
+                text: `Tab ${tabId} on browser ${browserId} is in use by another agent session ("${ownerName}"). Open your own tab with new_tab instead, or ask that session to release it.`,
               }],
               isError: true,
             };

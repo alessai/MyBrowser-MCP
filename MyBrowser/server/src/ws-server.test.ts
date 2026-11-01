@@ -3302,6 +3302,60 @@ describe("real loopback session topology", () => {
     expect((await extensionClosed).code).toBe(WS_CLOSE.forbiddenRole);
   }, 5_000);
 
+  it("parks a stopped client session with a resume key and hands it to the next process from the same folder", async () => {
+    const server = await startHub(undefined, undefined, undefined, { sessionReconnectGraceMs: 10, sessionResumeGraceMs: 300 });
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const extensionInbox = createMessageInbox(extension);
+    const KEY = "k".repeat(32);
+
+    const first = await connect(server);
+    await authenticate(first, "client");
+    await expect(callHubRpc(first, "reg-1", "registerSession", { sessionId: "session-a", resumeKey: KEY }))
+      .resolves.toMatchObject({ result: { ok: true } });
+    await server.stateManager.claimTab("session-a", "b1:7");
+    await expect(callHubRpc(first, "park-1", "removeSession", { park: true }))
+      .resolves.toMatchObject({ result: { ok: true, parked: true } });
+    first.close();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    // A keyless client and a client from another folder get fresh sessions.
+    const other = await connect(server);
+    await authenticate(other, "client");
+    await expect(callHubRpc(other, "reg-o", "registerSession", { sessionId: "session-o", resumeKey: "z".repeat(32) }))
+      .resolves.toMatchObject({ result: { ok: true } });
+    expect(await server.stateManager.isTabAvailable("b1:7", "session-o")).toBe(false);
+
+    const second = await connect(server);
+    await authenticate(second, "client");
+    await expect(callHubRpc(second, "reg-2", "registerSession", { sessionId: "session-b", resumeKey: KEY }))
+      .resolves.toMatchObject({ result: { ok: true, sessionId: "session-a" } });
+    expect(await server.stateManager.getTabOwner("b1:7")).toBe("session-a");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(extensionInbox.all.filter(({ type }) => type === "session_closed")).toEqual([]);
+
+    // Parked and never resumed: cleaned up after the resume grace.
+    await expect(callHubRpc(other, "park-o", "removeSession", { park: true }))
+      .resolves.toMatchObject({ result: { ok: true, parked: true } });
+    other.close();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(extensionInbox.all.filter(({ type }) => type === "session_closed").map((m) => (m.payload as { sessionId: string }).sessionId))
+      .toEqual(["session-o"]);
+  }, 5_000);
+
+  it("still finalizes at once on shutdown when the client sent no resume key", async () => {
+    const server = await startHub(undefined, undefined, undefined, { sessionReconnectGraceMs: 10, sessionResumeGraceMs: 300 });
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const extensionInbox = createMessageInbox(extension);
+    const client = await connect(server);
+    await authenticate(client, "client");
+    await callHubRpc(client, "reg", "registerSession", { sessionId: "session-k" });
+    await expect(callHubRpc(client, "rm", "removeSession", { park: true })).resolves.toMatchObject({ result: { ok: true } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(extensionInbox.all.filter(({ type }) => type === "session_closed")).toHaveLength(1);
+  }, 5_000);
+
   it("cancels a stale finalizer when the session reconnects during persistence drain", async () => {
     const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-drain-reconnect-"));
     tempDirs.push(recordingsDir);

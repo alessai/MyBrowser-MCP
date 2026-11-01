@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
+import { openSessionTab } from "./tabs.js";
 import type { Tool } from "./types.js";
 
 const TabIdParam = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (from new_tab or select_tab), never the user's active tab."),
 });
 
 const NavigateArgs = TabIdParam.extend({
@@ -21,17 +22,28 @@ const WaitArgs = TabIdParam.extend({
 export const navigate = (snapshot: boolean): Tool => ({
   schema: {
     name: "browser_navigate",
-    description: "Navigate to a URL",
+    description: "Navigate to a URL. Without tabId it uses this session's current tab, or opens a new temporary tab for the session if it has none.",
     inputSchema: zodToJsonSchema(NavigateArgs),
   },
   handle: async (context, params) => {
     const { url, tabId } = NavigateArgs.parse(params);
     const payload = tabId !== undefined ? { url, tabId } : { url };
-    await context.sendSocketMessage("browser_navigate", payload);
-    if (snapshot) {
-      return captureAriaSnapshot(context, "", tabId);
+    let target = tabId;
+    let opened = false;
+    try {
+      await context.sendSocketMessage("browser_navigate", payload);
+    } catch (error) {
+      // No tab of its own yet: open one rather than taking over the user's tab.
+      if (tabId !== undefined || !String(error).includes("NO_SESSION_TAB")) throw error;
+      target = await openSessionTab(context, url);
+      opened = true;
     }
-    return { content: [{ type: "text", text: `Navigated to ${url}` }] };
+    const note = opened ? `Opened new tab ${target ?? ""} for this session (it had none).`.replace("  ", " ") : "";
+    if (snapshot) {
+      const result = await captureAriaSnapshot(context, "", target);
+      return note ? { ...result, content: [{ type: "text", text: note }, ...result.content] } : result;
+    }
+    return { content: [{ type: "text", text: `${note ? `${note} ` : ""}Navigated to ${url}` }] };
   },
 });
 

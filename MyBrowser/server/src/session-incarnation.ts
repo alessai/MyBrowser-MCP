@@ -15,16 +15,21 @@ export class SessionIncarnation {
   async register(
     stateManager: IStateManager,
     name?: string,
+    resumeKey?: string,
   ): Promise<{ rotated: boolean; sessionId: string }> {
     try {
-      await stateManager.registerSession(this.currentSessionId, name);
+      const resumed = await stateManager.registerSession(this.currentSessionId, name, resumeKey);
+      if (typeof resumed === "string") {
+        this.currentSessionId = resumed;
+        return { rotated: true, sessionId: resumed };
+      }
       return { rotated: false, sessionId: this.currentSessionId };
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "SESSION_FINALIZED") throw error;
     }
 
     this.currentSessionId = randomUUID();
-    await stateManager.registerSession(this.currentSessionId, name);
+    await stateManager.registerSession(this.currentSessionId, name, resumeKey);
     return { rotated: true, sessionId: this.currentSessionId };
   }
 }

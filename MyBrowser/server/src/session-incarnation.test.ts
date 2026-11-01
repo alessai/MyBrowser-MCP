@@ -30,8 +30,17 @@ describe("SessionIncarnation", () => {
     expect(incarnation.sessionId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
-    expect(registerSession).toHaveBeenNthCalledWith(1, "session-a", "agent");
-    expect(registerSession).toHaveBeenNthCalledWith(2, incarnation.sessionId, "agent");
+    expect(registerSession).toHaveBeenNthCalledWith(1, "session-a", "agent", undefined);
+    expect(registerSession).toHaveBeenNthCalledWith(2, incarnation.sessionId, "agent", undefined);
+  });
+
+  it("switches to the session the hub resumed for this workspace", async () => {
+    const registerSession = vi.fn().mockResolvedValue("session-parked");
+    const incarnation = new SessionIncarnation("session-new");
+    await expect(incarnation.register(stateWithRegister(registerSession), "agent", "k".repeat(32)))
+      .resolves.toEqual({ rotated: true, sessionId: "session-parked" });
+    expect(incarnation.sessionId).toBe("session-parked");
+    expect(registerSession).toHaveBeenCalledWith("session-new", "agent", "k".repeat(32));
   });
 
   it("does not rotate for unrelated registration failures", async () => {

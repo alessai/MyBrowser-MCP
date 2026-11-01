@@ -177,7 +177,8 @@ export function parseTabKey(key: string): { browserId: string; tabId: number } |
 
 export interface IStateManager {
   // Session management
-  registerSession(sessionId: string, name?: string): Promise<void>;
+  /** resumeKey is only used by the hub client; a returned string is the session the hub resumed instead. */
+  registerSession(sessionId: string, name?: string, resumeKey?: string): Promise<string | void>;
   removeSession(sessionId: string): Promise<void>;
   touchSession(sessionId: string): Promise<void>;
   listSessions(): Promise<SessionInfo[]>;

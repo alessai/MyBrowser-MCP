@@ -387,10 +387,12 @@ describe("production server root telemetry", () => {
       expect(tools.tools.length).toBeGreaterThan(0);
       const localSuccess = await client.callTool({ name: "list_browsers", arguments: {} });
       expect(localSuccess.isError).not.toBe(true);
-      vi.spyOn(stateManager, "shouldEnforceOwnership").mockResolvedValue(true);
+      // Another session owns tab 44.
+      vi.spyOn(stateManager, "resolveBrowserTarget").mockResolvedValueOnce({ ok: true, browserId: "b1" } as never);
+      vi.spyOn(stateManager, "claimTab").mockResolvedValueOnce({ ok: false, owner: "other-session" });
       const ownershipDenied = await client.callTool({
         name: "browser_click",
-        arguments: { element: canary },
+        arguments: { element: canary, tabId: 44 },
       });
       expect(ownershipDenied.isError).toBe(true);
       const noBrowser = await client.callTool({

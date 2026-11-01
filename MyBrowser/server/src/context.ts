@@ -77,6 +77,8 @@ export class Context {
   readonly localUrlHost?: string;
   /** Optional TypeSafe Jev decision layer; undefined keeps every tool on its original path. */
   jev?: JevConfig;
+  /** Marks a tab this session opened as owned by it (set by the server; absent in tests). */
+  claimTab?: (tabId: number) => Promise<void>;
   /** Last browser_outline read per tab (key: tab id or "active"): o-number -> selector, for shadow-DOM refs. */
   readonly outlineSelectors = new Map<string, Map<number, string>>();
 

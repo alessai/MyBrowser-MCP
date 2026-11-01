@@ -144,13 +144,17 @@ export class HubStateManager implements IStateManager {
   }
 
   async removeSessionForShutdown(sessionId: string): Promise<void> {
-    await this.sendRpc("removeSession", { sessionId }, RPC_TIMEOUT_MS, true);
+    // park: the hub keeps a session that has a resume key for the next process from the same folder.
+    await this.sendRpc("removeSession", { sessionId, park: true }, RPC_TIMEOUT_MS, true);
   }
 
   // -- Sessions --
 
-  async registerSession(sessionId: string, name?: string): Promise<void> {
-    await this.sendRpc("registerSession", { sessionId, name });
+  /** Returns the session id the hub resumed instead, if any. */
+  async registerSession(sessionId: string, name?: string, resumeKey?: string): Promise<string | void> {
+    const result = await this.sendRpc("registerSession", { sessionId, name, ...(resumeKey ? { resumeKey } : {}) });
+    const resumed = (result as { sessionId?: unknown } | undefined)?.sessionId;
+    return typeof resumed === "string" && resumed !== sessionId ? resumed : undefined;
   }
 
   async removeSession(_sessionId: string): Promise<void> {
