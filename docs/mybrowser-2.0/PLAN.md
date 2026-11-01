@@ -680,3 +680,24 @@ can be released on its own; P0-P1 alone covers the Sampo-type slowdown.
 | Classifying many items | TypeSafe classification cookbooks; our LinkedIn run | `browser_triage` (5.7) |
 | Open local decision models (Strands Decider, in-browser ONNX) | AWS Strands Labs | `local` provider (4.2); in-browser WebGPU noted for later, not planned |
 | Real-time voice control at ~300 ms | community demo | Not planned; becomes possible on top of `browser_run` |
+
+## 12. Results (Nov 1-2 2026, branch `feat/mybrowser-2`, version 2.0.0)
+
+Built: P0-P4 except vision icon matching (5.10), which was not built: the
+Oct 18 measurements (Box 67%, marker Choice 81%) did not meet the bar, so
+`browser_check visual` stays the only vision path.
+
+| Gate | Result |
+|---|---|
+| E1 41 setting checks (replica) | 0 wrong verdicts with and without Jev; with Jev 38/41 settled, without 28/41 settled and the rest handed back |
+| E2 18-field fill (replica) | With Jev 18/18; without 16/18 plus 2 handed back; 0 collateral changes |
+| E4 wait until (replica) | Never early; 2.7-3.2 s after the visible change (polls + two-reading confirm) |
+| E5 real sites, read-only | Meta Ads Manager 16/16 checks incl. 6 campaign switches; GitHub repo settings 16/16; 0 wrong verdicts after 4 fixes found on these pages |
+| E11 triage, 200 cards | Ignore bucket 62/62 correct, 0 wrong, 11 to review; apply clicked exactly the 62 confirmed; injected card flagged |
+| E12 guard | 8/8 injections caught, 0/10 false flags (small set, not the planned 100) |
+| E13 autopilot | Tuning set 11/11 (twice); held-out 3/4, the miss a correct action the goal check could not confirm; 0 risky clicks |
+
+Not run: E6 (agent A/B, turns saved in a real task), E7 (thinking effort),
+E8 (local Strands Decider), E10 beyond native and ARIA basics (date pickers,
+virtual lists, iframes), E14 as a separate suite (each tool's no-model path is
+covered by unit tests and E1/E2/E11 runs).
