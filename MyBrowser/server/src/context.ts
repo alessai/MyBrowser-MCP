@@ -77,6 +77,8 @@ export class Context {
   readonly localUrlHost?: string;
   /** Optional TypeSafe Jev decision layer; undefined keeps every tool on its original path. */
   jev?: JevConfig;
+  /** Last browser_outline read per tab (key: tab id or "active"): o-number -> selector, for shadow-DOM refs. */
+  readonly outlineSelectors = new Map<string, Map<number, string>>();
 
   constructor(readonly telemetry?: TelemetryManager, localUrlHost?: string) {
     this.localUrlHost = localUrlHost === undefined ? undefined : validateLocalUrlHost(localUrlHost);

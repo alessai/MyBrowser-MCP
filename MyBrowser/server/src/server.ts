@@ -73,6 +73,7 @@ import { upload } from "./tools/upload.js";
 import { download } from "./tools/download.js";
 import { fetchFile } from "./tools/fetch-file.js";
 import { check } from "./tools/check.js";
+import { outline } from "./tools/outline.js";
 import type { JevConfig } from "./jev/config.js";
 import { clipboard } from "./tools/clipboard.js";
 
@@ -334,8 +335,8 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     browserLock, browserUnlock, browserLocksList,
     // Diagnostics and support
     browserDiagnostics, browserSupportBundle,
-    // Jev decision layer
-    check,
+    // Page map and Jev decision layer
+    outline, check,
   ];
   // browser_check is only listed when configured, so agents never see a tool that always fails.
   // Telemetry coverage still checks every defined tool.

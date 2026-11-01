@@ -3,6 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Context } from "../context.js";
 import { isTargetResolutionError, resolveTargetWithJev, type Resolution } from "../jev/resolve.js";
 import { diagnoseRepeatedFailure, noteTargetedSuccess } from "../jev/stuck.js";
+import { withOutlineRef } from "../page/refs.js";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
@@ -15,7 +16,7 @@ const ElementTarget = TabIdParam.extend({
   element: z.string().describe(
     "Human-readable element description used to obtain permission to interact with the element"
   ),
-  ref: z.string().optional().describe("Exact element reference from snapshot (e.g. e42)"),
+  ref: z.string().optional().describe("Exact element reference: e42 from a snapshot, or o12 from browser_outline"),
   mark: z.number().optional().describe("Set-of-Marks annotation number from annotated screenshot"),
   selector: z.string().optional().describe("CSS selector to target the element directly"),
   role: z.string().optional().describe("ARIA role to match (e.g. button, searchbox, link)"),
@@ -37,8 +38,9 @@ const RETARGETED_KEYS = ["ref", "mark", "role", "name", "matchText", "label"] as
 async function dispatchTargeted(
   context: Context,
   toolName: string,
-  validated: z.infer<typeof ElementTarget> & Record<string, unknown>,
+  original: z.infer<typeof ElementTarget> & Record<string, unknown>,
 ): Promise<string> {
+  const validated = withOutlineRef(context, original);
   try {
     const note = await dispatchWithFallback(context, toolName, validated);
     noteTargetedSuccess(context, validated.tabId);

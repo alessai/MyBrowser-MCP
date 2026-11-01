@@ -30,12 +30,23 @@ export interface PageModel {
   lastUpdated: number;
 }
 
+/** A phrase an agent used, e.g. 'daily budget', and the element it turned out to mean. */
+export interface PhraseMemory {
+  role: string;
+  name: string;
+  section: string;
+  sub: string;
+  hits: number;
+  misses: number;
+}
+
 export interface SiteKnowledge {
   domain: string;
   pages: Record<string, PageModel>;
   flows: Record<string, string[]>;
   quirks: string[];
   lastVisited: number;
+  phrases?: Record<string, PhraseMemory>;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +116,35 @@ export function saveSiteKnowledge(domain: string, knowledge: SiteKnowledge): voi
 
 export function getSiteKnowledge(domain: string): SiteKnowledge | null {
   return loadSiteKnowledge(domain);
+}
+
+export const phraseKey = (phrase: string) => phrase.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+export function recallPhrases(domain: string): Record<string, PhraseMemory> {
+  return loadSiteKnowledge(domain)?.phrases ?? {};
+}
+
+/**
+ * Records what a phrase meant after an action on it was verified (hit), or
+ * that a remembered meaning was wrong (miss). Two misses forget the phrase.
+ */
+export function notePhrase(domain: string, phrase: string, element: Omit<PhraseMemory, 'hits' | 'misses'>, hit: boolean): void {
+  if (!domain) return;
+  const key = phraseKey(phrase);
+  if (!key) return;
+  const knowledge = loadSiteKnowledge(domain) ?? { domain, pages: {}, flows: {}, quirks: [], lastVisited: Date.now() };
+  const phrases = knowledge.phrases ?? {};
+  const prior = phrases[key];
+  const same = prior !== undefined && prior.role === element.role && prior.name === element.name && prior.section === element.section && prior.sub === element.sub;
+  if (hit) {
+    phrases[key] = same ? { ...prior, hits: prior.hits + 1 } : { ...element, hits: 1, misses: 0 };
+  } else if (same) {
+    if (prior.misses + 1 >= 2) delete phrases[key];
+    else phrases[key] = { ...prior, misses: prior.misses + 1 };
+  }
+  knowledge.phrases = phrases;
+  knowledge.lastVisited = Date.now();
+  saveSiteKnowledge(domain, knowledge);
 }
 
 // ---------------------------------------------------------------------------
