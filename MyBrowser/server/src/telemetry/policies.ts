@@ -57,6 +57,7 @@ const shape = (): TelemetryFieldPolicy => ({ kind: "shape" });
 const TAB_ID = pseudonym("tab");
 const BROWSER_ID = pseudonym("browser");
 const TARGET = pseudonym("target");
+const FRAME = pseudonym("frame");
 const ARTIFACT = pseudonym("recording_artifact");
 const ANNOTATION = pseudonym("annotation");
 const SHARED_KEY = pseudonym("shared_key");
@@ -88,6 +89,7 @@ const targetFields = (): Record<string, TelemetryFieldPolicy> => ({
   name: TARGET,
   matchText: TARGET,
   label: TARGET,
+  frame: FRAME,
   tabId: TAB_ID,
 });
 
@@ -214,6 +216,7 @@ const policies = {
   browser_snapshot: immutablePolicy({
     viewportOnly: boolean(),
     mode: enumeration("full", "diff", "auto"),
+    frame: FRAME,
     tabId: TAB_ID,
   }),
   list_tabs: immutablePolicy({}),
@@ -231,6 +234,7 @@ const policies = {
   browser_eval: immutablePolicy({
     code: textLength(),
     timeout: number(0, 30_000, 100),
+    frame: FRAME,
     tabId: TAB_ID,
   }),
   browser_network: immutablePolicy({

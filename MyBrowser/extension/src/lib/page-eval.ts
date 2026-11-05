@@ -3,9 +3,9 @@ interface PageEvalEnvelope {
   error?: string;
 }
 
-export async function evaluateInMainWorld(tabId: number, code: string): Promise<PageEvalEnvelope> {
+export async function evaluateInMainWorld(tabId: number, code: string, frameId?: number): Promise<PageEvalEnvelope> {
   const [injection] = await chrome.scripting.executeScript({
-    target: { tabId },
+    target: frameId === undefined ? { tabId } : { tabId, frameIds: [frameId] },
     world: 'MAIN',
     func: async (source: string) => {
       try {

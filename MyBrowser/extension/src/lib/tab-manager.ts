@@ -1,5 +1,7 @@
 // Tab management: resolve active tabs and inject content scripts.
 
+import { frameScope } from './frame-scope';
+
 export interface TabInfo {
   tabId: number;
   title: string;
@@ -62,10 +64,11 @@ export async function listTabs(): Promise<TabInfo[]> {
 }
 
 export async function ensureContentScript(tabId: number): Promise<void> {
+  const frameId = frameScope(tabId)?.frameId;
   try {
     // Try pinging the content script with a short timeout
     await Promise.race([
-      chrome.tabs.sendMessage(tabId, { type: 'ping' }),
+      frameId === undefined ? chrome.tabs.sendMessage(tabId, { type: 'ping' }) : chrome.tabs.sendMessage(tabId, { type: 'ping' }, { frameId }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('ping timeout')), 2000),
       ),
@@ -83,8 +86,9 @@ export async function ensureContentScript(tabId: number): Promise<void> {
 }
 
 export async function injectContentScript(tabId: number): Promise<void> {
+  const frameId = frameScope(tabId)?.frameId;
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: frameId === undefined ? { tabId } : { tabId, frameIds: [frameId] },
     files: ['content-scripts/content.js'],
     injectImmediately: true,
   });

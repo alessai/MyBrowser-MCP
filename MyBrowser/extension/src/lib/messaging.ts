@@ -2,6 +2,8 @@
 // - Service Worker <-> Content Script (via chrome.tabs.sendMessage / chrome.runtime.sendMessage)
 // - Service Worker <-> Offscreen Document (via chrome.runtime.sendMessage)
 
+import { frameScope } from './frame-scope';
+
 interface MessageEnvelope {
   type: string;
   payload?: unknown;
@@ -51,13 +53,21 @@ export async function sendToTab<T = unknown>(
   timeoutMs = 10000,
 ): Promise<T> {
   const msg: MessageEnvelope = { type, payload };
+  const scope = frameScope(tabId);
+  const frameId = scope?.frameId;
   const response = await Promise.race([
-    chrome.tabs.sendMessage(tabId, msg),
+    frameId === undefined ? chrome.tabs.sendMessage(tabId, msg) : chrome.tabs.sendMessage(tabId, msg, { frameId }),
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`Content script timeout (${type}) after ${timeoutMs}ms — tab ${tabId} may need re-injection`)), timeoutMs),
     ),
   ]);
   if (isErrorResponse(response)) throw new Error(response.message);
+  // Mouse events go to the top page, so coordinates from inside a frame are shifted.
+  if (type === 'getElementCoordinates' && scope && response) {
+    if (!scope.offset) throw new Error('FRAME_OFFSET_UNKNOWN: the frame position was not measured');
+    const coords = response as { x: number; y: number };
+    return { ...coords, x: coords.x + scope.offset.x, y: coords.y + scope.offset.y } as T;
+  }
   return response as T;
 }
 

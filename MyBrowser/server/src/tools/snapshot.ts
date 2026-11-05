@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
+import { captureAriaSnapshot, FRAME_DESCRIPTION } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
 const SnapshotArgs = z.object({
@@ -19,6 +19,7 @@ const SnapshotArgs = z.object({
         "meaningfully smaller; falls back to full otherwise. Diff saves tokens on multi-step " +
         "flows where most of the page stays the same between calls.",
     ),
+  frame: z.string().optional().describe(FRAME_DESCRIPTION),
 });
 
 export const snapshot: Tool = {
@@ -29,7 +30,7 @@ export const snapshot: Tool = {
     inputSchema: zodToJsonSchema(SnapshotArgs),
   },
   handle: async (context, params) => {
-    const { tabId, viewportOnly, mode } = SnapshotArgs.parse(params ?? {});
-    return captureAriaSnapshot(context, "", tabId, { viewportOnly, mode });
+    const { tabId, viewportOnly, mode, frame } = SnapshotArgs.parse(params ?? {});
+    return captureAriaSnapshot(context, "", tabId, { viewportOnly, mode, frame });
   },
 };

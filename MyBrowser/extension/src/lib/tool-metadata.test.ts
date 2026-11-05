@@ -72,7 +72,7 @@ describe("TOOL_METADATA", () => {
         "checks.*.selector": "safe", "checks.*.type": "safe", "checks.*.value": "text",
       }],
       ["browser_click", {
-        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        element: "safe", frame: "safe", label: "safe", matchText: "safe", name: "safe",
         ref: "safe", role: "safe", selector: "safe",
       }],
       ["browser_clipboard", { action: "safe", text: "clipboard" }],
@@ -84,19 +84,19 @@ describe("TOOL_METADATA", () => {
       ["browser_go_back", {}],
       ["browser_go_forward", {}],
       ["browser_hover", {
-        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        element: "safe", frame: "safe", label: "safe", matchText: "safe", name: "safe",
         ref: "safe", role: "safe", selector: "safe",
       }],
       ["browser_navigate", { url: "navigation" }],
       ["browser_press_key", { key: "safe" }],
       ["browser_reset_viewport", {}],
       ["browser_select_option", {
-        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        element: "safe", frame: "safe", label: "safe", matchText: "safe", name: "safe",
         ref: "safe", role: "safe", selector: "safe", "values.*": "select",
       }],
       ["browser_set_viewport", { orientation: "safe", preset: "safe" }],
       ["browser_type", {
-        element: "safe", label: "safe", matchText: "safe", name: "safe",
+        element: "safe", frame: "safe", label: "safe", matchText: "safe", name: "safe",
         ref: "safe", role: "safe", selector: "safe", text: "text",
       }],
       ["browser_wait", {}],

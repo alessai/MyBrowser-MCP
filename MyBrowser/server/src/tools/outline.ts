@@ -103,7 +103,7 @@ export const outline: Tool = {
       `Outline of "${model.title}" (${model.url}): ${model.elements.length} controls in ${groupBySection(model.elements).length} sections${extra ? `; ${extra}` : ""}.${note}`,
     ];
     if (model.truncated) out.push("The page has more controls than one read covers; use section or focus to narrow it.");
-    if (model.frames.sameOrigin + model.frames.crossOrigin > 0) out.push(`Not included: controls inside ${model.frames.sameOrigin + model.frames.crossOrigin} iframe(s).`);
+    if (model.frames.sameOrigin + model.frames.crossOrigin > 0) out.push(`Not included: controls inside ${model.frames.sameOrigin + model.frames.crossOrigin} iframe(s). Use browser_snapshot, browser_click or browser_type with frame: part of the frame's URL, or browser_mouse on a screenshot.`);
     const seen = new Map<string, number>();
     for (const e of model.elements) seen.set(`${e.role}|${e.name}`, (seen.get(`${e.role}|${e.name}`) ?? 0) + 1);
     const repeated = new Set([...seen].filter(([, c]) => c > 1).map(([k]) => k));

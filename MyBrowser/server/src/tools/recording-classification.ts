@@ -13,12 +13,12 @@ export const SERVER_RECORDING_STRING_METADATA = {
   browser_go_back: {},
   browser_go_forward: {},
   browser_wait: {},
-  browser_click: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe" },
-  browser_type: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", text: "text" },
-  browser_hover: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe" },
+  browser_click: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", frame: "safe" },
+  browser_type: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", frame: "safe", text: "text" },
+  browser_hover: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", frame: "safe" },
   browser_press_key: { key: "safe" },
   browser_drag: { startElement: "safe", startRef: "safe", startSelector: "safe", endElement: "safe", endRef: "safe", endSelector: "safe" },
-  browser_select_option: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", "values.*": "select" },
+  browser_select_option: { element: "safe", ref: "safe", selector: "safe", role: "safe", name: "safe", matchText: "safe", label: "safe", frame: "safe", "values.*": "select" },
   browser_set_viewport: { preset: "safe", orientation: "safe" },
   browser_reset_viewport: {},
   browser_fill_form: { "fields.*": "form", submitText: "safe" },
@@ -36,16 +36,16 @@ export const SERVER_RECORDING_ARGUMENT_TYPES = {
   browser_wait: { "": "object", time: "number", tabId: "number" },
   browser_click: {
     "": "object", element: "string", ref: "string", selector: "string", role: "string",
-    name: "string", matchText: "string", label: "string", mark: "number", tabId: "number",
+    name: "string", matchText: "string", label: "string", frame: "string", mark: "number", tabId: "number",
   },
   browser_type: {
     "": "object", element: "string", ref: "string", selector: "string", role: "string",
-    name: "string", matchText: "string", label: "string", text: "string", mark: "number",
+    name: "string", matchText: "string", label: "string", frame: "string", text: "string", mark: "number",
     submit: "boolean", tabId: "number",
   },
   browser_hover: {
     "": "object", element: "string", ref: "string", selector: "string", role: "string",
-    name: "string", matchText: "string", label: "string", mark: "number", tabId: "number",
+    name: "string", matchText: "string", label: "string", frame: "string", mark: "number", tabId: "number",
   },
   browser_press_key: { "": "object", key: "string", tabId: "number" },
   browser_drag: {
@@ -55,7 +55,7 @@ export const SERVER_RECORDING_ARGUMENT_TYPES = {
   },
   browser_select_option: {
     "": "object", element: "string", ref: "string", selector: "string", role: "string",
-    name: "string", matchText: "string", label: "string", values: "array", "values.*": "string",
+    name: "string", matchText: "string", label: "string", frame: "string", values: "array", "values.*": "string",
     mark: "number", tabId: "number",
   },
   browser_set_viewport: {

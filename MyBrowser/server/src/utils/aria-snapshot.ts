@@ -3,11 +3,15 @@ import { guardNote } from "./guard.js";
 
 const MAX_SNAPSHOT_CHARS = 30_000;
 
+/** Optional `frame` for tools that can work inside an embedded frame. */
+export const FRAME_DESCRIPTION = "Work inside an embedded frame instead of the page: part of the frame's URL (e.g. \"officeapps.live.com\"). "
+  + "An unknown value lists the page's frames. Refs from a frame's snapshot only work with the same frame.";
+
 export async function captureAriaSnapshot(
   context: Context,
   status = "",
   tabId?: number,
-  options?: { viewportOnly?: boolean; mode?: "full" | "diff" | "auto" },
+  options?: { viewportOnly?: boolean; mode?: "full" | "diff" | "auto"; frame?: string },
 ) {
   const payload: Record<string, unknown> = {};
   if (tabId !== undefined) payload.tabId = tabId;
@@ -17,6 +21,7 @@ export async function captureAriaSnapshot(
   const url = await context.sendSocketMessage("getUrl", payload);
   const title = await context.sendSocketMessage("getTitle", payload);
   const snapshotPayload = { ...payload };
+  if (options?.frame) snapshotPayload.frame = options.frame;
   if (options?.viewportOnly === undefined) snapshotPayload.viewportOnly = true; // default viewport-only
   if (options?.mode === undefined) snapshotPayload.mode = "auto"; // default auto-diff
   let snapshot = (await context.sendSocketMessage("browser_snapshot", snapshotPayload)) as string;
@@ -46,7 +51,7 @@ export async function captureAriaSnapshot(
     content: [
       {
         type: "text" as const,
-        text: `${status ? `${status}\n` : ""}${warning ? `${warning}\n` : ""}\n- Page URL: ${url}\n- Page Title: ${title}\n- Page Snapshot\n\`\`\`yaml\n${snapshot}\n\`\`\`\n`,
+        text: `${status ? `${status}\n` : ""}${warning ? `${warning}\n` : ""}\n- Page URL: ${url}\n- Page Title: ${title}\n${options?.frame ? `- Frame: ${options.frame}\n` : ""}- Page Snapshot\n\`\`\`yaml\n${snapshot}\n\`\`\`\n`,
       },
     ],
   };

@@ -4,7 +4,7 @@ import type { Context } from "../context.js";
 import { isTargetResolutionError, resolveTargetWithJev, type Resolution } from "../jev/resolve.js";
 import { diagnoseRepeatedFailure, noteTargetedSuccess } from "../jev/stuck.js";
 import { withOutlineRef } from "../page/refs.js";
-import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
+import { captureAriaSnapshot, FRAME_DESCRIPTION } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
 const TabIdParam = z.object({
@@ -23,6 +23,7 @@ const ElementTarget = TabIdParam.extend({
   name: z.string().optional().describe("Accessible name or partial match"),
   matchText: z.string().optional().describe("Visible text content to match on the element"),
   label: z.string().optional().describe("Form field label text"),
+  frame: z.string().optional().describe(FRAME_DESCRIPTION),
 });
 
 const RETARGETED_KEYS = ["ref", "mark", "role", "name", "matchText", "label"] as const;
@@ -67,7 +68,8 @@ async function dispatchWithFallback(
     return "";
   } catch (error) {
     const config = context.jev;
-    if (!config || !isTargetResolutionError(error)) throw error;
+    // Jev reads the top page, so its picks would not exist inside a frame.
+    if (!config || validated.frame || !isTargetResolutionError(error)) throw error;
     let resolution: Resolution;
     try {
       // Typing without submitting and hovering cannot pay, delete, or send anything.
@@ -136,7 +138,7 @@ export const click: Tool = {
   handle: async (context, params) => {
     const validated = ClickArgs.parse(params);
     const note = await dispatchTargeted(context, "browser_click", validated);
-    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId, { frame: validated.frame });
     return {
       content: [
         { type: "text", text: `Clicked "${validated.element}"${note}` },
@@ -155,7 +157,7 @@ export const type: Tool = {
   handle: async (context, params) => {
     const validated = TypeArgs.parse(params);
     const note = await dispatchTargeted(context, "browser_type", validated);
-    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId, { frame: validated.frame });
     return {
       content: [
         { type: "text", text: `Typed "${validated.text}" into "${validated.element}"${note}` },
@@ -174,7 +176,7 @@ export const hover: Tool = {
   handle: async (context, params) => {
     const validated = HoverArgs.parse(params);
     const note = await dispatchTargeted(context, "browser_hover", validated);
-    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId, { frame: validated.frame });
     return {
       content: [
         { type: "text", text: `Hovered over "${validated.element}"${note}` },
@@ -260,7 +262,7 @@ export const selectOption: Tool = {
   handle: async (context, params) => {
     const validated = SelectOptionArgs.parse(params);
     const note = await dispatchTargeted(context, "browser_select_option", validated);
-    const snapshot = await captureAriaSnapshot(context, "", validated.tabId);
+    const snapshot = await captureAriaSnapshot(context, "", validated.tabId, { frame: validated.frame });
     return {
       content: [
         { type: "text", text: `Selected option in "${validated.element}"${note}` },

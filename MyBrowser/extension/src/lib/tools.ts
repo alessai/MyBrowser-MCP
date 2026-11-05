@@ -10,6 +10,7 @@ import {
 import { sendToTab } from './messaging';
 import { runActionOnce, runPreActionFallback } from './action-fallback';
 import { evaluateInMainWorld } from './page-eval';
+import { frameScope, setFrameScope } from './frame-scope';
 import {
   ensureAttached,
   sendCommand,
@@ -1163,6 +1164,9 @@ const handlers: Record<string, ToolHandler> = {
     const code = args.code as string;
     const timeout = (args.timeout as number) || 5000;
     const tabId = ctx.getTabId();
+    // Inside a frame: the tab's debugger session cannot evaluate in frames from other sites.
+    const scoped = frameScope(tabId);
+    if (scoped) return evaluateInMainWorld(tabId, code, scoped.frameId);
     // Use scripting MAIN only when debugger preparation fails before evaluation starts.
     try {
       await ensureAttached(tabId);
@@ -1747,6 +1751,51 @@ export function getRegisteredToolNames(): string[] {
   return Object.keys(handlers);
 }
 
+// Tools that accept `frame`: they run inside that embedded frame.
+const FRAME_TOOLS = new Set(['browser_snapshot', 'browser_eval', 'browser_click', 'browser_type', 'browser_hover', 'browser_select_option']);
+// These send real mouse events, so they need the frame's position on the page.
+const FRAME_POINTER_TOOLS = new Set(['browser_click', 'browser_hover']);
+
+function frameLabel(url: string): string {
+  try { const u = new URL(url); return u.origin + u.pathname; } catch { return url; }
+}
+
+async function findFrame(tabId: number, frame: string): Promise<{ frameId: number; url: string }> {
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  const sub = frames.filter((f) => f.frameId !== 0 && f.url && f.url !== 'about:blank');
+  const match = sub.find((f) => f.url.includes(frame));
+  if (match) return { frameId: match.frameId, url: match.url };
+  const list = sub.slice(0, 10).map((f) => frameLabel(f.url)).join(', ');
+  throw new Error(`FRAME_NOT_FOUND: no frame whose URL contains "${frame}". ${list ? `Frames on this page: ${list}` : 'This page has no embedded frames.'}`);
+}
+
+/**
+ * Top-left of a frame's content in top-page viewport pixels, found from its
+ * <iframe> element in the top page (frames from other sites run in another
+ * renderer, so the frame itself cannot report where it is).
+ */
+async function measureFrameOffset(tabId: number, url: string): Promise<{ x: number; y: number }> {
+  await ensureAttached(tabId);
+  const expression = `(() => {
+    const url = ${JSON.stringify(url)};
+    const abs = (f) => { try { return new URL(f.getAttribute('src') || '', location.href).href; } catch { return ''; } };
+    const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+    const frames = [...document.querySelectorAll('iframe,frame')];
+    // By address, else by site (the frame may have navigated since), else the only frame.
+    const f = frames.find((x) => abs(x) === url) || frames.filter((x) => origin(abs(x)) === origin(url))[0] || (frames.length === 1 ? frames[0] : null);
+    if (!f) return null;
+    let r = f.getBoundingClientRect();
+    if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) { f.scrollIntoView({ block: 'center', inline: 'center' }); r = f.getBoundingClientRect(); }
+    const s = getComputedStyle(f);
+    return { x: r.left + f.clientLeft + parseFloat(s.paddingLeft), y: r.top + f.clientTop + parseFloat(s.paddingTop), w: r.width, h: r.height };
+  })()`;
+  const result = await sendCommand<{ result?: { value?: { x: number; y: number; w: number; h: number } | null } }>(tabId, 'Runtime.evaluate', { expression, returnByValue: true });
+  const box = result?.result?.value;
+  if (!box) throw new Error('FRAME_NESTED: no <iframe> in the page shows that frame (it may be inside another frame). Use browser_mouse with a screenshot instead.');
+  if (box.w === 0 || box.h === 0) throw new Error('FRAME_NOT_VISIBLE: the frame has no area on screen.');
+  return { x: box.x, y: box.y };
+}
+
 export async function handleTool(
   name: string,
   args: Record<string, unknown>,
@@ -1755,5 +1804,14 @@ export async function handleTool(
   const handler = handlers[name];
   if (!handler) throw new Error(`Unknown tool: ${name}`);
 
-  return handler(args, ctx);
+  if (typeof args.frame !== 'string' || args.frame.length === 0 || !FRAME_TOOLS.has(name)) return handler(args, ctx);
+  const tabId = ctx.getTabId();
+  const found = await findFrame(tabId, args.frame);
+  const offset = FRAME_POINTER_TOOLS.has(name) ? await measureFrameOffset(tabId, found.url) : undefined;
+  setFrameScope(tabId, { ...found, offset });
+  try {
+    return await handler(args, ctx);
+  } finally {
+    setFrameScope(tabId, undefined);
+  }
 }

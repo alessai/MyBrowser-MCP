@@ -17,14 +17,14 @@ export const TOOL_METADATA = {
   browser_go_forward: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: {} },
   browser_wait: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: true, recordingStrings: {} },
   browser_snapshot: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
-  browser_click: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe' } },
-  browser_type: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', text: 'text' } },
-  browser_hover: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe' } },
+  browser_click: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', frame: 'safe' } },
+  browser_type: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', frame: 'safe', text: 'text' } },
+  browser_hover: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', frame: 'safe' } },
   browser_press_key: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { key: 'safe' } },
   browser_drag: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { startElement: 'safe', startRef: 'safe', startSelector: 'safe', endElement: 'safe', endRef: 'safe', endSelector: 'safe' } },
   // Screenshot pixels are only valid for the screenshot they came from, so not recordable.
   browser_mouse: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
-  browser_select_option: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', 'values.*': 'select' } },
+  browser_select_option: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', frame: 'safe', 'values.*': 'select' } },
   browser_screenshot: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_get_console_logs: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: false },
   browser_set_viewport: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { preset: 'safe', orientation: 'safe' } },
@@ -85,16 +85,16 @@ export const RECORDING_ARGUMENT_TYPES = {
   browser_wait: { '': 'object', time: 'number', tabId: 'number' },
   browser_click: {
     '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
-    name: 'string', matchText: 'string', label: 'string', mark: 'number', tabId: 'number',
+    name: 'string', matchText: 'string', label: 'string', frame: 'string', mark: 'number', tabId: 'number',
   },
   browser_type: {
     '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
-    name: 'string', matchText: 'string', label: 'string', text: 'string', mark: 'number',
+    name: 'string', matchText: 'string', label: 'string', frame: 'string', text: 'string', mark: 'number',
     submit: 'boolean', tabId: 'number',
   },
   browser_hover: {
     '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
-    name: 'string', matchText: 'string', label: 'string', mark: 'number', tabId: 'number',
+    name: 'string', matchText: 'string', label: 'string', frame: 'string', mark: 'number', tabId: 'number',
   },
   browser_press_key: { '': 'object', key: 'string', tabId: 'number' },
   browser_drag: {
@@ -104,7 +104,7 @@ export const RECORDING_ARGUMENT_TYPES = {
   },
   browser_select_option: {
     '': 'object', element: 'string', ref: 'string', selector: 'string', role: 'string',
-    name: 'string', matchText: 'string', label: 'string', values: 'array', 'values.*': 'string',
+    name: 'string', matchText: 'string', label: 'string', frame: 'string', values: 'array', 'values.*': 'string',
     mark: 'number', tabId: 'number',
   },
   browser_set_viewport: {
