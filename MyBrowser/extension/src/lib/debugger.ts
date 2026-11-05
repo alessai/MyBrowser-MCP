@@ -58,10 +58,19 @@ function notifyAttached(tabId: number): void {
   }
 }
 
+const attachedAt = new Map<number, number>();
+
+/** Milliseconds since the debugger last attached to the tab (Infinity if not attached). */
+export function msSinceAttach(tabId: number): number {
+  const at = attachedTabs.has(tabId) ? attachedAt.get(tabId) : undefined;
+  return at === undefined ? Infinity : Date.now() - at;
+}
+
 function markAttached(tabId: number): void {
   const wasAttached = attachedTabs.has(tabId);
   attachedTabs.add(tabId);
   if (!wasAttached) {
+    attachedAt.set(tabId, Date.now());
     pendingRequestsByTab.delete(tabId);
     notifyAttached(tabId);
   }
@@ -170,24 +179,40 @@ export async function ensureAttached(tabId: number): Promise<void> {
 export async function detachAll(): Promise<void> {
   for (const timer of detachTimers.values()) clearTimeout(timer);
   detachTimers.clear();
+  holdUntil.clear();
   const tabs = Array.from(attachedTabs);
   attachedTabs.clear();
   runtimeEnabledTabs.clear();
   await Promise.all(tabs.map((tabId) => doDetach({ tabId }).catch(() => {})));
 }
 
+// tabId -> time until which the debugger stays attached (see holdAttached).
+const holdUntil = new Map<number, number>();
+
+/**
+ * Keeps the debugger attached for a while. Chrome's "started debugging this
+ * browser" bar appears and disappears with the attachment and changes the
+ * viewport height, which would move what a screenshot showed.
+ */
+export function holdAttached(tabId: number, ms: number): void {
+  holdUntil.set(tabId, Math.max(holdUntil.get(tabId) ?? 0, Date.now() + ms));
+}
+
 export function scheduleDetach(tabId: number): void {
   const existing = detachTimers.get(tabId);
   if (existing) clearTimeout(existing);
+  const held = (holdUntil.get(tabId) ?? 0) - Date.now();
+  if (held <= 0) holdUntil.delete(tabId);
 
   detachTimers.set(
     tabId,
     setTimeout(async () => {
       detachTimers.delete(tabId);
+      holdUntil.delete(tabId);
       attachedTabs.delete(tabId);
       runtimeEnabledTabs.delete(tabId);
       await doDetach({ tabId });
-    }, DETACH_DELAY_MS),
+    }, Math.max(DETACH_DELAY_MS, held)),
   );
 }
 

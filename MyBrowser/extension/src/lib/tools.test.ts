@@ -181,13 +181,67 @@ describe('screenshot when the browser produces no frames', () => {
     });
     try {
       const outcome = handleTool('browser_screenshot', {}, ctx).then(() => 'resolved', (error: Error) => error.message);
-      await vi.advanceTimersByTimeAsync(12_000);
+      // up to ~4 s settling after a fresh debugger attach, then the 10 s frame timeout
+      await vi.advanceTimersByTimeAsync(16_000);
       await expect(outcome).resolves.toMatch(/^SCREENSHOT_NO_FRAME: .*minimized or on a hidden workspace/);
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });
+});
+
+describe('browser_mouse screenshot coordinates', () => {
+  function setup(tabId: number) {
+    const { ctx } = context();
+    const viewport = { clientWidth: 2048, clientHeight: 1536 };
+    const clicks: Array<{ x: number; y: number; options?: unknown }> = [];
+    const typed: string[] = [];
+    ctx.input = {
+      moveMouse: vi.fn(async () => undefined),
+      click: vi.fn(async (point: { x: number; y: number }, options?: unknown) => { clicks.push({ ...point, options }); }),
+      waitForTabIfNavigationStarted: vi.fn(async (_tab: number, action: () => Promise<void>) => action()),
+      keyboard: { type: vi.fn(async (text: string) => { typed.push(text); }) },
+    } as unknown as ToolContext['input'];
+    vi.stubGlobal('chrome', {
+      debugger: {
+        attach: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+        sendCommand: vi.fn(async (_target: unknown, method: string) => (
+          method === 'Page.getLayoutMetrics' ? { cssVisualViewport: viewport }
+            : method === 'Page.captureScreenshot' ? { data: 'iVBORw0KGgo=' }
+              : method === 'Runtime.evaluate' ? { result: { value: 'an embedded frame from https://officeapps.live.com' } }
+                : undefined
+        )),
+      },
+      scripting: { executeScript: vi.fn(async () => [{ result: true }]) },
+      tabs: { sendMessage: vi.fn(async () => ({ stable: true })), get: vi.fn(async () => ({ id: tabId, status: 'complete' })) },
+      runtime: { lastError: undefined },
+    });
+    return { ctx, viewport, clicks, typed };
+  }
+
+  it('refuses without a screenshot, maps screenshot pixels to the page, and refuses a stale one', async () => {
+    const { ctx, viewport, clicks, typed } = setup(555_001);
+    await ctx.setTabId(555_001);
+    try {
+      await expect(handleTool('browser_mouse', { action: 'click', x: 10, y: 10 }, ctx)).rejects.toThrow('NO_SCREENSHOT');
+      await handleTool('browser_screenshot', {}, ctx);
+      // 2048x1536 page -> 1024x768 screenshot, so screenshot pixels are doubled.
+      await expect(handleTool('browser_mouse', { action: 'click', x: 100, y: 50, text: 'Hello' }, ctx))
+        .resolves.toEqual({ hit: 'an embedded frame from https://officeapps.live.com' });
+      expect(clicks).toEqual([{ x: 200, y: 100, options: { count: 1 } }]);
+      expect(typed).toEqual(['Hello']);
+      await handleTool('browser_mouse', { action: 'right_click', x: 1, y: 1 }, ctx);
+      expect(clicks[1]).toEqual({ x: 2, y: 2, options: { button: 'right' } });
+      await expect(handleTool('browser_mouse', { action: 'click', x: 1025, y: 10 }, ctx)).rejects.toThrow('POINT_OUTSIDE_SCREENSHOT');
+      viewport.clientWidth = 1600;
+      await expect(handleTool('browser_mouse', { action: 'click', x: 10, y: 10 }, ctx)).rejects.toThrow('SCREENSHOT_STALE');
+      expect(clicks).toHaveLength(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }, 20_000);
 });
 
 describe('console assertion truthfulness', () => {

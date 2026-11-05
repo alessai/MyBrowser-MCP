@@ -20,6 +20,8 @@ import {
   enablePageDomain,
   enableNetworkDomain,
   getAttachedTabs,
+  holdAttached,
+  msSinceAttach,
   getNetworkLog,
   clearNetworkLog,
   waitForNetworkIdle,
@@ -449,11 +451,90 @@ function stripDataUrlPrefix(dataUrl: string): string {
 
 const SCREENSHOT_FRAME_TIMEOUT_MS = 10_000;
 
+/** Last screenshot geometry per tab, so browser_mouse can map screenshot pixels back to the page. */
+const screenshotGeometry = new Map<number, { scale: number; width: number; height: number }>();
+
+export function rememberScreenshotGeometry(tabId: number, geometry: { scale: number; width: number; height: number }): void {
+  screenshotGeometry.set(tabId, geometry);
+}
+
+/** Maps a point in the last screenshot of the tab to page (CSS) pixels, refusing stale screenshots. */
+async function screenshotPointToPage(tabId: number, x: number, y: number): Promise<{ x: number; y: number }> {
+  const shot = screenshotGeometry.get(tabId);
+  if (!shot) {
+    throw new Error('NO_SCREENSHOT: take browser_screenshot of this tab first; x and y are pixels in that screenshot.');
+  }
+  const metrics = await sendCommand<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(tabId, 'Page.getLayoutMetrics');
+  const { clientWidth, clientHeight } = metrics!.cssVisualViewport;
+  if (Math.abs(clientWidth - shot.width) > 1 || Math.abs(clientHeight - shot.height) > 1) {
+    screenshotGeometry.delete(tabId);
+    throw new Error(`SCREENSHOT_STALE: the window size changed since the last screenshot (${Math.round(shot.width)}x${Math.round(shot.height)} -> ${Math.round(clientWidth)}x${Math.round(clientHeight)}). Take a new browser_screenshot and use its pixels.`);
+  }
+  const maxX = shot.width * shot.scale;
+  const maxY = shot.height * shot.scale;
+  if (x < 0 || y < 0 || x > maxX || y > maxY) {
+    throw new Error(`POINT_OUTSIDE_SCREENSHOT: (${x}, ${y}) is outside the ${Math.round(maxX)}x${Math.round(maxY)} screenshot.`);
+  }
+  return { x: x / shot.scale, y: y / shot.scale };
+}
+
+/** Describes the element under a page point, for the tool result (frames from other sites show as their origin). */
+async function describePoint(tabId: number, point: { x: number; y: number }): Promise<string> {
+  const expression = `(() => {
+    const el = document.elementFromPoint(${point.x}, ${point.y});
+    if (!el) return 'nothing';
+    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      let origin = '';
+      try { origin = new URL(el.src, location.href).origin; } catch {}
+      return 'an embedded frame' + (origin ? ' from ' + origin : '');
+    }
+    const target = el.closest('a,button,input,select,textarea,[role],[contenteditable="true"]') || el;
+    const role = target.getAttribute('role') || target.tagName.toLowerCase();
+    const name = (target.getAttribute('aria-label') || target.innerText || target.getAttribute('title') || target.getAttribute('placeholder') || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
+    return name ? role + ' "' + name + '"' : role;
+  })()`;
+  try {
+    const result = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', { expression, returnByValue: true });
+    return typeof result?.result?.value === 'string' ? result.result.value : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+// Screenshot pixels stay usable by browser_mouse this long (debugger kept attached).
+const SCREENSHOT_HOLD_MS = 5 * 60_000;
+
+/** After a fresh attach, waits until Chrome's debugging bar has changed the viewport. */
+async function waitForStableViewport(tabId: number): Promise<void> {
+  let last = '';
+  let since = Date.now();
+  for (const start = Date.now(); Date.now() - start < 4_000 && msSinceAttach(tabId) < 5_000; await delay(150)) {
+    const m = await sendCommand<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(tabId, 'Page.getLayoutMetrics');
+    const size = `${m?.cssVisualViewport.clientWidth}x${m?.cssVisualViewport.clientHeight}`;
+    if (size !== last) { last = size; since = Date.now(); } else if (Date.now() - since >= 1_000 && msSinceAttach(tabId) >= 2_500) return;
+  }
+}
+
 async function captureScreenshot(tabId: number): Promise<string> {
+  await ensureAttached(tabId);
+  holdAttached(tabId, SCREENSHOT_HOLD_MS);
+  // The bar shows up to a few seconds after an attach.
+  if (msSinceAttach(tabId) < 4_000) await waitForStableViewport(tabId);
+  // Capture again if the size still moved, so the screenshot matches the page
+  // browser_mouse will act on.
+  for (let attempt = 0; ; attempt++) {
+    const { dataUrl, width, height } = await captureScreenshotOnce(tabId);
+    const after = await sendCommand<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(tabId, 'Page.getLayoutMetrics');
+    const now = after!.cssVisualViewport;
+    if (attempt >= 2 || (Math.abs(now.clientWidth - width) <= 1 && Math.abs(now.clientHeight - height) <= 1)) return dataUrl;
+    await delay(500);
+  }
+}
+
+async function captureScreenshotOnce(tabId: number): Promise<{ dataUrl: string; width: number; height: number }> {
   // Always use CDP for consistent sizing — capture at reduced scale to avoid
   // multi-MB images that timeout during WS transfer. This skips the content
   // script resize roundtrip entirely.
-  await ensureAttached(tabId);
   const metrics = await sendCommand<{
     cssVisualViewport: { clientWidth: number; clientHeight: number };
   }>(tabId, 'Page.getLayoutMetrics');
@@ -490,7 +571,8 @@ async function captureScreenshot(tabId: number): Promise<string> {
     }),
   ]).finally(() => clearTimeout(timer));
 
-  return `data:image/png;base64,${result!.data}`;
+  rememberScreenshotGeometry(tabId, { scale, width: clientWidth, height: clientHeight });
+  return { dataUrl: `data:image/png;base64,${result!.data}`, width: clientWidth, height: clientHeight };
 }
 
 // --- Tool context ---
@@ -707,6 +789,42 @@ const handlers: Record<string, ToolHandler> = {
       throw new Error('DRAG_OUTCOME_UNKNOWN', { cause: error });
     }
     await waitForStableDOM(tabId);
+  },
+
+  // Acts at a point in the last screenshot: for canvases, slide editors and
+  // frames from other sites that have no element MyBrowser can target.
+  async browser_mouse(args, ctx) {
+    const tabId = ctx.getTabId();
+    await ensureAttached(tabId);
+    holdAttached(tabId, SCREENSHOT_HOLD_MS);
+    const action = args.action as 'click' | 'double_click' | 'right_click' | 'hover' | 'drag' | 'scroll';
+    const point = await screenshotPointToPage(tabId, args.x as number, args.y as number);
+    const hit = await describePoint(tabId, point);
+    ctx.signal?.throwIfAborted();
+    await runActionOnce(async () => {
+      if (action === 'drag') {
+        const end = await screenshotPointToPage(tabId, args.toX as number, args.toY as number);
+        await ctx.input.moveMouse(point);
+        await delay(AFTER_ACTION_DELAY_MS);
+        await ctx.input.dragAndDrop(point, end);
+      } else if (action === 'hover') {
+        await ctx.input.moveMouse(point);
+      } else if (action === 'scroll') {
+        await ctx.input.scroll(point, { deltaX: (args.deltaX as number | undefined) ?? 0, deltaY: (args.deltaY as number | undefined) ?? 0 });
+      } else {
+        await ctx.input.moveMouse(point);
+        await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
+          await ctx.input.click(point, action === 'right_click' ? { button: 'right' } : { count: action === 'double_click' ? 2 : 1 });
+          await delay(AFTER_ACTION_DELAY_MS);
+        });
+      }
+      if (typeof args.text === 'string' && args.text.length > 0) {
+        await ctx.input.keyboard.type(args.text);
+      }
+    }, 'MOUSE_OUTCOME_UNKNOWN', ctx.signal);
+    try { await ensureContentScript(tabId); } catch {}
+    await waitForStableDOM(tabId);
+    return { hit };
   },
 
   async browser_select_option(args, ctx) {

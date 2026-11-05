@@ -2,7 +2,7 @@
 
 import { ensureAttached, sendCommand } from './debugger';
 import { Keyboard } from './keyboard';
-import { Mouse } from './mouse';
+import { Mouse, type ClickOptions } from './mouse';
 import { sendToTab } from './messaging';
 
 export interface Coordinates {
@@ -52,7 +52,7 @@ export class InputDevice {
     this.mouse.updateTabId(tabId);
   }
 
-  async click(coords: Coordinates, options?: { clickCount?: number }): Promise<void> {
+  async click(coords: Coordinates, options?: ClickOptions): Promise<void> {
     this.checkAborted();
     await ensureAttached(this.tabId);
     const scaled = await scaleCoords(this.tabId, coords);

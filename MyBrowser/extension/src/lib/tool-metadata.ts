@@ -22,6 +22,8 @@ export const TOOL_METADATA = {
   browser_hover: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe' } },
   browser_press_key: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { key: 'safe' } },
   browser_drag: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { startElement: 'safe', startRef: 'safe', startSelector: 'safe', endElement: 'safe', endRef: 'safe', endSelector: 'safe' } },
+  // Screenshot pixels are only valid for the screenshot they came from, so not recordable.
+  browser_mouse: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: false },
   browser_select_option: { tab: 'required', queue: 'tab', mutatesTab: true, recordable: true, recordingStrings: { element: 'safe', ref: 'safe', selector: 'safe', role: 'safe', name: 'safe', matchText: 'safe', label: 'safe', 'values.*': 'select' } },
   browser_screenshot: { tab: 'required', queue: 'tab', mutatesTab: false, recordable: false },
   browser_get_console_logs: { tab: 'optional', queue: 'none', mutatesTab: false, recordable: false },

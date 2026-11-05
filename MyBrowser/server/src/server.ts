@@ -20,7 +20,7 @@ import type { TelemetryConfig, TelemetryErrorCategory } from "./telemetry/types.
 import { navigate, goBack, goForward, wait } from "./tools/navigation.js";
 
 // Input tools
-import { click, type, hover, pressKey, drag, selectOption } from "./tools/input.js";
+import { click, type, hover, pressKey, drag, mouse, selectOption } from "./tools/input.js";
 
 // Snapshot tools
 import { snapshot } from "./tools/snapshot.js";
@@ -119,7 +119,7 @@ export let stateManager: IStateManager;
 const MUTATING_TOOLS = new Set([
   "browser_navigate", "browser_go_back", "browser_go_forward",
   "browser_click", "browser_type", "browser_hover", "browser_press_key",
-  "browser_drag", "browser_select_option",
+  "browser_drag", "browser_mouse", "browser_select_option",
   "select_tab", "close_tab",
   "browser_fill_form", "browser_action", "browser_triage", "browser_run",
   "browser_record_start", "browser_replay",
@@ -308,7 +308,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     // Navigation (with auto-snapshot)
     navigate(true), goBack(true), goForward(true), wait,
     // Input
-    click, type, hover, pressKey, drag, selectOption,
+    click, type, hover, pressKey, drag, mouse, selectOption,
     // Snapshot
     snapshot,
     // Media

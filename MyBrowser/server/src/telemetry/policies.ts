@@ -166,6 +166,17 @@ const policies = {
     endSelector: TARGET,
     tabId: TAB_ID,
   }),
+  browser_mouse: immutablePolicy({
+    action: enumeration("click", "double_click", "right_click", "hover", "drag", "scroll"),
+    x: number(0, 4_096, 64),
+    y: number(0, 4_096, 64),
+    toX: number(0, 4_096, 64),
+    toY: number(0, 4_096, 64),
+    deltaX: number(-10_000, 10_000, 100),
+    deltaY: number(-10_000, 10_000, 100),
+    text: textLength(),
+    tabId: TAB_ID,
+  }),
   browser_wait_for: immutablePolicy({
     condition: enumeration(
       "url_contains",

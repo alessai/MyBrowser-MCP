@@ -220,6 +220,37 @@ export const drag: Tool = {
   },
 };
 
+const MouseArgs = TabIdParam.extend({
+  action: z.enum(["click", "double_click", "right_click", "hover", "drag", "scroll"]).default("click"),
+  x: z.number().describe("X in pixels of the last browser_screenshot of this tab (not page or screen pixels)."),
+  y: z.number().describe("Y in pixels of the last browser_screenshot of this tab."),
+  toX: z.number().optional().describe("drag only: end X in screenshot pixels."),
+  toY: z.number().optional().describe("drag only: end Y in screenshot pixels."),
+  deltaX: z.number().optional().describe("scroll only: horizontal page pixels."),
+  deltaY: z.number().optional().describe("scroll only: vertical page pixels (positive scrolls down)."),
+  text: z.string().optional().describe("Typed with the keyboard after the action, into whatever then has focus."),
+}).refine((a) => a.action !== "drag" || (a.toX !== undefined && a.toY !== undefined), { message: "drag needs toX and toY" });
+
+export const mouse: Tool = {
+  schema: {
+    name: "browser_mouse",
+    description: "Click, double-click, right-click, hover, drag or scroll at a point of the last browser_screenshot, optionally typing text afterwards. "
+      + "For things with no element to target: canvases, slide or drawing editors, maps, and frames from other sites (e.g. PowerPoint/Word for the web). "
+      + "Take browser_screenshot of the tab first and give x/y in that image's pixels; a new screenshot is needed after the window is resized. "
+      + "Prefer browser_click and browser_type whenever the target appears in a snapshot.",
+    inputSchema: zodToJsonSchema(MouseArgs),
+  },
+  handle: async (context, params) => {
+    const validated = MouseArgs.parse(params);
+    const { tabId, ...rest } = validated;
+    const payload = tabId !== undefined ? { ...rest, tabId } : rest;
+    const result = await context.sendSocketMessage("browser_mouse", payload) as { hit?: string } | undefined;
+    const where = validated.action === "drag" ? `from (${validated.x}, ${validated.y}) to (${validated.toX}, ${validated.toY})` : `at (${validated.x}, ${validated.y})`;
+    const typed = validated.text ? `, then typed ${validated.text.length} characters` : "";
+    return { content: [{ type: "text", text: `${validated.action.replace("_", "-")} ${where} on ${result?.hit ?? "unknown"}${typed}. Take a screenshot to see the result.` }] };
+  },
+};
+
 export const selectOption: Tool = {
   schema: {
     name: "browser_select_option",
