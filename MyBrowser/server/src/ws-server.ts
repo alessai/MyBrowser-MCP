@@ -850,16 +850,22 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
 
       // ---- Auth ----
       if (!connectionRole) {
+        // Rejections were silent, which made a browser that never connects undiagnosable.
+        const reject = (code: number, reason: string, detail = reason) => {
+          const who = typeof msg.browserName === "string" && msg.browserName ? ` "${msg.browserName.slice(0, 40)}"` : "";
+          console.error(`[MyBrowser MCP] Rejected ${typeof msg.role === "string" ? msg.role.slice(0, 20) : "unknown"}${who} connection from ${request.socket.remoteAddress ?? "?"}: ${detail}`);
+          ws.close(code, reason);
+        };
         if (msg.type !== "auth") {
-          ws.close(WS_CLOSE.unauthorized, "Unauthorized");
+          reject(WS_CLOSE.unauthorized, "Unauthorized", "first message was not auth");
           return;
         }
         if (msg.protocolVersion !== PROTOCOL_VERSION) {
-          ws.close(WS_CLOSE.versionMismatch, "Protocol version mismatch");
+          reject(WS_CLOSE.versionMismatch, "Protocol version mismatch", `protocol version ${String(msg.protocolVersion).slice(0, 10)}, expected ${PROTOCOL_VERSION}`);
           return;
         }
         if (msg.role !== "client" && msg.role !== "extension") {
-          ws.close(WS_CLOSE.forbiddenRole, "Forbidden role");
+          reject(WS_CLOSE.forbiddenRole, "Forbidden role");
           return;
         }
         const localExtensionWithoutToken =
@@ -873,12 +879,12 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
           && typeof request.headers.origin === "string"
           && CHROME_EXTENSION_ORIGIN.test(request.headers.origin);
         if (msg.token !== token && !localExtensionWithoutToken) {
-          ws.close(WS_CLOSE.unauthorized, "Unauthorized");
+          reject(WS_CLOSE.unauthorized, "Unauthorized", msg.token ? "wrong token" : "no token");
           return;
         }
 
         if (!isAuthRequestV2(msg)) {
-          ws.close(WS_CLOSE.unauthorized, "Invalid auth request");
+          reject(WS_CLOSE.unauthorized, "Invalid auth request");
           return;
         }
         const authRequest = msg;
