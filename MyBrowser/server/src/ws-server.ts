@@ -522,7 +522,16 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
   // avoids relying on `context.activeBrowserId` which may not be set
   // for sessions that registered handlers via implicit single-browser
   // resolution.
+  // Sessions whose client is still connected when the hub shuts down: their
+  // client re-registers the same session with the next hub, so the browser must
+  // not be told the session closed (it would refuse it with SESSION_CLOSED
+  // until the extension is reloaded).
+  const sessionsSurvivingShutdown = new Set<string>();
   stateManager.setBroadcastToBrowsersFn((type, payload) => {
+    if (
+      type === "session_closed"
+      && sessionsSurvivingShutdown.has((payload as { sessionId?: string } | undefined)?.sessionId ?? "")
+    ) return;
     const msg = JSON.stringify({
       id: `bcast_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
       type,
@@ -1868,6 +1877,9 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       }
       try {
         const sessions = await stateManager.listSessions();
+        for (const { id } of sessions) {
+          if (connectionSessions.hasLiveSession(id)) sessionsSurvivingShutdown.add(id);
+        }
         for (const { id } of sessions) {
           try {
             await finalizeSession(id);

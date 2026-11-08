@@ -4187,13 +4187,38 @@ describe("real loopback session topology", () => {
     expect(server.pendingRecordingPersistCount()).toBe(0);
   }, 5_000);
 
+  it("keeps connected clients' sessions open in the browser across a hub restart, closes the rest", async () => {
+    const server = await startHub(undefined, undefined, undefined, { sessionReconnectGraceMs: 60_000 });
+    const extension = await connect(server);
+    await authenticate(extension, "extension");
+    const extensionInbox = createMessageInbox(extension);
+    const live = await connect(server);
+    await authenticate(live, "client");
+    await callHubRpc(live, "reg-live", "registerSession", { sessionId: "session-live" });
+    const gone = await connect(server);
+    await authenticate(gone, "client");
+    await callHubRpc(gone, "reg-gone", "registerSession", { sessionId: "session-gone" });
+    const goneClosed = waitForClose(gone);
+    gone.close();
+    await goneClosed;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await server.close();
+
+    const closed = extensionInbox.all
+      .filter(({ type }) => type === "session_closed")
+      .map((m) => (m.payload as { sessionId: string }).sessionId);
+    expect(closed).toEqual(["session-gone"]);
+    expect(await server.stateManager.listSessions()).toEqual([]);
+  }, 5_000);
+
   it("uses the drain finalizer for orderly close and is idempotent", async () => {
     const recordingsDir = mkdtempSync(join(tmpdir(), "mybrowser-orderly-drain-"));
     tempDirs.push(recordingsDir);
     const server = await startHub(recordingsDir);
     const extension = await connect(server);
     await authenticate(extension, "extension");
-    const extensionMessages = waitForMessages(extension, 2, 2_000);
+    const extensionInbox = createMessageInbox(extension);
     const client = await connect(server);
     await authenticate(client, "client");
     await callHubRpc(client, "register-a", "registerSession", { sessionId: "session-a" });
@@ -4226,12 +4251,10 @@ describe("real loopback session topology", () => {
     expect(closeSettled).toBe(false);
 
     allowPersist.resolve(true);
-    const messages = await extensionMessages;
     await closing;
-    expect(messages.map(({ type }) => type)).toEqual([
-      "persistRecordingResult",
-      "session_closed",
-    ]);
+    // session-a's client was still connected, so it will re-register with the
+    // next hub: hub state is released but the browser is not told it closed.
+    expect(extensionInbox.all.map(({ type }) => type)).toEqual(["persistRecordingResult"]);
     expect(removeSession).toHaveBeenCalledTimes(1);
     await server.close();
     expect(removeSession).toHaveBeenCalledTimes(1);
