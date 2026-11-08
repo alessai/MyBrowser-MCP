@@ -1,16 +1,16 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { actOnCards, cardWarning, isIrreversibleAction, labelCards, readCards, type Card } from "../page/triage.js";
 import type { Tool } from "./types.js";
 
 const TriageArgs = z.object({
   tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
-  labels: z.record(z.string()).describe("Label name -> what it means, e.g. {\"ignore\": \"sells software development or freelance services\", \"keep\": \"anyone else\"}"),
+  labels: z.record(z.string(), z.string()).describe("Label name -> what it means, e.g. {\"ignore\": \"sells software development or freelance services\", \"keep\": \"anyone else\"}"),
   cards: z.string().optional().describe("CSS selector of one card. Default: the page's main repeating list is found automatically."),
   load: z.boolean().optional().describe("Scroll and press 'Show more' until the list stops growing (default true)"),
   maxItems: z.number().int().min(1).max(1000).optional().describe("Most cards to read (default 300)"),
   minConfidence: z.number().min(0.5).max(0.99).optional().describe("Labels below this go to review (default 0.8)"),
-  labelsById: z.record(z.string()).optional().describe("Your own labels for card ids, e.g. from a run without a decision model"),
+  labelsById: z.record(z.string(), z.string()).optional().describe("Your own labels for card ids, e.g. from a run without a decision model"),
   action: z.object({
     label: z.string().describe("Which label to act on"),
     control: z.string().describe("Text of the control inside each card to click, e.g. 'Ignore' or 'Accept'"),

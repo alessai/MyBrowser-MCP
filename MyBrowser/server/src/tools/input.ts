@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { Context } from "../context.js";
 import { isTargetResolutionError, resolveTargetWithJev, type Resolution } from "../jev/resolve.js";
 import { diagnoseRepeatedFailure, noteTargetedSuccess } from "../jev/stuck.js";

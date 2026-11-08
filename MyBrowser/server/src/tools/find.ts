@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { readModel, resolveOnPage } from "../page/engine.js";
 import { candidateLine } from "../page/resolve.js";
 import type { Tool } from "./types.js";

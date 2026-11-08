@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { Tool } from "./types.js";
 import {
   SERVER_RECORDING_STRING_METADATA,
@@ -24,7 +24,7 @@ const ReplayArgs = z.object({
   tabId: z.number().int().min(1).max(MAX_CHROME_TAB_ID)
     .describe("Authorized tab where the recording will replay"),
   variables: z
-    .record(z.string())
+    .record(z.string(), z.string())
     .optional()
     .describe("Variable overrides for parameterized replay"),
   speed: z

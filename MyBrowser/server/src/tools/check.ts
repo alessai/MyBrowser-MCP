@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { askJev, type JevAnswer, type JevQuestion } from "../jev/client.js";
 import type { JevConfig } from "../jev/config.js";
 import { describeElement, readPageState } from "../jev/page.js";

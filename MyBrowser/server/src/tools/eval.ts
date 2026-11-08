@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { FRAME_DESCRIPTION } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 

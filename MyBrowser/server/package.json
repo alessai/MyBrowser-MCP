@@ -1,6 +1,6 @@
 {
   "name": "@alessai/mybrowser-mcp",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "MCP server for MyBrowser - remote browser automation over Tailscale",
   "type": "module",
   "homepage": "https://github.com/alessai/MyBrowser-MCP",
@@ -33,8 +33,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^13.1.0",
     "ws": "^8.21.0",
-    "zod": "^3.24.2",
-    "zod-to-json-schema": "^3.25.2"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/ws": "^8.18.0",

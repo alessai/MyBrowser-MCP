@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { Tool } from "./types.js";
 
 const FETCH_TRANSFER_TIMEOUT_MS = 300_000;

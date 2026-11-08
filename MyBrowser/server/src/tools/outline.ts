@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { askMany, type JevQuestion } from "../jev/client.js";
 import { readPageModel, type ModelElement, type PageModel } from "../page/model.js";
 import { rememberOutline } from "../page/refs.js";

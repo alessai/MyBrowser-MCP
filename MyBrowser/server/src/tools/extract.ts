@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { Tool } from "./types.js";
 
 const ExtractArgs = z.object({
   tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   selector: z.string().describe("CSS selector for container elements to extract from (e.g. '.product-card', 'table tr')"),
-  fields: z.record(z.string()).describe(
+  fields: z.record(z.string(), z.string()).describe(
     "Map of field names to CSS selectors relative to each container. Use 'self' for the container's own text content, '@href' or '@src' for attribute values. Example: {\"name\": \"h2 a\", \"price\": \".price\", \"url\": \"a@href\"}"
   ),
   limit: z.number().optional().default(10).describe("Max items to extract (default 10)"),

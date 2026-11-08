@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
@@ -53,7 +53,7 @@ const ActionStepSchema = z.object({
   direction: z.enum(["down", "up"]).optional().describe("Scroll direction"),
   amount: z.number().optional().describe("Scroll amount in pixels (default 300)"),
   extractSelector: z.string().optional().describe("CSS selector for extract containers"),
-  extractFields: z.record(z.string()).optional().describe("Field map for extract (name -> selector)"),
+  extractFields: z.record(z.string(), z.string()).optional().describe("Field map for extract (name -> selector)"),
   checks: z.array(AssertCheckSchema).optional().describe("Assertion checks for assert action"),
 });
 

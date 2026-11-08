@@ -16,7 +16,7 @@
 //   - browser_unlock fails for non-owners.
 
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { IStateManager } from "../state-manager.js";
 import type { Tool } from "./types.js";
 

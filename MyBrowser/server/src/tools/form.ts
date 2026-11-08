@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToJsonSchema } from "../utils/json-schema.js";
 import { fillItems } from "../page/fill.js";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
 const FillFormArgs = z.object({
   tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
-  fields: z.record(z.string()).optional().describe(
+  fields: z.record(z.string(), z.string()).optional().describe(
     "Map of field labels to values. Example: {\"Username\": \"admin\", \"Password\": \"secret\", \"Country\": \"UAE\"}"
   ),
   items: z.array(z.object({
