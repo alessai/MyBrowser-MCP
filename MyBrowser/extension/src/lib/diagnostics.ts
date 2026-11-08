@@ -13,9 +13,9 @@ const recentIssues: ExtensionIssue[] = [];
 
 function redactSensitive(input: string): string {
   return input
-    .replace(/("?(?:authToken|token|authorization|password|secret)"?\s*[:=]\s*")([^"\n]+)(")/gi, '$1[redacted]$3')
+    .replace(/("?(?:authToken|token|authorization|password|secret|apiKey)"?\s*[:=]\s*")([^"\n]+)(")/gi, '$1[redacted]$3')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+\-/]+=*/gi, '$1[redacted]')
-    .replace(/([?&](?:token|authToken|password|secret)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/([?&](?:token|authToken|password|secret|apiKey)=)[^&\s]+/gi, '$1[redacted]')
     .replace(/\b[a-f0-9]{64}\b/gi, '[redacted-token]');
 }
 

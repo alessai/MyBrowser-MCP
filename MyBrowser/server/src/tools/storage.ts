@@ -3,7 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Tool } from "./types.js";
 
 const StorageArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   action: z.enum(["get", "set", "delete", "clear"]).describe("Storage operation to perform"),
   type: z.enum(["localStorage", "sessionStorage", "cookies"]).describe("Storage type to operate on"),
   key: z.string().optional().describe("Storage key (required for get/set/delete on localStorage/sessionStorage)"),

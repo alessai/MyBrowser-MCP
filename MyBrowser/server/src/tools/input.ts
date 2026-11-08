@@ -8,7 +8,7 @@ import { captureAriaSnapshot, FRAME_DESCRIPTION } from "../utils/aria-snapshot.j
 import type { Tool } from "./types.js";
 
 const TabIdParam = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
 });
 
 // Natural language element targeting — AI can use any combination

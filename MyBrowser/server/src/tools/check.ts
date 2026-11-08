@@ -10,7 +10,7 @@ const Question = z.string().min(1).max(2_000);
 const Options = z.array(z.string().min(1).max(500)).min(2).max(20);
 
 const CheckArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   question: Question.optional().describe(
     "What to decide about the current page, e.g. 'Is the user signed in?' or 'Which plan is selected?'",
   ),

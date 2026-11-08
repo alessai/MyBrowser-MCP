@@ -866,6 +866,11 @@ export default defineBackground(() => {
     setBadge('off');
     await ensureOffscreen().catch(() => {});
     await tellOffscreen({ type: '_os_ws_disconnect' }).catch(() => {});
+    // A deliberate disconnect does not fire _os_disconnected, so drop recordings
+    // and browser_on handlers here; otherwise a "dismiss new tabs" handler keeps
+    // acting while access is off.
+    disconnectRecordingTransport();
+    resetHandlersAfterTransportDisconnect();
     await detachAll();
   }
 

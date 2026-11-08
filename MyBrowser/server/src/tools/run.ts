@@ -4,7 +4,7 @@ import { runGoal } from "../page/run.js";
 import type { Tool } from "./types.js";
 
 const RunArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   goal: z.string().min(3).describe("What to achieve on this page, concretely, e.g. 'search for flights from Muscat to Dubai on 12 Nov and open the results'"),
   values: z.record(z.string()).optional().describe("Named values the run may type or choose, e.g. {\"from\": \"Muscat\", \"date\": \"2026-11-12\"}. Nothing else is ever typed."),
   allow: z.array(z.enum(["click", "type", "select", "scroll", "wait"])).optional().describe("Operations the run may use (default all)"),

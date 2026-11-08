@@ -18,6 +18,14 @@ Then install the Chrome extension from:
 
 Load the extension once. It defaults to the ordinary local server and opens a first-install guide; no token entry is needed.
 
+The server and the extension must be the same version. With an older extension, a 2.1 server refuses `frame` calls with `EXTENSION_TOO_OLD` before doing anything, and tools the extension does not know (such as `browser_mouse`) fail with a message to update and reload it.
+
+## Changes in 2.1 that affect existing agents
+
+- **Agents no longer act on the user's active tab.** Each agent session works only in tabs it opened (`new_tab`, or `browser_navigate`, which opens one when the session has none) or chose with `select_tab` / `tabId`. A tool called before that fails with `NO_SESSION_TAB` and says how to get a tab. A tab another session is using is refused with the name of that session's project folder.
+- **Sessions survive MCP host restarts.** Hosts such as OpenCode restart idle MCP processes; the next process started from the same project folder resumes the session and its tabs for up to 2 hours.
+- **Agent access switch.** The extension popup has an Agent access switch. When off, the browser disconnects, debugging is detached from every tab and agents get "not connected"; the default browser is not silently replaced.
+
 ## Highlights
 
 1. Browser control: tabs, navigation, clicks, typing, forms, hover, drag and drop, and keyboard input

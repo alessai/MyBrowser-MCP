@@ -7,7 +7,7 @@ import { guardNote } from "../utils/guard.js";
 import type { Tool } from "./types.js";
 
 const OutlineArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   focus: z.string().optional().describe("What you are looking for, e.g. 'placements and budget'. Returns only the relevant sections."),
   section: z.string().optional().describe("Only sections whose title contains this text."),
   sweep: z.boolean().optional().describe("Scroll through the page first so lazily loaded sections are included, then scroll back. Default false."),

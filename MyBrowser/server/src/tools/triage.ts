@@ -4,7 +4,7 @@ import { actOnCards, cardWarning, isIrreversibleAction, labelCards, readCards, t
 import type { Tool } from "./types.js";
 
 const TriageArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   labels: z.record(z.string()).describe("Label name -> what it means, e.g. {\"ignore\": \"sells software development or freelance services\", \"keep\": \"anyone else\"}"),
   cards: z.string().optional().describe("CSS selector of one card. Default: the page's main repeating list is found automatically."),
   load: z.boolean().optional().describe("Scroll and press 'Show more' until the list stops growing (default true)"),
@@ -77,7 +77,7 @@ export const triage: Tool = {
       buckets.set(d.label, [...(buckets.get(d.label) ?? []), card]);
     }
     const lines = [
-      `Dry run: ${cards.length} cards read (${found} found). Nothing was clicked.`,
+      `Dry run: ${cards.length} cards read (${found} found). No card controls were clicked${args.load !== false ? " (only 'Show more' to load the list)" : ""}.`,
       ...(warning ? [warning] : []),
       ...Object.keys(args.labels).flatMap((label) => {
         const list = buckets.get(label) ?? [];

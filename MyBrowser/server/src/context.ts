@@ -25,8 +25,32 @@ import {
 import type { TelemetryManager } from "./telemetry/manager.js";
 import type { JevConfig } from "./jev/config.js";
 import type { TelemetryErrorCategory } from "./telemetry/types.js";
+import { VERSION } from "./version.js";
 
 const MESSAGE_RESPONSE_TYPE = "messageResponse";
+
+const FRAME_TOOLS = new Set(["browser_snapshot", "browser_eval", "browser_click", "browser_type", "browser_hover", "browser_select_option"]);
+const UPDATE_EXTENSION = `Update this browser's MyBrowser extension to ${VERSION} (the server's version) and reload it in the browser's extensions page.`;
+
+/**
+ * A 2.1+ extension wraps frame-scoped results as {mbFrame, value}. Anything
+ * else means an older extension ignored `frame` and acted on the page itself.
+ */
+export function unwrapFrameResult(type: string, payload: unknown, result: unknown): unknown {
+  const frame = (payload as { frame?: unknown } | null | undefined)?.frame;
+  if (typeof frame !== "string" || frame.length === 0 || !FRAME_TOOLS.has(type)) return result;
+  const wrapped = result as { mbFrame?: unknown; value?: unknown } | null;
+  // `value` is absent when the tool returns nothing (JSON drops undefined).
+  if (wrapped && typeof wrapped === "object" && typeof wrapped.mbFrame === "string") return wrapped.value;
+  throw new Error(`EXTENSION_TOO_OLD: the browser ignored frame "${frame}", so ${type} ran on the page, not inside the frame. ${UPDATE_EXTENSION}`);
+}
+
+export function withOldExtensionHint(error: unknown): unknown {
+  if (error instanceof Error && /^(Error: )?Unknown tool: /.test(error.message)) {
+    return new Error(`${error.message}. ${UPDATE_EXTENSION}`);
+  }
+  return error;
+}
 
 const noBrowserMessage =
   "No browser connected. Install the MyBrowser extension and use its first-install guide. Ordinary local setup connects automatically; hub and remote setup use the extension settings.";
@@ -317,14 +341,52 @@ export class Context {
     options: { timeoutMs: number } = { timeoutMs: 30_000 }
   ): Promise<any> {
     const target = await this.getTarget();
-    return this.sendSocketMessageCore(
-      target.ws,
-      target.targetBrowserId,
-      type,
-      payload,
-      options,
-      target.telemetryBrowserId,
-    );
+    const frame = (payload as { frame?: unknown } | null | undefined)?.frame;
+    if (typeof frame === "string" && frame.length > 0 && FRAME_TOOLS.has(type)) {
+      await this.requireFrameSupport(target, payload as { tabId?: unknown });
+    }
+    let result: unknown;
+    try {
+      result = await this.sendSocketMessageCore(
+        target.ws,
+        target.targetBrowserId,
+        type,
+        payload,
+        options,
+        target.telemetryBrowserId,
+      );
+    } catch (error) {
+      throw withOldExtensionHint(error);
+    }
+    return unwrapFrameResult(type, payload, result);
+  }
+
+  /** Browsers whose extension is known to apply `frame` (only positives are cached). */
+  private readonly frameCapableBrowsers = new Set<string>();
+
+  /**
+   * Before the first frame-scoped call to a browser, check that its extension
+   * applies `frame`; an older one would silently act on the page instead. The
+   * probe is a read-only snapshot of a frame that cannot exist: a 2.1+
+   * extension answers FRAME_NOT_FOUND, an older one returns the page.
+   */
+  private async requireFrameSupport(
+    target: { ws: WebSocket; targetBrowserId?: string; telemetryBrowserId?: string },
+    payload: { tabId?: unknown },
+  ): Promise<void> {
+    const key = target.telemetryBrowserId ?? target.targetBrowserId ?? "default";
+    if (this.frameCapableBrowsers.has(key)) return;
+    const probe = { frame: "\u0000mybrowser-frame-probe", ...(typeof payload.tabId === "number" ? { tabId: payload.tabId } : {}) };
+    try {
+      await this.sendSocketMessageCore(target.ws, target.targetBrowserId, "browser_snapshot", probe, { timeoutMs: 15_000 }, target.telemetryBrowserId);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("FRAME_NOT_FOUND")) {
+        this.frameCapableBrowsers.add(key);
+        return;
+      }
+      throw error;
+    }
+    throw new Error(`EXTENSION_TOO_OLD: this browser's MyBrowser extension does not support frame, so nothing was done. ${UPDATE_EXTENSION}`);
   }
 
   /**

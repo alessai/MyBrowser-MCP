@@ -12,7 +12,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const LearnArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   pageName: z
     .string()
     .optional()
@@ -108,7 +108,7 @@ export const learn: Tool = {
 // ---------------------------------------------------------------------------
 
 const SiteInfoArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   domain: z
     .string()
     .optional()

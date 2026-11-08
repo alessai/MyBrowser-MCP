@@ -3,7 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Tool } from "./types.js";
 
 const ClipboardArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   action: z.enum(["read", "write", "paste"]).describe(
     "read: read clipboard text content. write: write text to clipboard. paste: simulate Ctrl+V paste into focused element."
   ),

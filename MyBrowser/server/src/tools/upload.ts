@@ -7,7 +7,7 @@ import type { Tool } from "./types.js";
 const UPLOAD_TRANSFER_TIMEOUT_MS = 300_000;
 
 const UploadArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   selector: z.string().describe("CSS selector for the <input type='file'> element"),
   files: z.array(z.string()).optional().describe("Array of absolute file paths that must exist on the BROWSER's machine (where Chrome runs) — attached via the Chrome debugger (e.g. ['/home/user/photo.jpg', '/tmp/video.mp4'])."),
   localFiles: z.array(z.string()).optional().describe("Array of absolute file paths that must exist on the MCP SERVER machine — the bytes are streamed to the browser in memory (nothing is written to the browser's disk). Each file is size-capped by the transfers.maxFileMb config (default 40 MB)."),

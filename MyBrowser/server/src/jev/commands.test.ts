@@ -41,7 +41,7 @@ describe("mybrowser-mcp jev set-key", () => {
     expect(stored()).toEqual({ token: "t".repeat(64), host: "127.0.0.1", port: 9009, jev: { apiKey: KEY, vision: true } });
     expect(statSync(configFile).mode & 0o777).toBe(0o600);
     expect(readdirSync(dir)).toEqual(["config.json"]);
-    expect(output.join("")).toContain("Saved TypeSafe key apikey_012\u20263210");
+    expect(output.join("")).toContain("Saved TypeSafe key apikey_\u20263210");
     expect(output.join("")).not.toContain(KEY);
   });
 
@@ -83,7 +83,7 @@ describe("mybrowser-mcp jev status / remove", () => {
     await run(["set-key", KEY]).done;
     const status = run(["status"]);
     await status.done;
-    expect(status.output.join("")).toBe("Jev: on, TypeSafe, key apikey_012\u20263210, autopilot off, vision on, minConfidence 0.7, timeoutMs 3000\n");
+    expect(status.output.join("")).toBe("Jev: on, TypeSafe, key apikey_\u20263210, autopilot off, vision on, minConfidence 0.7, timeoutMs 3000\n");
 
     await run(["remove"]).done;
     expect(stored().jev).toBeUndefined();
@@ -110,6 +110,15 @@ describe("mybrowser-mcp jev use-local and autopilot", () => {
   it("rejects a bad local URL before writing", async () => {
     await expect(run(["use-local", "ftp://x"]).done).rejects.toThrow(/url/);
     expect(stored().jev).toEqual({ apiKey: "old", vision: true });
+  });
+
+  it("warns about plain http to another machine only", async () => {
+    const remote = run(["use-local", "http://10.0.0.5:8000/v1/systemone"]);
+    await remote.done;
+    expect(remote.output.join("")).toMatch(/^Warning: this is plain http to another machine/);
+    const local = run(["use-local", "http://127.0.0.1:8000/v1/systemone"]);
+    await local.done;
+    expect(local.output.join("")).not.toMatch(/Warning/);
   });
 
   it("turns the autopilot on and off", async () => {

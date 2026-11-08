@@ -852,8 +852,10 @@ async function startServer(options: WsServerOptions): Promise<WsServerResult> {
       if (!connectionRole) {
         // Rejections were silent, which made a browser that never connects undiagnosable.
         const reject = (code: number, reason: string, detail = reason) => {
-          const who = typeof msg.browserName === "string" && msg.browserName ? ` "${msg.browserName.slice(0, 40)}"` : "";
-          console.error(`[MyBrowser MCP] Rejected ${typeof msg.role === "string" ? msg.role.slice(0, 20) : "unknown"}${who} connection from ${request.socket.remoteAddress ?? "?"}: ${detail}`);
+          // Client-controlled before auth: quoted with JSON.stringify so it cannot forge log lines.
+          const who = typeof msg.browserName === "string" && msg.browserName ? ` ${JSON.stringify(msg.browserName.slice(0, 40))}` : "";
+          const role = typeof msg.role === "string" ? JSON.stringify(msg.role.slice(0, 20)) : "unknown";
+          console.error(`[MyBrowser MCP] Rejected ${role}${who} connection from ${request.socket.remoteAddress ?? "?"}: ${detail}`);
           ws.close(code, reason);
         };
         if (msg.type !== "auth") {

@@ -2720,6 +2720,22 @@ describe("ordinary local extension authentication", () => {
 
     await expect(closed).resolves.toMatchObject({ code: WS_CLOSE.unauthorized });
   });
+
+  it("logs why a connection was refused without the token or forgeable lines", async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.join(" ")); });
+    const server = await startHub();
+    const socket = await connectFromOrigin(server, extensionOrigin);
+    const closed = waitForClose(socket);
+    const wrong = `${TOKEN.slice(0, -4)}XXXX`;
+    socket.send(JSON.stringify({ type: "auth", token: wrong, role: "extension", protocolVersion: PROTOCOL_VERSION, browserName: "Fake\n[MyBrowser MCP] forged" }));
+    await expect(closed).resolves.toMatchObject({ code: WS_CLOSE.unauthorized });
+    const line = logged.find((l) => l.includes("Rejected"));
+    expect(line).toMatch(/Rejected "extension" "Fake\\n\[MyBrowser MCP\] forged" connection from .*: wrong token/);
+    expect(line).not.toContain(wrong);
+    expect(line).not.toContain(TOKEN);
+    expect(line).not.toContain("\n");
+  });
 });
 
 describe("WebSocket connection roles and session binding", () => {

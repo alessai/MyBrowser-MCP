@@ -1810,7 +1810,9 @@ export async function handleTool(
   const offset = FRAME_POINTER_TOOLS.has(name) ? await measureFrameOffset(tabId, found.url) : undefined;
   setFrameScope(tabId, { ...found, offset });
   try {
-    return await handler(args, ctx);
+    // Wrapped so the server can tell this build applied `frame`; older
+    // extensions ignore it and would act on the page instead.
+    return { mbFrame: found.url, value: await handler(args, ctx) };
   } finally {
     setFrameScope(tabId, undefined);
   }

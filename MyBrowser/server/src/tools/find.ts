@@ -5,7 +5,7 @@ import { candidateLine } from "../page/resolve.js";
 import type { Tool } from "./types.js";
 
 const FindArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   role: z.string().optional().describe("ARIA role to search for (e.g. button, link, searchbox)"),
   name: z.string().optional().describe("Accessible name or partial text match"),
   text: z.string().optional().describe("Visible text content to match"),

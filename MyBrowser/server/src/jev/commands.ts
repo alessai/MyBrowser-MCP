@@ -92,8 +92,21 @@ function writeConfigObject(file: string, value: Record<string, unknown>): void {
   renameSync(temp, file);
 }
 
+/** Shows only the key's type prefix (e.g. "apikey_") and last 4 characters. */
 export function maskKey(key: string): string {
-  return key.length > 16 ? `${key.slice(0, 10)}\u2026${key.slice(-4)}` : "(set)";
+  if (key.length <= 16) return "(set)";
+  const prefix = /^[a-z]{2,10}_/i.exec(key)?.[0] ?? "";
+  return `${prefix}\u2026${key.slice(-4)}`;
+}
+
+/** Plain http to another machine sends page content across the network unencrypted. */
+function isPlainHttpOffMachine(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function registerJevCommands(root: Command, overrides: Partial<JevCommandDependencies> = {}): void {
@@ -146,7 +159,7 @@ export function registerJevCommands(root: Command, overrides: Partial<JevCommand
     });
 
   jev.command("use-local <url>")
-    .description("Use a decision model you run yourself (any /v1/systemone server, e.g. Strands Decider) instead of TypeSafe; nothing leaves your network")
+    .description("Use a decision model you run yourself (any /v1/systemone server, e.g. Strands Decider) instead of TypeSafe; page content goes only to that server")
     .option("--model <name>", "Model name the server expects")
     .action((url: string, options: { model?: string }) => {
       deps.ensureConfig();
@@ -156,7 +169,10 @@ export function registerJevCommands(root: Command, overrides: Partial<JevCommand
       const { apiKey: _k, provider: _p, url: _u, model: _m, ...rest } = prior;
       config.jev = { ...rest, provider: "local", url, ...(options.model ? { model: options.model } : {}) };
       writeConfigObject(deps.configFile, config);
-      deps.stdout(`Jev now uses ${url}${options.model ? ` (${options.model})` : ""}. Run set-key again to go back to TypeSafe. ${RESTART}\n`);
+      const warning = isPlainHttpOffMachine(url)
+        ? "Warning: this is plain http to another machine, so page content travels unencrypted; use https or a server on this machine unless the network is private.\n"
+        : "";
+      deps.stdout(`${warning}Jev now uses ${url}${options.model ? ` (${options.model})` : ""}. Run set-key again to go back to TypeSafe. ${RESTART}\n`);
     });
 
   jev.command("autopilot <state>")

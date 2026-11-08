@@ -8,7 +8,7 @@ import type { Tool } from "./types.js";
 // --- browser_wait_for ---
 
 const WaitForArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   condition: z.enum([
     "url_contains",
     "url_matches",
@@ -115,7 +115,7 @@ const AssertCheckSchema = z.object({
 });
 
 const AssertArgs = z.object({
-  tabId: z.number().optional().describe("Target tab ID. If omitted, uses the active tab."),
+  tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
   checks: z.array(AssertCheckSchema).describe("List of assertion checks to run"),
 });
 
