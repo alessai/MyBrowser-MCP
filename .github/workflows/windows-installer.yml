@@ -119,6 +119,15 @@ jobs:
           MYBROWSER_NO_PAUSE: '1'
         run: scripts\windows\install-mybrowser.cmd -InstallDirectory "%RUNNER_TEMP%\MyBrowser\Extension" -McpConfigPath "%RUNNER_TEMP%\MyBrowserMcp\config.json" -NoLaunch > "%RUNNER_TEMP%\installer-output.txt" 2>&1
 
+      - name: Show installer output on failure
+        if: failure()
+        shell: powershell
+        run: |
+          $path = "$env:RUNNER_TEMP\installer-output.txt"
+          if (Test-Path $path) {
+            (Get-Content $path -Raw).Replace('SECRET_WINDOWS_BOOTSTRAP_CANARY_8412', '[redacted]')
+          }
+
       - name: Verify installed manifest
         shell: powershell
         run: |
