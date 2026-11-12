@@ -85,6 +85,8 @@ export const outline: Tool = {
     const args = OutlineArgs.parse(params ?? {});
     const model = await readPageModel(context, args.tabId, { sweep: args.sweep === true });
     rememberOutline(context, args.tabId, model);
+    // A bare ref number from the agent now means an outline number (internal page reads do not set this).
+    context.lastRefPrefix = "o";
     let groups = groupBySection(model.elements);
     let note = "";
     if (args.section) {

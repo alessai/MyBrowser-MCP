@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -93,12 +93,22 @@ describe("browser_fetch_file", () => {
   });
 
   it("inline returns a small text body; urls fetches several, two at a time", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "mb-fetch-"));
+    // inline only reads files under the transfers folder, so this test uses a fake home.
+    const home = mkdtempSync(join(tmpdir(), "mb-fetch-"));
+    vi.stubEnv("HOME", home);
+    const dir = join(home, ".mybrowser", "transfers", "downloads", "s1");
+    mkdirSync(dir, { recursive: true });
     const json = join(dir, "a.json");
     writeFileSync(json, '{"ok":true}');
+    const outside = join(home, "secret.json");
+    writeFileSync(outside, '{"secret":1}');
     const { context, sendSocketMessage } = createContext({ landedPath: json, mimeType: "application/json", sha256: "ff" });
     const one = await fetchFile.handle(context, { url: "https://example.com/a.json", inline: true });
     expect((one.content[0] as { text: string }).text).toContain('Body:\n{"ok":true}');
+    sendSocketMessage.mockResolvedValueOnce({ landedPath: outside, mimeType: "application/json" });
+    const escaped = await fetchFile.handle(context, { url: "https://example.com/x.json", inline: true });
+    expect((escaped.content[0] as { text: string }).text).toContain("outside the transfers folder");
+    expect((escaped.content[0] as { text: string }).text).not.toContain("secret\":1");
 
     let active = 0;
     let peak = 0;
@@ -114,6 +124,10 @@ describe("browser_fetch_file", () => {
     expect(text).toMatch(/^Fetched 3 of 4 URLs\./);
     expect(text).toContain("2. FAILED https://e.test/bad: HTTP 404");
     expect(peak).toBe(2);
+    // Numbered names, so two URLs ending in the same name cannot overwrite each other.
+    const names = sendSocketMessage.mock.calls.slice(-4).map(([, p]) => (p as { filename: string }).filename);
+    expect(names.sort()).toEqual(["1-1", "2-bad", "3-3", "4-4"]);
+    vi.unstubAllEnvs();
     await expect(fetchFile.handle(context, { url: "https://e.test/1", urls: ["https://e.test/2"] })).rejects.toThrow();
   });
 

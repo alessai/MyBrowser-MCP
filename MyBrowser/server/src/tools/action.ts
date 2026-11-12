@@ -46,7 +46,8 @@ const ActionStepSchema = z.object({
   typedText: z.string().optional().describe("Text to type (for type action)"),
   submit: z.boolean().optional().describe("Press Enter after typing"),
   key: z.string().optional().describe("Key name for press_key (e.g. Enter, ArrowDown)"),
-  time: z.number().optional().describe("Seconds to wait (for wait action)"),
+  time: z.number().optional().describe("Seconds to wait (for wait action). Up to 10 s it returns once the page is quiet unless exact is true."),
+  exact: z.boolean().optional().describe("wait: sleep the full time even if the page settles earlier"),
   condition: z.string().optional().describe(
     "Condition for wait_for, same as browser_wait_for: text_visible, text_not_visible, url_contains, url_matches, element_visible, element_not_visible, network_idle. Put the text/URL in value and the CSS in selector, or write it as 'text_visible:Saved'."
   ),

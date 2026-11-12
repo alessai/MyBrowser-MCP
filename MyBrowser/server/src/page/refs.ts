@@ -15,7 +15,6 @@ export function rememberOutline(context: Context, tabId: number | undefined, mod
   const entries = new Map(model.elements.map((e) => [e.n, e]));
   context.outlineSelectors.set(key(tabId), entries);
   context.outlineSelectors.set(LAST, entries);
-  context.lastRefPrefix = "o";
 }
 
 export function rememberedElement(context: Context, tabId: number | undefined, n: number): ModelElement | undefined {

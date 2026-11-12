@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { join, sep } from "node:path";
+import { defaultTransfersRoot } from "../transfers/retention.js";
 import { z } from "zod";
 import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { Context } from "../context.js";
@@ -10,6 +12,8 @@ const FETCH_TRANSFER_TIMEOUT_MS = 300_000;
 const CONCURRENCY = 2;
 const MAX_URLS = 50;
 const INLINE_MAX_BYTES = 256 * 1024;
+// All inlined bodies of one urls call together, so a batch cannot flood the agent's context.
+const INLINE_TOTAL_MAX_BYTES = 512 * 1024;
 const TEXTUAL = /^(text\/|application\/(json|xml|javascript|ld\+json|x-ndjson|csv)|[^;]*\+(json|xml))/i;
 
 const FetchFileArgs = z.object({
@@ -47,13 +51,21 @@ async function fetchOne(context: Context, url: string, filename: string | undefi
   return typeof result === "object" && result !== null ? { ...(result as Landed), bytes: undefined } : (result as Landed);
 }
 
-/** The landed file as text when it is small and textual; the file lives on this machine (the hub's). */
-async function inlineBody(landed: Landed): Promise<string> {
+/**
+ * The landed file as text when it is small and textual. Only files under the
+ * transfers downloads folder are read (defense in depth: the path comes from the hub).
+ */
+async function inlineBody(landed: Landed, budget: { left: number } = { left: INLINE_MAX_BYTES }): Promise<string> {
   if (!landed.landedPath) return "(no file landed)";
   try {
-    const { size } = await stat(landed.landedPath);
+    const root = await realpath(join(defaultTransfersRoot(), "downloads"));
+    const path = await realpath(landed.landedPath);
+    if (!path.startsWith(root + sep)) return `(body not inlined: ${landed.landedPath} is outside the transfers folder)`;
+    const { size } = await stat(path);
     if (size > INLINE_MAX_BYTES) return `(body not inlined: ${size} bytes is over ${INLINE_MAX_BYTES / 1024} KB; read ${landed.landedPath})`;
-    const buffer = await readFile(landed.landedPath);
+    if (size > budget.left) return `(body not inlined: this call already returned ${INLINE_TOTAL_MAX_BYTES / 1024} KB; read ${landed.landedPath})`;
+    budget.left -= size;
+    const buffer = await readFile(path);
     const text = buffer.toString("utf8");
     if (!TEXTUAL.test(landed.mimeType ?? "") && /\uFFFD/.test(text)) return `(body not inlined: ${landed.mimeType ?? "binary"} content)`;
     return text;
@@ -80,15 +92,17 @@ export const fetchFile: Tool = {
     }
     const list = urls!;
     const lines: string[] = new Array(list.length);
+    const budget = { left: INLINE_TOTAL_MAX_BYTES };
     let next = 0;
     let failed = 0;
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, async () => {
       while (next < list.length) {
         const i = next++;
         try {
-          const landed = await fetchOne(context, list[i]!, undefined);
+          // Numbered names: two URLs ending in the same name must not land on one file.
+          const landed = await fetchOne(context, list[i]!, `${i + 1}-${deriveFilename(list[i]!)}`);
           lines[i] = `${i + 1}. OK ${list[i]} -> ${landed.landedPath} (${landed.mimeType ?? "?"}, sha256 ${String(landed.sha256 ?? "").slice(0, 12)})`
-            + (inline ? `\n${await inlineBody(landed)}` : "");
+            + (inline ? `\n${await inlineBody(landed, budget)}` : "");
         } catch (error) {
           failed += 1;
           lines[i] = `${i + 1}. FAILED ${list[i]}: ${error instanceof Error ? error.message : String(error)}`;

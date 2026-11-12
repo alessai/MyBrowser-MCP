@@ -122,6 +122,23 @@ describe("2.2: eval helpers", () => {
   });
 });
 
+describe("2.2 review fixes", () => {
+  it("a description click does not make bare ref numbers mean outline numbers", async () => {
+    const { context } = fakeContext([el(2, "button", "Publish")]);
+    await click.handle(context, { element: "Publish" });
+    expect((context as { lastRefPrefix: string }).lastRefPrefix).toBe("e");
+  });
+
+  it("a failed expect check never turns a done action into an error", async () => {
+    const { context } = fakeContext([], (tool, payload) => {
+      if (tool === "browser_eval" && String(payload.code).includes("innerText")) throw new Error("Frame was detached");
+      return undefined;
+    });
+    const r = await click.handle(context, { selector: "#pay", expect: "Paid" });
+    expect((r.content[0] as { text: string }).text).toMatch(/^Clicked "#pay"\nExpect "Paid": not checked \(the action was done/);
+  }, 10_000);
+});
+
 describe("2.2: expect on actions", () => {
   it("confirms by exact text without a decision model", async () => {
     const { context } = fakeContext([], (tool, payload) => (tool === "browser_eval" && String(payload.code).includes("innerText")

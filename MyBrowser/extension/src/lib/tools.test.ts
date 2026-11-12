@@ -509,5 +509,6 @@ describe('2.2 settle-based waits and one-trip snapshots', () => {
     expect(buildToolArgs({ action: 'wait_for', condition: 'text_visible:Done' })).toMatchObject({ condition: 'text_visible', value: 'Done', selector: '' });
     expect(buildToolArgs({ action: 'wait_for', condition: 'element_visible:.ok' })).toMatchObject({ condition: 'element_visible', value: '', selector: '.ok' });
     expect(buildToolArgs({ action: 'wait_for', condition: 'text_visible', value: 'Hi' })).toMatchObject({ condition: 'text_visible', value: 'Hi' });
+    expect(buildToolArgs({ action: 'wait', time: 5, exact: true })).toEqual({ time: 5, exact: true });
   });
 });

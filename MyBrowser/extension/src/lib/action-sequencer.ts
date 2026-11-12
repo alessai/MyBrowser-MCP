@@ -21,6 +21,7 @@ export interface ActionStep {
   submit?: boolean;
   key?: string;
   time?: number;
+  exact?: boolean;
   // wait_for params
   condition?: string;    // e.g. 'url_contains', 'element_visible'
   value?: string;        // condition value
@@ -97,6 +98,7 @@ export function buildToolArgs(step: ActionStep): Record<string, unknown> {
 
     case 'wait':
       args.time = step.time ?? 1;
+      if (step.exact) args.exact = true;
       break;
 
     case 'press_key':

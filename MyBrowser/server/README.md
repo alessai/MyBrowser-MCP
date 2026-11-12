@@ -155,7 +155,7 @@ With it on:
 - `browser_check` and `browser_assert` `page` checks answer yes/no or multiple-choice questions about the page; `browser_wait_for` `until` waits for a described state; `browser_triage` labels the cards.
 - `browser_run` (only with `"autopilot": true`, `mybrowser-mcp jev autopilot on`): a bounded autopilot for well-defined tasks. It types only the named values the agent passes, never clicks a pay/send/submit/delete control on its own, and hands back on doubt, loops or no progress.
 
-If the model is unreachable, every tool falls back to its no-model behaviour. Sent to the decision model: page URL path, title, visible text, element roles, labels, section and row text, and on/off states (screenshots only with `vision`). Never sent: the values of input, password and text-area fields, the values given to `browser_run`, cookies, or link query values. Text in rich editors (contenteditable) is part of the visible page text.
+If the model is unreachable, every tool falls back to its no-model behaviour. Sent to the decision model: page URL path, title, visible text, element roles, labels, section and row text, and on/off states (screenshots only with `vision`). Never sent: the values of input, password and text-area fields, the values given to `browser_run`, cookies, or link query values. Text in rich editors (contenteditable) is part of the visible page text. `expect` and plain-language waits send the visible page text while they check. A description that found its element (`{element: "Publish button"}`) is remembered per site in `~/.mybrowser/sites/` (role, name and section only) so the next lookup is instant; a remembered target for a click that may pay, delete, send or publish is still risk-checked.
 
 ## Optional Internal Tool Telemetry
 

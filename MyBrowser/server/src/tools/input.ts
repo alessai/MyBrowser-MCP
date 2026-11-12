@@ -62,11 +62,20 @@ async function resolveDescription(context: Context, toolName: string, args: Targ
   const e = r.element;
   if (e.where === "collapsed") throw new Error(`"${description}" is ${candidateLine(e)}, inside a collapsed section; expand it first.`);
   const jev = context.jev;
-  if (r.via === "decider" && jev && sideEffectOf(toolName, args) && r.confidence < Math.max(jev.minConfidence, RISKY_GUESS_MIN_CONFIDENCE)) {
+  const floor = Math.max(jev?.minConfidence ?? 0, RISKY_GUESS_MIN_CONFIDENCE);
+  // Typed text can go to the wrong field (a search box sends it on input): a
+  // guessed field needs the high threshold too.
+  if (toolName === "browser_type" && r.via === "decider" && r.confidence < floor) {
+    throw new Error(`The decision model picked ${candidateLine(e)} for "${description}" (confidence ${r.confidence.toFixed(2)}) but did not type: a guessed field needs confidence ${floor}. If it is the one you mean, use ref: "o${e.n}".`);
+  }
+  // Site memory only says the phrase worked once; a remembered target for an
+  // action that may pay, delete, send or publish is checked like a guess.
+  if (jev && sideEffectOf(toolName, args) && (r.via === "memory" || (r.via === "decider" && r.confidence < floor))) {
     // The element description only, never its state (it can hold typed values).
     const risky = await looksIrreversible(askJev, jev, { title: model.title, url: model.url }, describeForDecider(e), jev.timeoutMs);
     if (risky) {
-      throw new Error(`The decision model picked ${candidateLine(e)} for "${description}" (confidence ${r.confidence.toFixed(2)}) but did not act: it may pay, delete, send or publish something, and a guessed target for that needs confidence ${RISKY_GUESS_MIN_CONFIDENCE}. If it is the one you mean, use ref: "o${e.n}".`);
+      const how = r.via === "memory" ? "site memory" : `the decision model (confidence ${r.confidence.toFixed(2)})`;
+      throw new Error(`${how} matched ${candidateLine(e)} for "${description}" but MyBrowser did not act: it may pay, delete, send or publish something, so it needs a direct target. If it is the one you mean, use ref: "o${e.n}".`);
     }
   }
   const via = r.via === "code" ? "" : r.via === "decider" ? `, decision model ${r.confidence.toFixed(2)}` : ", site memory";
@@ -110,7 +119,8 @@ async function dispatchTargeted(context: Context, toolName: string, original: Ta
   } catch (error) {
     if (context.jev && error instanceof Error) {
       const hadCandidate = (error as { jevCandidate?: boolean }).jevCandidate === true;
-      const immediate = /OUTCOME_UNKNOWN/.test(error.message) || described;
+      // Look at once only when the outcome is unknown; otherwise on a repeat.
+      const immediate = /OUTCOME_UNKNOWN/.test(error.message);
       const advice = await diagnoseRepeatedFailure(context, context.jev, args.tabId, undefined, undefined, { hadCandidate, immediate });
       if (advice) error.message = `${error.message} ${advice}`;
     }

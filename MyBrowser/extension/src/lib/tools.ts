@@ -684,26 +684,30 @@ const handlers: Record<string, ToolHandler> = {
         );
         if (!coords) throw new Error('No coordinates');
         await ctx.input.moveMouse(coords);
-        await delay(50); // let hover styles/menus react before the press
+        await delay(100); // let hover styles/menus react before the press
         clickCoordinates = coords;
       },
       async () => {
         const coords = clickCoordinates!;
+        // Navigation is watched until the page settles (not a fixed pause), so a
+        // navigation the page starts late, e.g. after async validation, is still
+        // awaited before the result is read.
         await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
           await ctx.input.click(coords);
-          await delay(250); // a click-triggered navigation must start in this window to be awaited
+          await delay(100);
+          await waitForStableDOM(tabId);
         });
       },
       async () => {
         await sendToTab(tabId, 'cs_click', { selector });
-        await delay(250);
+        await delay(100);
+        await waitForStableDOM(tabId);
       },
       'CLICK_OUTCOME_UNKNOWN',
       ctx.signal,
     );
     ctx.signal?.throwIfAborted();
     try { await ensureContentScript(tabId); } catch {}
-    await waitForStableDOM(tabId);
   },
 
   async browser_type(args, ctx) {
