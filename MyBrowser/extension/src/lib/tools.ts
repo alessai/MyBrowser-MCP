@@ -48,7 +48,14 @@ import { getLocalUrlHost } from './storage';
 import { resolveNavigationUrl } from './local-connection';
 
 const STABLE_DOM_TIMEOUT_MS = 2000;
-const STABLE_DOM_MIN_MS = 500;
+// Quiet window after an action before its result is read (was 500 ms plus a
+// fixed 500 ms sleep after every click; 2.2 relies on this window alone).
+const STABLE_DOM_MIN_MS = 300;
+// browser_wait up to this long returns once the page has been quiet for
+// WAIT_QUIET_MS (agents use short waits to let a page render); longer waits
+// and exact:true sleep the full time.
+const WAIT_SETTLE_MAX_S = 10;
+const WAIT_QUIET_MS = 1000;
 const SCREENSHOT_MAX_WIDTH = 1024;
 const SCREENSHOT_MAX_HEIGHT = 768;
 const AFTER_ACTION_DELAY_MS = 500;
@@ -623,9 +630,27 @@ const handlers: Record<string, ToolHandler> = {
     try { await ensureContentScript(tabId); } catch {}
   },
 
-  async browser_wait(args) {
+  async browser_wait(args, ctx) {
     const time = (args.time as number) || 1;
-    await delay(time * 1000);
+    const started = Date.now();
+    let tabId: number | undefined;
+    try { tabId = ctx.getTabId(); } catch { /* no tab of its own: plain sleep */ }
+    if (args.exact === true || time > WAIT_SETTLE_MAX_S || tabId === undefined) {
+      await delay(time * 1000);
+      return { waitedMs: Date.now() - started, settled: false };
+    }
+    try {
+      await ensureContentScript(tabId);
+      await Promise.race([
+        sendToTab(tabId, 'waitForStableDOM', { minStableMs: WAIT_QUIET_MS, maxMutations: 0, maxWaitMs: time * 1000 }),
+        delay(time * 1000 + 500),
+      ]);
+    } catch {
+      // No content script on this page (chrome://, PDF): sleep the rest.
+      await delay(Math.max(0, time * 1000 - (Date.now() - started)));
+    }
+    const waitedMs = Date.now() - started;
+    return { waitedMs, settled: waitedMs < time * 1000 - 100 };
   },
 
   // === Snapshot (ULTRA: viewport-only + stable IDs) ===
@@ -635,7 +660,11 @@ const handlers: Record<string, ToolHandler> = {
     await ensureContentScript(tabId);
     const viewportOnly = args.viewportOnly !== undefined ? args.viewportOnly : true;
     const mode = (args.mode as 'full' | 'diff' | 'auto' | undefined) ?? 'auto';
-    return sendToTab(tabId, 'generateAriaSnapshot', { viewportOnly, mode });
+    const snapshot = await sendToTab(tabId, 'generateAriaSnapshot', { viewportOnly, mode });
+    if (args.withPage !== true) return snapshot;
+    // One round trip for the server's post-action read instead of three.
+    const tab = await chrome.tabs.get(tabId);
+    return { url: tab.url || '', title: tab.title || '', snapshot };
   },
 
   // === Input (ULTRA: NL targeting via resolveTarget) ===
@@ -655,19 +684,19 @@ const handlers: Record<string, ToolHandler> = {
         );
         if (!coords) throw new Error('No coordinates');
         await ctx.input.moveMouse(coords);
-        await delay(200);
+        await delay(50); // let hover styles/menus react before the press
         clickCoordinates = coords;
       },
       async () => {
         const coords = clickCoordinates!;
         await ctx.input.waitForTabIfNavigationStarted(tabId, async () => {
           await ctx.input.click(coords);
-          await delay(500);
+          await delay(250); // a click-triggered navigation must start in this window to be awaited
         });
       },
       async () => {
         await sendToTab(tabId, 'cs_click', { selector });
-        await delay(500);
+        await delay(250);
       },
       'CLICK_OUTCOME_UNKNOWN',
       ctx.signal,

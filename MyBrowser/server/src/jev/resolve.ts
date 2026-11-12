@@ -32,16 +32,18 @@ const RISKY_MIN_CONFIDENCE = 0.9;
 const RISK_THRESHOLD = 0.5;
 const RISK_QUESTION = "Would activating `element` on this page pay or buy something, delete or remove data, send or publish a message or post, or make another change that cannot easily be undone?";
 
-async function looksIrreversible(
+export const RISKY_GUESS_MIN_CONFIDENCE = RISKY_MIN_CONFIDENCE;
+
+export async function looksIrreversible(
   ask: typeof askJev,
   config: JevConfig,
   page: { title: string; url: string },
-  element: PageElement,
+  element: string,
   timeoutMs: number,
 ): Promise<boolean> {
   try {
     const response = await ask({ ...config, timeoutMs }, {
-      state: { page: { title: page.title, url: page.url }, element: describeElement(element) },
+      state: { page: { title: page.title, url: page.url }, element },
       questions: { risk: { type: "noul", instructions: RISK_QUESTION } },
     });
     const answer = response.answers.risk;
@@ -123,7 +125,7 @@ export async function resolveTargetWithJev(
     const [check, risky] = await Promise.all([
       verifyElement(context, tabId, page.url, chosen, budget),
       options.sideEffect && answer.confidence < riskyFloor
-        ? looksIrreversible(ask, config, page, chosen, budget)
+        ? looksIrreversible(ask, config, page, describeElement(chosen), budget)
         : Promise.resolve(false),
     ]);
     if (!check.ok) {

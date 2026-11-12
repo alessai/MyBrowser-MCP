@@ -91,8 +91,10 @@ describe("Jev element-resolution fallback", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { context, sendSocketMessage } = contextFor(new Error("CLICK_OUTCOME_UNKNOWN"));
     await expect(click.handle(context, { element: "Sign in", name: "Sign in" })).rejects.toThrow("CLICK_OUTCOME_UNKNOWN");
-    expect(fetchMock).not.toHaveBeenCalled();
     expect(actionCalls(sendSocketMessage, "browser_click")).toHaveLength(1);
+    // Jev is only asked what is on the page (read-only), never which element to retry.
+    const questions = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>).map(([, init]) => Object.keys(JSON.parse(String(init.body)).questions));
+    expect(questions).toEqual([["cause"]]);
   });
 
   it("returns the original error when Jev is not configured", async () => {

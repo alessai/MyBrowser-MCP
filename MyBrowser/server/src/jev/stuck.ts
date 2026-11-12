@@ -48,7 +48,7 @@ export async function diagnoseRepeatedFailure(
   tabId: number | undefined,
   ask = askJev,
   now: () => number = Date.now,
-  options: { hadCandidate?: boolean } = {},
+  options: { hadCandidate?: boolean; immediate?: boolean } = {},
 ): Promise<string | undefined> {
   let failures = lastFailure.get(context);
   if (!failures) {
@@ -58,7 +58,10 @@ export async function diagnoseRepeatedFailure(
   const at = now();
   const previous = failures.get(tabKey(tabId));
   failures.set(tabKey(tabId), at);
-  if (previous === undefined || at - previous > REPEAT_WINDOW_MS) return undefined;
+  // `immediate`: the first failure already needs a look (the outcome is unknown,
+  // or even the description lookup found nothing).
+  const repeated = previous !== undefined && at - previous <= REPEAT_WINDOW_MS;
+  if (!repeated && !options.immediate) return undefined;
 
   try {
     const deadline = at + config.timeoutMs;
@@ -74,7 +77,9 @@ export async function diagnoseRepeatedFailure(
       questions: {
         cause: {
           type: "choice",
-          instructions: "An automated agent has failed more than once in a row to act on an element of this page. What on the page most likely explains it?",
+          instructions: repeated
+            ? "An automated agent has failed more than once in a row to act on an element of this page. What on the page most likely explains it?"
+            : "An automated agent just failed to act on an element of this page. What on the page most likely explains it?",
           criteria: Object.fromEntries(Object.entries(CAUSES).map(([key, cause]) => [key, cause.criterion])),
         },
       },
@@ -84,7 +89,7 @@ export async function diagnoseRepeatedFailure(
     // "Not on the page" would contradict a candidate the fallback just offered.
     if (answer.choice === "none" && options.hadCandidate) return undefined;
     const cause = CAUSES[answer.choice];
-    return cause ? `Page check after repeated failures (confidence ${answer.confidence.toFixed(2)}): ${cause.advice}` : undefined;
+    return cause ? `Page check${repeated ? " after repeated failures" : ""} (confidence ${answer.confidence.toFixed(2)}): ${cause.advice}` : undefined;
   } catch {
     return undefined;
   }

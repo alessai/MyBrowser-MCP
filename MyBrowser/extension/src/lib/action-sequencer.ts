@@ -67,7 +67,7 @@ export interface ActionResult {
 /**
  * Build args for handleTool from a step definition.
  */
-function buildToolArgs(step: ActionStep): Record<string, unknown> {
+export function buildToolArgs(step: ActionStep): Record<string, unknown> {
   const args: Record<string, unknown> = {};
 
   // Element targeting
@@ -118,14 +118,22 @@ function buildToolArgs(step: ActionStep): Record<string, unknown> {
       args.fields = step.extractFields ?? {};
       break;
 
-    case 'wait_for':
-      args.condition = step.condition ?? '';
-      args.value = step.value ?? '';
-      args.selector = step.selector ?? '';
+    case 'wait_for': {
+      // "text_visible:Saved" (the documented step format) is split here as well,
+      // for servers older than 2.2 that pass it through unchanged.
+      let condition = step.condition ?? '';
+      let inline = '';
+      const colon = condition.indexOf(':');
+      if (colon > 0) { inline = condition.slice(colon + 1).trim(); condition = condition.slice(0, colon).trim(); }
+      args.condition = condition;
+      const isElement = condition.startsWith('element_');
+      args.value = step.value ?? (isElement ? '' : inline);
+      args.selector = step.selector ?? (isElement ? inline : '');
       // Convert seconds to milliseconds for the handler
       args.timeout = (step.timeout ?? 10) * 1000;
       args.pollInterval = step.pollInterval ?? 500;
       break;
+    }
 
     case 'assert':
       args.checks = step.checks ?? [];

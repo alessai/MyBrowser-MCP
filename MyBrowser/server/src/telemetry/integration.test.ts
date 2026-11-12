@@ -183,7 +183,8 @@ async function connectMcp(server: { connect: (transport: InMemoryTransport) => P
 async function click(client: Client, element: string) {
   return client.callTool({
     name: "browser_click",
-    arguments: { tabId: 11, element },
+    // A selector as well: an element description alone is resolved on the page model first.
+    arguments: { tabId: 11, element, selector: "#control" },
   });
 }
 

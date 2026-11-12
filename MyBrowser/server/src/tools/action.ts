@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "../utils/json-schema.js";
+import { outlineRefNumber } from "../page/model.js";
+import { collapsedHint, outlineSelector } from "../page/refs.js";
 import { captureAriaSnapshot } from "../utils/aria-snapshot.js";
 import type { Tool } from "./types.js";
 
@@ -32,12 +34,12 @@ const ActionStepSchema = z.object({
     "assert",
   ]).describe("The action to perform"),
   // Element targeting
-  ref: z.string().optional().describe("Element reference from snapshot (e.g. e42)"),
+  ref: z.string().optional().describe("Element reference: e42 from a snapshot or o12 from browser_outline"),
   mark: z.number().optional().describe("Set-of-Marks annotation number"),
   selector: z.string().optional().describe("CSS selector"),
   role: z.string().optional().describe("ARIA role to match"),
   name: z.string().optional().describe("Accessible name or partial match"),
-  text: z.string().optional().describe("Visible text content to match"),
+  text: z.string().optional().describe("Visible text to match (to find the element). For a type step with ref/selector/label given, text is the text to type."),
   label: z.string().optional().describe("Form field label text"),
   // Action-specific params
   url: z.string().optional().describe("URL for navigate action"),
@@ -46,8 +48,9 @@ const ActionStepSchema = z.object({
   key: z.string().optional().describe("Key name for press_key (e.g. Enter, ArrowDown)"),
   time: z.number().optional().describe("Seconds to wait (for wait action)"),
   condition: z.string().optional().describe(
-    "Condition for wait_for: 'url_contains:X', 'element_visible:selector', 'text_visible:X'"
+    "Condition for wait_for, same as browser_wait_for: text_visible, text_not_visible, url_contains, url_matches, element_visible, element_not_visible, network_idle. Put the text/URL in value and the CSS in selector, or write it as 'text_visible:Saved'."
   ),
+  value: z.string().optional().describe("wait_for: the text or URL part to wait for"),
   timeout: z.number().optional().describe("Timeout in seconds for wait_for (default 10)"),
   values: z.array(z.string()).optional().describe("Values for select_option"),
   direction: z.enum(["down", "up"]).optional().describe("Scroll direction"),
@@ -82,7 +85,16 @@ export const action: Tool = {
   },
   handle: async (context, params) => {
     const validated = ActionArgs.parse(params);
-    const { tabId, steps, stopOnError } = validated;
+    const { tabId, stopOnError } = validated;
+    // Outline refs (o12) become selectors here; the extension only knows snapshot refs.
+    const steps = validated.steps.map((step, i) => {
+      const n = outlineRefNumber(step.ref);
+      if (n === undefined) return step;
+      const hint = collapsedHint(context, tabId, n);
+      if (hint) throw new Error(`Step ${i + 1}: ${hint}`);
+      const { ref: _ref, ...rest } = step;
+      return { ...rest, selector: outlineSelector(context, tabId, n) };
+    });
 
     const payload: Record<string, unknown> = {
       steps,

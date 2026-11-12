@@ -90,6 +90,7 @@ const targetFields = (): Record<string, TelemetryFieldPolicy> => ({
   matchText: TARGET,
   label: TARGET,
   frame: FRAME,
+  expect: textLength(),
   tabId: TAB_ID,
 });
 
@@ -98,7 +99,7 @@ const policies = {
   browser_navigate: immutablePolicy({ url: url(), tabId: TAB_ID }),
   browser_go_back: immutablePolicy({ tabId: TAB_ID }),
   browser_go_forward: immutablePolicy({ tabId: TAB_ID }),
-  browser_wait: immutablePolicy({ time: number(0, 30, 0.1), tabId: TAB_ID }),
+  browser_wait: immutablePolicy({ time: number(0, 30, 0.1), exact: boolean(), tabId: TAB_ID }),
   browser_action: immutablePolicy({
     steps: ACTION_SEQUENCE,
     tabId: TAB_ID,
@@ -125,7 +126,7 @@ const policies = {
     tabId: TAB_ID,
   }),
   browser_upload: immutablePolicy({ selector: TARGET, files: count(128), tabId: TAB_ID, localFiles: pseudonym("local_path") }),
-  browser_fetch_file: immutablePolicy({ url: url(), filename: pseudonym("download_name") }),
+  browser_fetch_file: immutablePolicy({ url: url(), urls: count(64), filename: pseudonym("download_name"), inline: boolean() }),
   browser_outline: immutablePolicy({ tabId: TAB_ID, focus: textLength(), section: textLength(), sweep: boolean() }),
   browser_triage: immutablePolicy({
     tabId: TAB_ID,
@@ -195,6 +196,7 @@ const policies = {
     selector: TARGET,
     timeout: number(0, 300_000, 100),
     pollInterval: number(50, 30_000, 50),
+    time: number(0, 30, 0.1),
     tabId: TAB_ID,
   }),
   browser_find: immutablePolicy({
@@ -233,7 +235,7 @@ const policies = {
   browser_get_console_logs: immutablePolicy({ tabId: TAB_ID }),
   browser_eval: immutablePolicy({
     code: textLength(),
-    timeout: number(0, 30_000, 100),
+    timeout: number(0, 60_000, 100),
     frame: FRAME,
     tabId: TAB_ID,
   }),

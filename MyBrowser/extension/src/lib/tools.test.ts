@@ -462,3 +462,52 @@ describe('browser_upload error unmasking', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('2.2 settle-based waits and one-trip snapshots', () => {
+  const tab = (ctx: ToolContext) => ctx.setTabId(777_001);
+
+  it('browser_wait returns once the page is quiet instead of sleeping the full time', async () => {
+    const { ctx } = context();
+    await tab(ctx);
+    const sendMessage = vi.fn(async () => ({ ok: true })); // waitForStableDOM resolves at once
+    vi.stubGlobal('chrome', { tabs: { sendMessage }, scripting: { executeScript: vi.fn() } });
+    const started = Date.now();
+    const result = await handleTool('browser_wait', { time: 5 }, ctx) as { waitedMs: number; settled: boolean };
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(result.settled).toBe(true);
+    const settle = sendMessage.mock.calls.find((c) => (c as unknown[])[1] && ((c as unknown[])[1] as { type: string }).type === 'waitForStableDOM');
+    expect(((settle as unknown[])[1] as { payload: unknown }).payload).toEqual({ minStableMs: 1000, maxMutations: 0, maxWaitMs: 5000 });
+    vi.unstubAllGlobals();
+  });
+
+  it('browser_wait exact:true sleeps the full time', async () => {
+    const { ctx } = context();
+    await tab(ctx);
+    vi.stubGlobal('chrome', { tabs: { sendMessage: vi.fn(async () => ({ ok: true })) } });
+    const result = await handleTool('browser_wait', { time: 0.2, exact: true }, ctx) as { waitedMs: number; settled: boolean };
+    expect(result.settled).toBe(false);
+    expect(result.waitedMs).toBeGreaterThanOrEqual(190);
+    vi.unstubAllGlobals();
+  });
+
+  it('browser_snapshot with withPage returns URL, title and snapshot together', async () => {
+    const { ctx } = context();
+    await tab(ctx);
+    vi.stubGlobal('chrome', {
+      tabs: {
+        sendMessage: vi.fn(async (_t: number, m: { type: string }) => (m.type === 'generateAriaSnapshot' ? '- button "Save"' : { ok: true })),
+        get: vi.fn(async () => ({ url: 'https://x.test/', title: 'X' })),
+      },
+    });
+    expect(await handleTool('browser_snapshot', { withPage: true }, ctx)).toEqual({ url: 'https://x.test/', title: 'X', snapshot: '- button "Save"' });
+    expect(await handleTool('browser_snapshot', {}, ctx)).toBe('- button "Save"');
+    vi.unstubAllGlobals();
+  });
+
+  it('browser_action wait_for splits "text_visible:Done" for servers older than 2.2', async () => {
+    const { buildToolArgs } = await import('./action-sequencer');
+    expect(buildToolArgs({ action: 'wait_for', condition: 'text_visible:Done' })).toMatchObject({ condition: 'text_visible', value: 'Done', selector: '' });
+    expect(buildToolArgs({ action: 'wait_for', condition: 'element_visible:.ok' })).toMatchObject({ condition: 'element_visible', value: '', selector: '.ok' });
+    expect(buildToolArgs({ action: 'wait_for', condition: 'text_visible', value: 'Hi' })).toMatchObject({ condition: 'text_visible', value: 'Hi' });
+  });
+});

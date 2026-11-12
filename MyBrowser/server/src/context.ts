@@ -24,6 +24,7 @@ import {
 } from "./transfers/registry.js";
 import type { TelemetryManager } from "./telemetry/manager.js";
 import type { JevConfig } from "./jev/config.js";
+import type { ModelElement } from "./page/model.js";
 import type { TelemetryErrorCategory } from "./telemetry/types.js";
 import { VERSION } from "./version.js";
 
@@ -103,8 +104,12 @@ export class Context {
   jev?: JevConfig;
   /** Marks a tab this session opened as owned by it (set by the server; absent in tests). */
   claimTab?: (tabId: number) => Promise<void>;
-  /** Last browser_outline read per tab (key: tab id or "active"): o-number -> selector, for shadow-DOM refs. */
-  readonly outlineSelectors = new Map<string, Map<number, string>>();
+  /** Last browser_outline read per tab key (tab id, "active", "last"): o-number -> element. */
+  readonly outlineSelectors = new Map<string, Map<number, ModelElement>>();
+  /** Which kind of ref this session read last (snapshot e12 or outline o12), for bare numeric refs. */
+  lastRefPrefix: "e" | "o" = "e";
+  /** The browser the last routed call went to (set by the server's routing). */
+  lastBrowser?: { id: string; name?: string };
 
   constructor(readonly telemetry?: TelemetryManager, localUrlHost?: string) {
     this.localUrlHost = localUrlHost === undefined ? undefined : validateLocalUrlHost(localUrlHost);

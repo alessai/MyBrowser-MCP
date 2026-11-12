@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Context } from "../context.js";
@@ -87,6 +90,31 @@ describe("browser_fetch_file", () => {
       "100.95.83.128",
     ) as { url: string };
     expect(untouched.url).toBe("https://example.com/app.zip");
+  });
+
+  it("inline returns a small text body; urls fetches several, two at a time", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mb-fetch-"));
+    const json = join(dir, "a.json");
+    writeFileSync(json, '{"ok":true}');
+    const { context, sendSocketMessage } = createContext({ landedPath: json, mimeType: "application/json", sha256: "ff" });
+    const one = await fetchFile.handle(context, { url: "https://example.com/a.json", inline: true });
+    expect((one.content[0] as { text: string }).text).toContain('Body:\n{"ok":true}');
+
+    let active = 0;
+    let peak = 0;
+    sendSocketMessage.mockImplementation(async (_t: string, payload?: unknown) => {
+      active += 1; peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active -= 1;
+      if (String((payload as { url: string }).url).endsWith("/bad")) throw new Error("HTTP 404");
+      return { landedPath: json, mimeType: "application/json", sha256: "ff" };
+    });
+    const many = await fetchFile.handle(context, { urls: ["https://e.test/1", "https://e.test/bad", "https://e.test/3", "https://e.test/4"] });
+    const text = (many.content[0] as { text: string }).text;
+    expect(text).toMatch(/^Fetched 3 of 4 URLs\./);
+    expect(text).toContain("2. FAILED https://e.test/bad: HTTP 404");
+    expect(peak).toBe(2);
+    await expect(fetchFile.handle(context, { url: "https://e.test/1", urls: ["https://e.test/2"] })).rejects.toThrow();
   });
 
   it("tells the truth about direction, landing location, and size", () => {

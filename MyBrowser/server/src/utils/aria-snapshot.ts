@@ -18,13 +18,24 @@ export async function captureAriaSnapshot(
   if (options?.viewportOnly !== undefined) payload.viewportOnly = options.viewportOnly;
   if (options?.mode !== undefined) payload.mode = options.mode;
 
-  const url = await context.sendSocketMessage("getUrl", payload);
-  const title = await context.sendSocketMessage("getTitle", payload);
-  const snapshotPayload = { ...payload };
+  const snapshotPayload: Record<string, unknown> = { ...payload, withPage: true };
   if (options?.frame) snapshotPayload.frame = options.frame;
   if (options?.viewportOnly === undefined) snapshotPayload.viewportOnly = true; // default viewport-only
   if (options?.mode === undefined) snapshotPayload.mode = "auto"; // default auto-diff
-  let snapshot = (await context.sendSocketMessage("browser_snapshot", snapshotPayload)) as string;
+  // 2.2 extensions return URL, title and snapshot in one round trip; older ones
+  // ignore withPage and return the snapshot string, so read URL and title separately.
+  const read = await context.sendSocketMessage("browser_snapshot", snapshotPayload) as string | { url: string; title: string; snapshot: string };
+  let url: unknown;
+  let title: unknown;
+  let snapshot: string;
+  if (read && typeof read === "object") {
+    ({ url, title, snapshot } = read);
+  } else {
+    snapshot = read;
+    url = await context.sendSocketMessage("getUrl", payload);
+    title = await context.sendSocketMessage("getTitle", payload);
+  }
+  context.lastRefPrefix = "e";
 
   // Truncate if too large
   if (snapshot && snapshot.length > MAX_SNAPSHOT_CHARS) {
@@ -47,11 +58,14 @@ export async function captureAriaSnapshot(
   }
 
   const warning = guardNote(`${title}\n${snapshot ?? ""}`);
+  const browser = context.lastBrowser
+    ? `- Browser: ${context.lastBrowser.name ? `${context.lastBrowser.name} (${context.lastBrowser.id})` : context.lastBrowser.id}${tabId !== undefined ? `, tab ${tabId}` : ""}\n`
+    : "";
   return {
     content: [
       {
         type: "text" as const,
-        text: `${status ? `${status}\n` : ""}${warning ? `${warning}\n` : ""}\n- Page URL: ${url}\n- Page Title: ${title}\n${options?.frame ? `- Frame: ${options.frame}\n` : ""}- Page Snapshot\n\`\`\`yaml\n${snapshot}\n\`\`\`\n`,
+        text: `${status ? `${status}\n` : ""}${warning ? `${warning}\n` : ""}\n${browser}- Page URL: ${url}\n- Page Title: ${title}\n${options?.frame ? `- Frame: ${options.frame}\n` : ""}- Page Snapshot\n\`\`\`yaml\n${snapshot}\n\`\`\`\n`,
       },
     ],
   };

@@ -62,6 +62,7 @@ import { createBrowserTools } from "./tools/browser.js";
 
 // ULTRA Phase 5: Eval & Storage tools
 import { browserEval } from "./tools/eval.js";
+import { normalizeArguments } from "./tools/arg-aliases.js";
 import { browserStorage } from "./tools/storage.js";
 
 // ULTRA Phase 5: Network & Performance tools
@@ -257,6 +258,8 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   const getActiveBrowser = async (): Promise<string> => {
     const resolution = await stateManager.resolveBrowserTarget(sessionId);
     if (!resolution.ok) throw new Error(resolution.message);
+    // Remembered for the "Browser:" line in page results, so agents need not re-check.
+    context.lastBrowser = { id: resolution.browserId, name: resolution.browserName };
     return resolution.browserId;
   };
 
@@ -439,7 +442,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
       // session owns it. Calls without tabId run on the session's own tab, which
       // it got from new_tab, select_tab or an earlier tabId (all claimed), never
       // on the user's active tab.
-      const ownedTabId = MUTATING_TOOLS.has(toolName) ? extractTabId(request.params.arguments) : undefined;
+      const ownedTabId = MUTATING_TOOLS.has(toolName) ? extractTabId(request.params.arguments) ?? extractTabId(normalizeArguments(toolName, request.params.arguments).args) : undefined;
       if (ownedTabId !== undefined) {
         const tabId = ownedTabId;
         try {
@@ -471,8 +474,13 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
         }
       }
 
+      // Common shapes from other browser tools ({ms}, {expression}, numeric refs...) are
+      // rewritten to the canonical arguments, and the result says what was accepted.
+      const { args: toolArgs, note: aliasNote } = normalizeArguments(toolName, request.params.arguments, context.lastRefPrefix);
       try {
-        return await tool.handle(context, request.params.arguments);
+        const result = await tool.handle(context, toolArgs);
+        if (!aliasNote) return result;
+        return { ...result, content: [{ type: "text" as const, text: aliasNote }, ...(result.content ?? [])] };
       } catch (error) {
         failureOutcome = classifyExplicitError(error);
         recordIssue({

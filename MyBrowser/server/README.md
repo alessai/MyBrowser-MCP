@@ -20,6 +20,19 @@ Load the extension once. It defaults to the ordinary local server and opens a fi
 
 The server and the extension must be the same version. With an older extension, a 2.1 server refuses `frame` calls with `EXTENSION_TOO_OLD` before doing anything, and tools the extension does not know (such as `browser_mouse`) fail with a message to update and reload it.
 
+## Changes in 2.2: fewer failed calls and turns
+
+Nothing that worked in 2.1 stops working.
+
+- **Common argument shapes are accepted.** `browser_wait {ms}`, `browser_eval {expression}` or `{function}`, `browser_wait_for {text}` / `{textGone}` / `{time}` / `"text_visible:Saved"` / `"el_exists"`, numeric refs, `select_browser {browser}` or a browser name, and `target` are rewritten to the canonical arguments; the result says what was accepted. `element` and `submit` are optional.
+- **Click, type, hover and select by description alone:** `{element: "Publish button"}` is found on the page by code and site memory, then the decision model if configured; unclear cases hand back candidates, and a guessed target that may pay, delete, send or publish needs high confidence.
+- **Outline refs (`o12`) work everywhere**, including `browser_action` steps and calls that name a tab the outline did not; a re-rendered element is found again by its role, name and section, and a ref inside a collapsed section says which control opens it.
+- **Less waiting:** clicks no longer pause a fixed 700 ms; `browser_wait` up to 10 s returns once the page has been quiet for 1 s (`exact: true` sleeps the full time); results after an action need one browser round trip instead of three.
+- **`expect` on click/type/hover/select** checks the result in the same call. A failed action whose outcome is unknown gets a one-line page check (popup, sign-in, CAPTCHA, error, loading) when the decision model is configured.
+- **`browser_eval` helpers** (`mb.rows`, `mb.text`, `mb.links`, `mb.waitFor`, ...), read-only, for whole loops in one call.
+- **`browser_fetch_file`** takes `inline: true` to return a JSON/text body directly and `urls` to fetch several files in one call.
+- **Page results name the browser** they ran on, and `select_browser` does nothing when that browser is already selected.
+
 ## Changes in 2.1 that affect existing agents
 
 - **Agents no longer act on the user's active tab.** Each agent session works only in tabs it opened (`new_tab`, or `browser_navigate`, which opens one when the session has none) or chose with `select_tab` / `tabId`. A tool called before that fails with `NO_SESSION_TAB` and says how to get a tab. A tab another session is using is refused with the name of that session's project folder.

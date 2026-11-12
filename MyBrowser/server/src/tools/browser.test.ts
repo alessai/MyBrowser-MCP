@@ -80,4 +80,16 @@ describe("browser routing tools", () => {
       text: expect.stringContaining("use_default_browser"),
     });
   });
+
+  it("accepts a browser name and does nothing when it is already selected", async () => {
+    const state = createState();
+    const { selectBrowser } = createBrowserTools(state, () => "session-a");
+
+    await selectBrowser.handle(context, { browserId: "mainpc" });
+    expect(state.selectBrowser).toHaveBeenCalledWith("session-a", "windows");
+
+    vi.mocked(state.getSessionBrowser).mockResolvedValue("windows");
+    const again = await selectBrowser.handle(context, { browserId: "windows" });
+    expect(again.content[0]).toMatchObject({ text: expect.stringContaining("Already using") });
+  });
 });

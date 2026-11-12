@@ -9,22 +9,19 @@ import type { Tool } from "./types.js";
 
 const WaitForArgs = z.object({
   tabId: z.number().optional().describe("Target tab ID. If omitted, uses this session's current tab (opened with new_tab or browser_navigate, or chosen with select_tab), never the user's active tab."),
-  condition: z.enum([
-    "url_contains",
-    "url_matches",
-    "element_visible",
-    "element_not_visible",
-    "text_visible",
-    "text_not_visible",
-    "network_idle",
-  ]).optional().describe("Condition to wait for (code check). Omit when using until."),
+  // A string, not an enum, in the published schema: aliases like "el_exists" or
+  // "text_visible:Saved" are rewritten on the server (tools/arg-aliases.ts).
+  condition: z.string().optional().describe("Code check: url_contains, url_matches, element_visible, element_not_visible, text_visible, text_not_visible or network_idle. Omit when using until."),
   until: z.string().optional().describe("Plain-language state to wait for, e.g. 'the video upload has finished processing'. Needs a decision model; without one, use condition."),
   failIf: z.string().optional().describe("With until: stop early when this is true, e.g. 'an upload error is shown'"),
   value: z.string().optional().describe("Parameter for the condition (URL substring, regex pattern, or text to match)"),
   selector: z.string().optional().describe("CSS selector for element_visible / element_not_visible conditions"),
   timeout: z.number().optional().default(10000).describe("Max wait time in ms (default 10000; up to 300000 with until)"),
   pollInterval: z.number().optional().default(500).describe("Poll interval in ms (default 500)"),
+  time: z.number().optional().describe("Seconds to simply wait when there is nothing specific to wait for (same as browser_wait)."),
 });
+
+const CONDITIONS = new Set(["url_contains", "url_matches", "element_visible", "element_not_visible", "text_visible", "text_not_visible", "network_idle"]);
 
 // Two readings in a row at or above this count as reached (Nov 1 2026: about
 // 0.7 s after the change, no false alarms in 5 runs).
@@ -65,14 +62,26 @@ export const waitFor: Tool = {
   schema: {
     name: "browser_wait_for",
     description:
-      "Wait for a condition to be met on the page. Polls at intervals until the condition is true or timeout is reached. Conditions: url_contains, url_matches, element_visible, element_not_visible, text_visible, text_not_visible, network_idle (no pending network requests for a quiet window). Or pass until: a plain-language state (e.g. 'the upload has finished processing'), with optional failIf, judged by the decision model every poll; use it instead of repeated snapshot-and-wait turns.",
+      "Wait until something is true, returning the moment it is. Code conditions: {condition: 'text_visible', value: 'Saved'} (also text_not_visible, url_contains, url_matches, network_idle) or {condition: 'element_visible', selector: '.done'} (also element_not_visible); shorthand {text: 'Saved'} works too. "
+      + "Or until: a plain-language state, e.g. {until: 'the upload has finished processing', failIf: 'an error is shown', timeout: 120000}, judged by the decision model every poll. timeout is in ms (default 10000). Use this instead of fixed waits and repeated snapshots.",
     inputSchema: zodToJsonSchema(WaitForArgs),
   },
   handle: async (context, params) => {
     const validated = WaitForArgs.parse(params);
     if (validated.until) return { content: [{ type: "text", text: await waitUntil(context, validated) }] };
-    if (!validated.condition) throw new Error("browser_wait_for needs condition or until");
-    const { tabId, until: _u, failIf: _f, ...rest } = validated;
+    if (!validated.condition && validated.time !== undefined) {
+      // Playwright-style {time}: a plain settle wait.
+      const payload = { time: validated.time, ...(validated.tabId !== undefined ? { tabId: validated.tabId } : {}) };
+      const r = await context.sendSocketMessage("browser_wait", payload, { timeoutMs: validated.time * 1000 + 15_000 }) as { waitedMs?: number; settled?: boolean } | undefined;
+      return { content: [{ type: "text", text: r?.settled ? `Page settled after ${(r.waitedMs! / 1000).toFixed(1)} s.` : `Waited ${validated.time} seconds.` }] };
+    }
+    if (!validated.condition) {
+      throw new Error("browser_wait_for needs something to wait for: {text: 'Saved'}, {condition: 'element_visible', selector: '.done'}, {until: 'the upload finished'} or {time: 3}");
+    }
+    if (!CONDITIONS.has(validated.condition)) {
+      throw new Error(`browser_wait_for: unknown condition "${validated.condition}". Use one of ${[...CONDITIONS].join(", ")}, or until for a plain-language state.`);
+    }
+    const { tabId, until: _u, failIf: _f, time: _t, ...rest } = validated;
     const payload = tabId !== undefined ? { ...rest, tabId } : rest;
     const result = await context.sendSocketMessage("browser_wait_for", payload, {
       timeoutMs: validated.timeout + 5000,

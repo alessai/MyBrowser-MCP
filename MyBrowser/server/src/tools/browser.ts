@@ -3,8 +3,10 @@ import { zodToJsonSchema } from "../utils/json-schema.js";
 import type { IStateManager } from "../state-manager.js";
 import type { Tool } from "./types.js";
 
+// Optional in the published schema so {browser: "b3"} and similar reach the
+// server and are rewritten (tools/arg-aliases.ts); required in practice.
 const SelectBrowserArgs = z.object({
-  browserId: z.string().describe("The browser ID to target (e.g. 'b1'). Use list_browsers to see available IDs."),
+  browserId: z.string().optional().describe("The browser to use: its ID (e.g. 'b1') or its name (e.g. 'MainLinux'). See list_browsers."),
 });
 
 const SetDefaultBrowserArgs = z.object({
@@ -62,12 +64,24 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
     schema: {
       name: "select_browser",
       description:
-        "Set the active browser for this session. Use only when the user explicitly asked for a non-default browser. The override lasts until use_default_browser, browser_cleanup, session closure, or 30 minutes of tool inactivity.",
+        "Use another browser for this session (by ID or name). Only when the user explicitly asked for a non-default browser. "
+        + "The choice sticks: do not call it before every action. It lasts until use_default_browser, browser_cleanup, the session ends, or 30 minutes without tool calls.",
       inputSchema: zodToJsonSchema(SelectBrowserArgs),
     },
     handle: async (context, params) => {
-      const { browserId } = SelectBrowserArgs.parse(params);
+      const { browserId: wanted } = SelectBrowserArgs.parse(params);
+      if (!wanted) throw new Error("select_browser needs browserId, e.g. {browserId: \"b3\"} or a browser name");
       const sessionId = getSessionId();
+      const connected = await sm.listBrowsers();
+      const match = connected.find((b) => b.id === wanted)
+        ?? connected.find((b) => b.name.toLowerCase() === wanted.toLowerCase());
+      const browserId = match?.id ?? wanted;
+
+      // Already this session's browser: nothing to change (agents often re-select defensively).
+      if (match && await sm.getSessionBrowser(sessionId) === browserId) {
+        await sm.selectBrowser(sessionId, browserId); // refreshes the 30-minute idle window
+        return { content: [{ type: "text", text: `Already using "${match.name}" (${browserId}); no need to select it again.` }] };
+      }
 
       await sm.selectBrowser(sessionId, browserId);
 
@@ -80,14 +94,12 @@ export function createBrowserTools(sm: IStateManager, getSessionId: () => string
         }
       }
 
-      const browsers = await sm.listBrowsers();
-      const browser = browsers.find((b) => b.id === browserId);
-      const name = browser?.name ?? browserId;
+      const name = match?.name ?? browserId;
 
       return {
         content: [{
           type: "text",
-          text: `Active browser switched to "${name}" (${browserId}). Call use_default_browser to return to the shared default.`,
+          text: `Using "${name}" (${browserId}) for this session from now on (use_default_browser goes back to the shared default).`,
         }],
       };
     },

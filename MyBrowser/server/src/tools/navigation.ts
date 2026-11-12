@@ -15,8 +15,11 @@ const NavigateArgs = TabIdParam.extend({
 const GoBackArgs = TabIdParam;
 const GoForwardArgs = TabIdParam;
 
+// Optional in the published schema so {ms: 2000} and similar reach the server and
+// are rewritten (tools/arg-aliases.ts) instead of being refused by the client.
 const WaitArgs = TabIdParam.extend({
-  time: z.number().describe("The time to wait in seconds"),
+  time: z.number().optional().describe("Seconds to wait (required). Up to 10 s, returns early once the page has been quiet for 1 s; e.g. {time: 3}."),
+  exact: z.boolean().optional().describe("Sleep the full time even if the page settles earlier (e.g. waiting for a timer)."),
 });
 
 export const navigate = (snapshot: boolean): Tool => ({
@@ -84,13 +87,18 @@ export const goForward = (snapshot: boolean): Tool => ({
 export const wait: Tool = {
   schema: {
     name: "browser_wait",
-    description: "Wait for a specified time in seconds",
+    description: "Let the page settle: waits up to `time` seconds and, for waits of 10 s or less, returns as soon as the page has been quiet for 1 s (exact:true sleeps the full time). To wait for something specific use browser_wait_for, which returns the moment it appears.",
     inputSchema: zodToJsonSchema(WaitArgs),
   },
   handle: async (context, params) => {
-    const { time, tabId } = WaitArgs.parse(params);
-    const payload = tabId !== undefined ? { time, tabId } : { time };
-    await context.sendSocketMessage("browser_wait", payload);
-    return { content: [{ type: "text", text: `Waited for ${time} seconds` }] };
+    const { time, exact, tabId } = WaitArgs.parse(params);
+    if (time === undefined || !Number.isFinite(time) || time < 0) throw new Error("browser_wait needs time in seconds, e.g. {time: 3}");
+    const payload: Record<string, unknown> = { time, ...(exact ? { exact } : {}), ...(tabId !== undefined ? { tabId } : {}) };
+    const result = await context.sendSocketMessage("browser_wait", payload, { timeoutMs: time * 1000 + 15_000 }) as { waitedMs?: number; settled?: boolean } | undefined;
+    // Older extensions return nothing and always sleep the full time.
+    const text = result?.settled
+      ? `Page settled after ${(result.waitedMs! / 1000).toFixed(1)} s (waited up to ${time} s).`
+      : `Waited ${time} seconds.`;
+    return { content: [{ type: "text", text }] };
   },
 };
