@@ -55,7 +55,10 @@ async function fakeBrowser(port: number) {
       if (!msg.id || !msg.type) return;
       seen.push({ type: msg.type, sessionId: (msg as { sessionId?: string }).sessionId, tabId: msg.payload?.tabId as number | undefined });
       const result = msg.type === "getUrl" ? "https://example.test/" : msg.type === "getTitle" ? "Example" : msg.type === "browser_eval" ? { value: 42 } : true;
-      socket.send(JSON.stringify({ type: "messageResponse", payload: { requestId: msg.id, result } }));
+      const reply = () => socket.send(JSON.stringify({ type: "messageResponse", payload: { requestId: msg.id, result } }));
+      // "slow" code stands for a long browser flow: answered after 1.5 s.
+      if (msg.payload?.code === "slow") setTimeout(reply, 1_500);
+      else reply();
     });
   });
   socket.send(JSON.stringify({ type: "auth", token: TOKEN, protocolVersion: PROTOCOL_VERSION, role: "extension", browserName: "pool-browser" }));
@@ -137,6 +140,29 @@ describe("one process, many OpenCode sessions", () => {
     // Concurrent first calls from one new session create one runtime, not two.
     await Promise.all([call("ses_charlie", "list_browsers", {}), call("ses_charlie", "list_browsers", {})]);
     expect(server.sessionCount()).toBe(3);
+  });
+
+  it("does not make other sessions wait behind a slow call", async () => {
+    const port = await freePort();
+    const hub = await createWebSocketServer({ host: "127.0.0.1", port, token: TOKEN, context: new Context() });
+    hubs.push(hub);
+    await fakeBrowser(port);
+    const browserId = (await hub.stateManager.listBrowsers())[0]!.id;
+    const server = await createServerWithTools({ host: "127.0.0.1", port, token: TOKEN });
+    servers.push(server);
+    const client = await modernClient(server);
+    for (const session of ["ses_slow", "ses_fast"]) {
+      await client.callTool({ name: "select_browser", arguments: { browserId }, ...as(session) });
+    }
+
+    const order: string[] = [];
+    const slow = client.callTool({ name: "browser_eval", arguments: { code: "slow", tabId: 31 }, ...as("ses_slow") }).then(() => order.push("slow"));
+    const started = Date.now();
+    await client.callTool({ name: "browser_eval", arguments: { code: "1", tabId: 32 }, ...as("ses_fast") });
+    order.push("fast");
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await slow;
+    expect(order).toEqual(["fast", "slow"]);
   });
 
   it("parks a session's tabs on close and hands them back to the same session in the next process", async () => {
