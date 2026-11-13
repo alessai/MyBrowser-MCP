@@ -10,8 +10,8 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
@@ -180,11 +180,11 @@ async function connectMcp(server: { connect: (transport: InMemoryTransport) => P
   return client;
 }
 
-async function click(client: Client, element: string) {
+async function click(client: Client, element: string, tabId = 11) {
   return client.callTool({
     name: "browser_click",
     // A selector as well: an element description alone is resolved on the page model first.
-    arguments: { tabId: 11, element, selector: "#control" },
+    arguments: { tabId, element, selector: "#control" },
   });
 }
 
@@ -234,6 +234,9 @@ describe("internal telemetry real topology", () => {
       telemetry: managerA,
     });
     servers.push(serverA);
+    // serverA is the hub; its own state manager selects for its own session.
+    // (Each server must use its own state, not whichever server was created last.)
+    const stateA = stateManager;
     const extension = await connectExtension(port);
     installFakeExtension(extension);
     const serverB = await createServerWithTools({
@@ -245,14 +248,15 @@ describe("internal telemetry real topology", () => {
     });
     servers.push(serverB);
     const browserId = (await stateManager.listBrowsers())[0]!.id;
-    await stateManager.selectBrowser(SESSION_CANARY_A, browserId);
+    await stateA.selectBrowser(SESSION_CANARY_A, browserId);
     await stateManager.selectBrowser(SESSION_CANARY_B, browserId);
     const clientA = await connectMcp(serverA, "task-10-client-a");
     const clientB = await connectMcp(serverB, "task-10-client-b");
 
     const [failed, firstB] = await Promise.all([
       click(clientA, RETRY_CANARY),
-      click(clientB, "Second session control"),
+      // Its own tab: tab 11 belongs to session A once A acts on it.
+      click(clientB, "Second session control", 12),
     ]);
     expect(failed.isError).toBe(true);
     expect(firstB.isError).not.toBe(true);
@@ -263,7 +267,7 @@ describe("internal telemetry real topology", () => {
     }
     expect((await click(clientA, MALFORMED_CANARY)).isError).not.toBe(true);
     expect((await click(clientA, MISSING_CANARY)).isError).not.toBe(true);
-    expect((await click(clientB, "Second session control")).isError).not.toBe(true);
+    expect((await click(clientB, "Second session control", 12)).isError).not.toBe(true);
     const diagnostics = await clientA.callTool({
       name: "browser_diagnostics",
       arguments: { includeLogs: false, includeExtension: false },

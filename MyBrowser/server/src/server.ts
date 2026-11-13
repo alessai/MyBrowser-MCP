@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError, ProtocolErrorCode, Server, type CallToolResult, type Transport } from "@modelcontextprotocol/server";
+import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import { Context } from "./context.js";
 import { VERSION } from "./version.js";
 import { createWebSocketServer } from "./ws-server.js";
@@ -136,7 +133,24 @@ function extractTabId(args: unknown): number | undefined {
   return undefined;
 }
 
-export async function createServerWithTools(options: ServerOptions) {
+/** The MCP side of MyBrowser: serves both protocol eras and routes calls to per-session runtimes. */
+export interface MyBrowserMcpServer {
+  /**
+   * Serves MCP on `transport` (stdio when omitted). The opening message picks the
+   * protocol era: `server/discover` or a 2026-07-28 envelope is modern, `initialize`
+   * is legacy. Every connection shares the same browser sessions.
+   */
+  connect(transport?: Transport): Promise<void>;
+  /** A new protocol instance for one connection (the factory given to serveStdio). */
+  createServer(): Server;
+  /** The MyBrowser session used for calls that carry no OpenCode session ID. */
+  readonly sessionId: string;
+  /** Live per-OpenCode-session runtimes (for diagnostics and tests). */
+  sessionCount(): number;
+  close(): Promise<void>;
+}
+
+export async function createServerWithTools(options: ServerOptions): Promise<MyBrowserMcpServer> {
   const telemetry = options.telemetry ?? (options.telemetryConfig
     ? TelemetryManager.create(options.telemetryConfig, {
       onDiagnostic: (diagnostic) => recordIssue({
@@ -220,7 +234,40 @@ function schemaDigest(tools: readonly Tool[]): string {
     .digest("base64url");
 }
 
-async function createServerWithTelemetry(options: ServerOptions, telemetry: TelemetryManager) {
+/** OpenCode puts the calling session's ID here on every tools/call (documented request metadata). */
+export const OPENCODE_SESSION_META = "ai.opencode/sessionID";
+const OPENCODE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A session runtime without calls for this long is closed; its tabs stay parked on the hub for 2 h. */
+export const SESSION_IDLE_MS = 60 * 60_000;
+const SESSION_SWEEP_MS = 5 * 60_000;
+/** Tools never change while the process runs (config changes restart it). */
+const TOOLS_LIST_TTL_MS = 60 * 60_000;
+
+/**
+ * One MyBrowser session: its hub connection, Context (current tab, outline refs,
+ * browser routing) and tool set. A process has a default one and, for MCP hosts
+ * that name the calling session (OpenCode), one per calling session, so sessions
+ * served by one shared process never see each other's tabs or state.
+ */
+interface SessionRuntime {
+  readonly context: Context;
+  readonly isHub: boolean;
+  readonly tools: Tool[];
+  readonly advertisedToolSchemas: Tool["schema"][];
+  sessionId(): string;
+  callTool(name: string, args: unknown): Promise<CallToolResult>;
+  /** Synchronously refuses new work (pending hub calls fail with SERVER_SHUTTING_DOWN). */
+  beginShutdown(): void;
+  close(): Promise<void>;
+  lastUsed: number;
+  inFlight: number;
+}
+
+function resumeKeyFor(seed: string): string {
+  return createHash("sha256").update(`mybrowser-resume\0${seed}`).digest("base64url").slice(0, 32);
+}
+
+async function createRuntime(options: ServerOptions, telemetry: TelemetryManager, exportState: boolean): Promise<SessionRuntime> {
   const { host, port, token } = options;
   const context = new Context(telemetry, options.localUrlHost);
   context.jev = options.jev;
@@ -228,9 +275,6 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   const incarnation = new SessionIncarnation(options.sessionId);
   let sessionId = incarnation.sessionId;
   context.sessionId = sessionId;
-
-  ensureDirectories();
-  ensureNotesDirectories();
 
   const wss = await createWebSocketServer({
     host,
@@ -242,21 +286,27 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     onHubUnavailable: options.onHubUnavailable,
     allowLocalExtensionWithoutToken: options.allowLocalExtensionWithoutToken,
   });
-  stateManager = wss.stateManager;
+  const sm = wss.stateManager;
+  if (exportState) stateManager = sm;
 
-  const registerSession = async (): Promise<void> => {
-    const registration = await incarnation.register(stateManager, options.sessionName, options.resumeKey);
-    sessionId = registration.sessionId;
-    context.sessionId = registration.sessionId;
-  };
-  await registerSession();
-
-  // Re-register session on hub reconnect (client mode only)
-  wss.onReconnect?.(registerSession);
+  try {
+    const registerSession = async (): Promise<void> => {
+      const registration = await incarnation.register(sm, options.sessionName, options.resumeKey);
+      sessionId = registration.sessionId;
+      context.sessionId = registration.sessionId;
+    };
+    await registerSession();
+    // Re-register session on hub reconnect (client mode only)
+    wss.onReconnect?.(registerSession);
+  } catch (error) {
+    wss.beginShutdown();
+    await Promise.allSettled([wss.close(), context.close()]);
+    throw error;
+  }
 
   // Helper to get the active browser for this session (for composite tab keys)
   const getActiveBrowser = async (): Promise<string> => {
-    const resolution = await stateManager.resolveBrowserTarget(sessionId);
+    const resolution = await sm.resolveBrowserTarget(sessionId);
     if (!resolution.ok) throw new Error(resolution.message);
     // Remembered for the "Browser:" line in page results, so agents need not re-check.
     context.lastBrowser = { id: resolution.browserId, name: resolution.browserName };
@@ -266,12 +316,12 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
   context.setTargetBrowserResolver(getActiveBrowser);
   // Tabs a session opens are its own; another session cannot drive them.
   context.claimTab = async (tabId: number) => {
-    await stateManager.claimTab(sessionId, makeTabKey(await getActiveBrowser(), tabId));
+    await sm.claimTab(sessionId, makeTabKey(await getActiveBrowser(), tabId));
   };
 
   // Create tool sets
-  const { claimTab, releaseTab, sessions } = createSessionTools(stateManager, () => sessionId, getActiveBrowser);
-  const { handoff, sharedGet, sharedSet, sharedDelete, sharedList } = createCollaborateTools(stateManager, () => sessionId, getActiveBrowser);
+  const { claimTab, releaseTab, sessions } = createSessionTools(sm, () => sessionId, getActiveBrowser);
+  const { handoff, sharedGet, sharedSet, sharedDelete, sharedList } = createCollaborateTools(sm, () => sessionId, getActiveBrowser);
   const {
     listBrowsers,
     selectBrowser,
@@ -279,22 +329,19 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
     setDefaultBrowser,
     getDefaultBrowser,
     clearDefaultBrowser,
-  } = createBrowserTools(stateManager, () => sessionId);
-  const { notesList, notesGet, notesArchive, notesUnarchive, notesDelete } = createNotesTools(stateManager);
-  const { browserOn, browserOff, browserEventsList, browserWaitForEvent } = createEventsTools(stateManager, () => sessionId, getActiveBrowser);
-  const { browserLock, browserUnlock, browserLocksList } = createLockTools(stateManager, () => sessionId);
+  } = createBrowserTools(sm, () => sessionId);
+  const { notesList, notesGet, notesArchive, notesUnarchive, notesDelete } = createNotesTools(sm);
+  const { browserOn, browserOff, browserEventsList, browserWaitForEvent } = createEventsTools(sm, () => sessionId, getActiveBrowser);
+  const { browserLock, browserUnlock, browserLocksList } = createLockTools(sm, () => sessionId);
   const { listTabs, selectTab, newTab, closeTab, keepTab, browserCleanup } = createTabTools({
-    stateManager,
+    stateManager: sm,
     context,
     getSessionId: () => sessionId,
     getActiveBrowser,
   });
-  const { recordStart, recordStop, recordList } = createRecordingTools(
-    stateManager,
-    () => sessionId,
-  );
+  const { recordStart, recordStop, recordList } = createRecordingTools(sm, () => sessionId);
   const { browserDiagnostics, browserSupportBundle } = createDiagnosticsTools({
-    stateManager,
+    stateManager: sm,
     context,
     getActiveBrowser,
     serverInfo: {
@@ -360,68 +407,34 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
       ? { ...schema, description: `${schema.description} ${urlPolicy}` }
       : schema
   ));
-  assertTelemetryPolicyCoverage(allTools.map((tool) => {
-    const properties = tool.schema.inputSchema.properties;
-    return {
-      name: tool.schema.name,
-      argumentFields: properties && typeof properties === "object" && !Array.isArray(properties)
-        ? Object.keys(properties)
-        : [],
-    };
-  }));
-
-  const server = new Server(
-    { name: "MyBrowser MCP", version: VERSION },
-    { capabilities: { tools: {} } }
-  );
-  let toolsSchemaDigest: string | undefined;
-  if (telemetry.enabled) {
-    try {
-      toolsSchemaDigest = schemaDigest(tools);
-    } catch {
-      // Telemetry digest construction must not affect server startup.
-    }
+  if (exportState) {
+    assertTelemetryPolicyCoverage(allTools.map((tool) => {
+      const properties = tool.schema.inputSchema.properties;
+      return {
+        name: tool.schema.name,
+        argumentFields: properties && typeof properties === "object" && !Array.isArray(properties)
+          ? Object.keys(properties)
+          : [],
+      };
+    }));
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    if (telemetry.enabled && toolsSchemaDigest) {
-      try {
-        const client = server.getClientVersion();
-        const capabilities = server.getClientCapabilities();
-        telemetry.recordToolsListed({
-          ...(client?.name ? { clientName: client.name } : {}),
-          ...(client?.version ? { clientVersion: client.version } : {}),
-          clientSupportsSampling: capabilities?.sampling !== undefined,
-          clientSupportsRoots: capabilities?.roots !== undefined,
-          clientSupportsElicitation: capabilities?.elicitation !== undefined,
-          toolCount: tools.length,
-          schemaDigest: toolsSchemaDigest,
-        });
-      } catch {
-        // Telemetry event construction must not affect the list-tools response.
-      }
-    }
-    return { tools: advertisedToolSchemas };
-  });
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const requestedToolName = request.params.name;
+  const callTool = async (requestedToolName: string, rawArguments: unknown): Promise<CallToolResult> => {
     const registeredTool = tools.find((candidate) => candidate.schema.name === requestedToolName);
     const toolName = registeredTool?.schema.name ?? "unknown_tool";
     let failureOutcome: RootToolOutcome | undefined;
     return telemetry.runToolCall({
       sessionId,
       toolName,
-      arguments: request.params.arguments,
+      arguments: rawArguments,
       unknownTool: registeredTool === undefined,
       classifyResult: (result) => {
         if (failureOutcome) return failureOutcome;
         return classifyToolResult(result);
       },
-      classifyError: classifyExplicitError,
+      classifyError: (error) => failureOutcome ?? classifyExplicitError(error),
     }, async () => {
-      const tool = registeredTool;
-      if (!tool) {
+      if (!registeredTool) {
         failureOutcome = { status: "error", errorCategory: "invalid_arguments" };
         recordIssue({
           level: "warn",
@@ -430,29 +443,26 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
           toolName: requestedToolName,
           sessionId,
         });
-        return {
-          content: [{ type: "text", text: `Tool "${requestedToolName}" not found` }],
-          isError: true,
-        };
+        // An unknown tool is a protocol error (JSON-RPC Invalid params), not a tool result.
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${requestedToolName}`);
       }
-
-      await stateManager.touchSession(sessionId);
+      await sm.touchSession(sessionId);
 
       // Ownership: acting on a tab by id claims it for this session, unless another
       // session owns it. Calls without tabId run on the session's own tab, which
       // it got from new_tab, select_tab or an earlier tabId (all claimed), never
       // on the user's active tab.
-      const ownedTabId = MUTATING_TOOLS.has(toolName) ? extractTabId(request.params.arguments) ?? extractTabId(normalizeArguments(toolName, request.params.arguments).args) : undefined;
+      const ownedTabId = MUTATING_TOOLS.has(toolName) ? extractTabId(rawArguments) ?? extractTabId(normalizeArguments(toolName, rawArguments).args) : undefined;
       if (ownedTabId !== undefined) {
         const tabId = ownedTabId;
         try {
           const browserId = await getActiveBrowser();
           const tabKey = makeTabKey(browserId, tabId);
-          const claim = await stateManager.claimTab(sessionId, tabKey);
+          const claim = await sm.claimTab(sessionId, tabKey);
           if (!claim.ok && claim.owner !== undefined) {
             failureOutcome = { status: "error", errorCategory: "ownership_denied" };
             const owner = claim.owner;
-            const ownerName = await stateManager.getSessionName(owner) ?? owner;
+            const ownerName = await sm.getSessionName(owner) ?? owner;
             recordIssue({
               level: "warn",
               area: "ownership",
@@ -476,9 +486,9 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
 
       // Common shapes from other browser tools ({ms}, {expression}, numeric refs...) are
       // rewritten to the canonical arguments, and the result says what was accepted.
-      const { args: toolArgs, note: aliasNote } = normalizeArguments(toolName, request.params.arguments, context.lastRefPrefix);
+      const { args: toolArgs, note: aliasNote } = normalizeArguments(toolName, rawArguments, context.lastRefPrefix);
       try {
-        const result = await tool.handle(context, toolArgs);
+        const result = await registeredTool.handle(context, toolArgs);
         if (!aliasNote) return result;
         return { ...result, content: [{ type: "text" as const, text: aliasNote }, ...(result.content ?? [])] };
       } catch (error) {
@@ -490,7 +500,7 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
           toolName,
           sessionId,
           details: {
-            arguments: summarizeDiagnosticsArguments(toolName, request.params.arguments),
+            arguments: summarizeDiagnosticsArguments(toolName, rawArguments),
             stack: error instanceof Error ? error.stack : undefined,
           },
         });
@@ -499,37 +509,180 @@ async function createServerWithTelemetry(options: ServerOptions, telemetry: Tele
           isError: true,
         };
       }
-    });
-  });
+    }) as Promise<CallToolResult>;
+  };
 
-  const originalClose = server.close.bind(server);
   let closePromise: Promise<void> | undefined;
-  server.close = () => {
-    wss.beginShutdown();
-    if (closePromise) return closePromise;
-    closePromise = (async () => {
-      const errors: unknown[] = [];
+  return {
+    context,
+    isHub: wss.isHub,
+    tools,
+    advertisedToolSchemas,
+    sessionId: () => sessionId,
+    callTool,
+    lastUsed: Date.now(),
+    inFlight: 0,
+    beginShutdown: () => wss.beginShutdown(),
+    close: () => {
+      wss.beginShutdown();
+      closePromise ??= (async () => {
+        const results = await Promise.allSettled([wss.close()]);
+        results.push(...await Promise.allSettled([context.close()]));
+        const errors = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+        if (errors.length > 0) throw new AggregateError(errors, "Session shutdown failed");
+      })();
+      return closePromise;
+    },
+  };
+}
+
+async function createServerWithTelemetry(options: ServerOptions, telemetry: TelemetryManager): Promise<MyBrowserMcpServer> {
+  ensureDirectories();
+  ensureNotesDirectories();
+
+  // The default session: calls without an OpenCode session ID (other MCP hosts,
+  // or OpenCode calls made outside a session), and the hub election for the process.
+  const main = await createRuntime(options, telemetry, true);
+  const tools = main.tools;
+  const advertisedToolSchemas = main.advertisedToolSchemas;
+  let toolsSchemaDigest: string | undefined;
+  if (telemetry.enabled) {
+    try {
+      toolsSchemaDigest = schemaDigest(tools);
+    } catch {
+      // Telemetry digest construction must not affect server startup.
+    }
+  }
+
+  // One runtime per calling OpenCode session. A shared (pooled) process serves
+  // every session and project folder on the machine; each gets its own hub
+  // session, so tabs, current tab, outline refs and browser choice never mix.
+  const sessions = new Map<string, Promise<SessionRuntime>>();
+  let closing = false;
+  const runtimeFor = async (meta: Record<string, unknown> | undefined): Promise<SessionRuntime> => {
+    const raw = meta?.[OPENCODE_SESSION_META];
+    if (typeof raw !== "string" || !OPENCODE_SESSION_ID.test(raw) || options.requireHub) return main;
+    if (closing) throw new Error("SERVER_SHUTTING_DOWN");
+    let pending = sessions.get(raw);
+    if (!pending) {
+      pending = createRuntime({
+        ...options,
+        sessionId: undefined,
+        sessionName: `${options.sessionName ? `${options.sessionName} ` : ""}OpenCode ${raw.slice(-8)}`,
+        // The next process (after an MCP restart) resumes this OpenCode session's tabs.
+        resumeKey: resumeKeyFor(`opencode-session\0${raw}`),
+        // The default runtime already owns or found the hub; sessions only join it.
+        clientOnly: true,
+        requireHub: false,
+      }, telemetry, false);
+      sessions.set(raw, pending);
+      pending.catch(() => {
+        if (sessions.get(raw) === pending) sessions.delete(raw);
+      });
+    }
+    return pending;
+  };
+
+  // Idle sessions are closed (parked on the hub, so a later call resumes their tabs).
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [key, pending] of sessions) {
+      void pending.then((runtime) => {
+        if (runtime.inFlight > 0 || now - runtime.lastUsed < SESSION_IDLE_MS || sessions.get(key) !== pending) return;
+        sessions.delete(key);
+        void runtime.close().catch(() => console.error("[MyBrowser MCP] SESSION_CLOSE_FAILED"));
+      }, () => undefined);
+    }
+  }, SESSION_SWEEP_MS);
+  sweep.unref();
+
+  const createServer = (): Server => {
+    const server = new Server(
+      { name: "MyBrowser MCP", version: VERSION },
+      {
+        capabilities: { tools: {} },
+        cacheHints: { "tools/list": { ttlMs: TOOLS_LIST_TTL_MS, cacheScope: "private" } },
+      },
+    );
+
+    server.setRequestHandler("tools/list", async (_request, ctx) => {
+      if (telemetry.enabled && toolsSchemaDigest) {
+        try {
+          // 2026-07-28 requests carry client info per request; legacy ones sent it in initialize.
+          const envelope = ctx.mcpReq.envelope as Record<string, unknown> | undefined;
+          const client = (envelope?.["io.modelcontextprotocol/clientInfo"] as { name?: string; version?: string } | undefined) ?? server.getClientVersion();
+          const capabilities = (envelope?.["io.modelcontextprotocol/clientCapabilities"] as Record<string, unknown> | undefined) ?? server.getClientCapabilities();
+          telemetry.recordToolsListed({
+            ...(client?.name ? { clientName: client.name } : {}),
+            ...(client?.version ? { clientVersion: client.version } : {}),
+            clientSupportsSampling: capabilities?.sampling !== undefined,
+            clientSupportsRoots: capabilities?.roots !== undefined,
+            clientSupportsElicitation: capabilities?.elicitation !== undefined,
+            toolCount: tools.length,
+            schemaDigest: toolsSchemaDigest,
+          });
+        } catch {
+          // Telemetry event construction must not affect the list-tools response.
+        }
+      }
+      return { tools: advertisedToolSchemas as never };
+    });
+
+    server.setRequestHandler("tools/call", async (request, ctx) => {
+      const meta = (ctx.mcpReq._meta ?? request.params._meta) as Record<string, unknown> | undefined;
+      const runtime = await runtimeFor(meta);
+      runtime.inFlight += 1;
       try {
-        for (const step of [
-          () => originalClose(),
-          () => wss.close(),
-          () => context.close(),
-        ]) {
+        return await runtime.callTool(request.params.name, request.params.arguments);
+      } finally {
+        runtime.inFlight -= 1;
+        runtime.lastUsed = Date.now();
+      }
+    });
+    return server;
+  };
+
+  const handles: StdioServerHandle[] = [];
+  let closePromise: Promise<void> | undefined;
+  return {
+    createServer,
+    get sessionId() {
+      return main.sessionId();
+    },
+    sessionCount: () => sessions.size,
+    connect: async (transport?: Transport) => {
+      handles.push(serveStdio(createServer, {
+        ...(transport ? { transport } : {}),
+        onerror: (error) => console.error(`[MyBrowser MCP] MCP transport error: ${error.message}`),
+      }));
+    },
+    close: () => {
+      closing = true;
+      clearInterval(sweep);
+      // New work is refused at once; the default session stays able to host the
+      // hub until the per-session clients have parked.
+      main.beginShutdown();
+      closePromise ??= (async () => {
+        const errors: unknown[] = [];
+        try {
+          const settled = await Promise.allSettled(handles.map((handle) => handle.close()));
+          errors.push(...settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : [])));
+          // Session runtimes first (they are hub clients). Parking them is best effort:
+          // when this process is the hub, it is going away with them.
+          const sessionClosed = await Promise.allSettled([...sessions.values()].map(async (pending) => (await pending).close()));
+          if (sessionClosed.some((r) => r.status === "rejected")) console.error("[MyBrowser MCP] SESSION_CLOSE_FAILED");
+          sessions.clear();
           try {
-            await step();
+            await main.close();
           } catch (error) {
             errors.push(error);
           }
+          if (errors.length > 0) throw new AggregateError(errors, "Server shutdown failed");
+        } finally {
+          await telemetry.close(2_000);
         }
-        if (errors.length > 0) {
-          throw new AggregateError(errors, "Server shutdown failed");
-        }
-      } finally {
-        await telemetry.close(2_000);
-      }
-    })();
-    return closePromise;
+      })();
+      return closePromise;
+    },
   };
-
-  return server;
 }

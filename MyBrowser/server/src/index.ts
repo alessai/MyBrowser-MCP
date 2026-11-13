@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { program } from "commander";
 import { createHash } from "node:crypto";
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadOrCreateConfig, validateConfigOverrides } from "./auth.js";
 import { registerJevCommands } from "./jev/commands.js";
@@ -14,8 +14,7 @@ import {
   createDetachedHubEnsurer,
   HUB_AUTOSTART_TOKEN_ENV,
 } from "./hub-autostart.js";
-import { createServerWithTools } from "./server.js";
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { createServerWithTools, type MyBrowserMcpServer } from "./server.js";
 import { initializePersistentLogging } from "./logger.js";
 import { type TelemetryCliOptions, resolveProcessTelemetryConfig } from "./telemetry/config.js";
 import { registerTraceCommands } from "./telemetry/commands.js";
@@ -24,7 +23,7 @@ import { VERSION } from "./version.js";
 
 initializePersistentLogging();
 
-function setupExitWatchdog(server: Server) {
+function setupExitWatchdog(server: MyBrowserMcpServer) {
   process.stdin.on("close", async () => {
     setTimeout(() => process.exit(0), 15_000);
     await server.close();
@@ -94,12 +93,15 @@ program
       })
       : undefined;
     await ensureHub?.();
+    // A process started in the home folder is a shared one (OpenCode `pool` with
+    // cwd "~"): no project name, and per-session names come from the session ID.
+    const projectFolder = resolve(process.cwd()) === resolve(homedir()) ? undefined : basename(process.cwd()) || undefined;
     const server = await createServerWithTools({
       host: config.host,
       port: config.port,
       token: config.token,
       // Default to the project folder name so messages say which agent holds a tab.
-      sessionName: opts.session ?? (opts.hub ? undefined : basename(process.cwd()) || undefined),
+      sessionName: opts.session ?? (opts.hub ? undefined : projectFolder),
       // MCP hosts (OpenCode v2) start one process per project folder and restart
       // it after idling; the folder lets the replacement resume the session.
       resumeKey: opts.hub ? undefined : createHash("sha256").update(`mybrowser-resume\0${process.cwd()}`).digest("base64url").slice(0, 32),
@@ -129,10 +131,10 @@ program
         process.exit(0);
       });
     } else {
-      // MCP stdio mode — connect transport and watch for parent exit
+      // MCP stdio mode: serves the 2026-07-28 revision (server/discover) and the
+      // classic initialize handshake; watch for parent exit.
       setupExitWatchdog(server);
-      const transport = new StdioServerTransport();
-      await server.connect(transport);
+      await server.connect();
     }
   });
 

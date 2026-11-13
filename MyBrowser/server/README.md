@@ -20,6 +20,13 @@ Load the extension once. It defaults to the ordinary local server and opens a fi
 
 The server and the extension must be the same version. With an older extension, a 2.1 server refuses `frame` calls with `EXTENSION_TOO_OLD` before doing anything, and tools the extension does not know (such as `browser_mouse`) fail with a message to update and reload it.
 
+## Changes in 2.3: one process for all sessions
+
+- **MCP 2026-07-28**: answers `server/discover`, serves both the new stateless protocol and the classic `initialize` handshake, and publishes tool schemas as JSON Schema 2020-12.
+- **Poolable**: one process can serve every OpenCode session and project folder (see [below](#one-shared-process-for-every-session-opencode-pool)), each session isolated.
+- **Each OpenCode session is its own agent**, also without pooling: sessions in the same folder, including subagents, no longer share a current tab.
+- An unknown tool name is a JSON-RPC Invalid params error instead of a tool result.
+
 ## Changes in 2.2: fewer failed calls and turns
 
 Nothing that worked in 2.1 stops working.
@@ -101,6 +108,27 @@ Then:
   }
 }
 ```
+
+### One shared process for every session (OpenCode `pool`)
+
+The server speaks MCP revision 2026-07-28 (it answers `server/discover`) as well as the classic `initialize` handshake. OpenCode 2.3+ can therefore run one MyBrowser process for all sessions and project folders instead of one per folder:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "mybrowser": {
+        "type": "local",
+        "command": ["mybrowser-mcp"],
+        "cwd": "~",
+        "pool": true
+      }
+    }
+  }
+}
+```
+
+Each calling OpenCode session (identified by `_meta["ai.opencode/sessionID"]` on every call) gets its own browser session inside that process: its own tabs, current tab, browser choice and outline refs, exactly as if it had its own process. Subagents are separate sessions, so they open their own tabs. A session idle for an hour is closed and its tabs are kept for 2 hours; its next call, or the next process after a restart, gets them back. Calls without a session ID share one default session.
 
 ## Diagnostics
 

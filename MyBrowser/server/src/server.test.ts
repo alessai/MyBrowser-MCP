@@ -1,6 +1,6 @@
 import { createServer as createNetServer } from "node:net";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { Context } from "./context.js";
@@ -400,8 +400,8 @@ describe("production server root telemetry", () => {
         arguments: { code: canary, tabId: 44 },
       });
       expect(noBrowser.isError).toBe(true);
-      const missing = await client.callTool({ name: "definitely_missing_tool", arguments: {} });
-      expect(missing.isError).toBe(true);
+      // An unknown tool is a JSON-RPC Invalid params error, not a tool result.
+      await expect(client.callTool({ name: "definitely_missing_tool", arguments: {} })).rejects.toThrow(/Unknown tool/);
     } finally {
       await client.close();
       await server.close();

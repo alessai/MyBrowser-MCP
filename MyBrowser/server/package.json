@@ -1,6 +1,6 @@
 {
   "name": "@alessai/mybrowser-mcp",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "MCP server for MyBrowser - remote browser automation over Tailscale",
   "type": "module",
   "homepage": "https://github.com/alessai/MyBrowser-MCP",
@@ -30,12 +30,13 @@
     "prepack": "npm run clean && npm run check && npm test && npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "^2.4.0",
     "commander": "^13.1.0",
     "ws": "^8.21.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
     "@types/ws": "^8.18.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
